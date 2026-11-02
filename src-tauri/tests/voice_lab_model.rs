@@ -178,3 +178,193 @@ fn worker_clone_fast_real() {
     read_style_file(&out).unwrap();
     println!("final_event={:?}", events.last());
 }
+
+/// End-to-end acceptance without Tauri/UI; references must be downloaded separately.
+#[tokio::test]
+#[ignore = "requires pinned model and luna/nora/watson_reference.wav; run in release"]
+async fn acceptance_three_refs_mix_export_import() -> anyhow::Result<()> {
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use stream_assist_lib::voice_lab::{
+        audio,
+        mixer::{DpStrategy, RecipeInput, mix, new_recipe},
+        models,
+        runner::{Emit, Runner},
+        store::{RenderParams, Store},
+        style::{canonical_bytes, read_style_file},
+        worker::ClonePreset,
+    };
+
+    let model = model_dir().canonicalize()?;
+    let names = ["luna", "nora", "watson"];
+    for name in names {
+        assert!(
+            model.join(format!("{name}_reference.wav")).is_file(),
+            "missing {name}_reference.wav"
+        );
+    }
+    let data = tempfile::tempdir()?;
+    let root = data.path().join("original");
+    let store = Arc::new(Mutex::new(Store::open(&root)?));
+    // A fresh model tree for each Store, with no shared profiles/database.
+    let attach_model = |root: &std::path::Path| -> anyhow::Result<()> {
+        let dest = models::model_dir(root);
+        fs::create_dir_all(dest.parent().unwrap())?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&model, &dest)?;
+        #[cfg(not(unix))]
+        for file in models::MODEL_FILES {
+            let target = dest.join(file.path);
+            fs::create_dir_all(target.parent().unwrap())?;
+            fs::copy(model.join(file.path), target)?;
+        }
+        assert!(models::installed(root));
+        Ok(())
+    };
+    attach_model(&root)?;
+    let runner = Arc::new(Runner::new(
+        env!("CARGO_BIN_EXE_stream-assist").into(),
+        vec![],
+    ));
+    let emit: Emit = Arc::new(|_| {});
+    let mut profiles = Vec::new();
+    for name in names {
+        let source = audio::import(
+            &store,
+            &model.join(format!("{name}_reference.wav")),
+            true,
+            false,
+        )?;
+        let end = (source.duration_ms as u64).min(10_000);
+        assert!((1_000..=15_000).contains(&end));
+        let started = Instant::now();
+        let id = runner.start_clone(
+            store.clone(),
+            root.clone(),
+            models::model_dir(&root),
+            None,
+            source.id,
+            0,
+            end,
+            String::new(),
+            "en".into(),
+            name.into(),
+            ClonePreset::Fast,
+            42,
+            emit.clone(),
+        )?;
+        let job = tokio::time::timeout(Duration::from_secs(1800), async {
+            loop {
+                let job = runner.jobs().into_iter().find(|j| j.id == id).unwrap();
+                if job.status != "running" {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await?;
+        println!(
+            "clone_{name}_wall_s={:.3} region_ms={end}",
+            started.elapsed().as_secs_f64()
+        );
+        assert_eq!(job.status, "completed", "{job:?}");
+        let s = store.lock().unwrap();
+        let profile = s.profile(job.profile_id.unwrap())?;
+        assert_eq!(profile.origin, "clone");
+        s.load_style(profile.id)?;
+        profiles.push(profile);
+        assert_eq!(fs::read_dir(root.join("tmp"))?.count(), 0);
+    }
+    assert_eq!(store.lock().unwrap().profiles()?.len(), 3);
+    let styles = profiles
+        .iter()
+        .map(|p| store.lock().unwrap().load_style(p.id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let weights = [55.0, 30.0, 15.0];
+    let inputs = styles.iter().zip(weights).collect::<Vec<_>>();
+    let mixed = mix(&inputs, DpStrategy::Dominant, None)?;
+    let recipe = new_recipe(
+        profiles
+            .iter()
+            .zip(weights)
+            .map(|(p, weight)| RecipeInput {
+                profile_sha256: p.style_sha256.clone(),
+                name: p.name.clone(),
+                weight,
+            })
+            .collect(),
+        DpStrategy::Dominant,
+        None,
+        "2026-11-02T00:00:00Z".into(),
+    );
+    let snapshot =
+        store
+            .lock()
+            .unwrap()
+            .put_profile(&mixed, "Final voice", "mix", Some(&recipe), None)?;
+    assert_eq!(snapshot.origin, "mix");
+    assert_eq!(snapshot.recipe.as_ref(), Some(&recipe));
+    let params = RenderParams {
+        text: "Привет! Это проверка смешанного голоса.".into(),
+        lang: "ru".into(),
+        speed: 1.0,
+        quality: 8,
+    };
+    let (mut s, mut r, mut p) = (store.clone(), root.clone(), snapshot.clone());
+    for label in ["mixed", "imported"] {
+        let path = s.lock().unwrap().profile_path(&p);
+        let started = Instant::now();
+        let render = runner
+            .synth(
+                &s,
+                &r,
+                path,
+                Some(p.id),
+                p.recipe.clone(),
+                params.clone(),
+                emit.clone(),
+            )
+            .await?;
+        let samples = audio::load_mono(&s.lock().unwrap().render_path(render.id))?;
+        assert!(render.duration_ms > 0 && render.wall_ms > 0);
+        assert!(samples.iter().all(|v| v.is_finite()));
+        assert!(samples.iter().any(|v| v.abs() > 0.01));
+        println!(
+            "{label}_wall_s={:.3} synth_ms={} duration_ms={} RTF={:.3}",
+            started.elapsed().as_secs_f64(),
+            render.wall_ms,
+            render.duration_ms,
+            render.wall_ms as f64 / render.duration_ms as f64
+        );
+        assert_eq!(s.lock().unwrap().renders(200)?.len(), 1);
+        assert_eq!(fs::read_dir(r.join("tmp"))?.count(), 0);
+        if label == "mixed" {
+            let exported = data.path().join("final_voice.json");
+            let bytes = fs::read(store.lock().unwrap().profile_path(&snapshot))?;
+            let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(json.as_object().unwrap().len(), 2);
+            assert!(json.get("metadata").is_none());
+            assert_eq!(bytes, canonical_bytes(&mixed));
+            fs::write(&exported, &bytes)?;
+            let fresh_root = data.path().join("fresh");
+            let fresh = Arc::new(Mutex::new(Store::open(&fresh_root)?));
+            attach_model(&fresh_root)?;
+            assert!(fresh.lock().unwrap().profiles()?.is_empty());
+            assert!(fresh.lock().unwrap().sources()?.is_empty());
+            let imported = fresh.lock().unwrap().put_profile(
+                &read_style_file(&exported)?,
+                "Imported",
+                "import",
+                None,
+                None,
+            )?;
+            assert_eq!(imported.style_sha256, snapshot.style_sha256);
+            assert!(imported.recipe.is_none());
+            (s, r, p) = (fresh, fresh_root, imported);
+        }
+    }
+    Ok(())
+}

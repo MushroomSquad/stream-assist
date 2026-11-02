@@ -7,13 +7,16 @@
 ## Документация
 
 - [Руководство стримера](docs/user-guide.md) — настройка Twitch, Spotify, OBS, работа во время стрима, проблемы.
+- [Voice Lab](docs/voice-lab.md) — установка модели, клонирование, микшер и экспорт голосов.
 - [Темы виджета](docs/themes.md) — встроенные темы и как сделать свою.
 - [Архитектура](docs/architecture.md) — устройство, инварианты, как добавить новую награду.
 
 ## Сборка
 
 Нужны Node.js с npm, Rust и системные зависимости Tauri v2
-(на Linux — WebKitGTK 4.1 и инструменты сборки).
+(на Linux — WebKitGTK 4.1, инструменты сборки и ALSA: `libasound2-dev` в Debian/Ubuntu,
+`alsa-lib-devel` в Fedora). Для первой сборки нужна сеть: зависимость `ort` скачивает
+ONNX Runtime; CUDA и Python не требуются.
 
 1. Зарегистрируйте приложение в [Twitch Developer Console](https://dev.twitch.tv/console/apps):
    Client Type **Public**, включён **Device Code Flow**, OAuth Redirect URL — любой
