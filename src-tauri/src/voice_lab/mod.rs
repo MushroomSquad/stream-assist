@@ -1,3 +1,4 @@
+pub mod mixer;
 pub mod models;
 pub mod style;
 
