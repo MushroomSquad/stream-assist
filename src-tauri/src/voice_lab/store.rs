@@ -252,6 +252,13 @@ impl Store {
             .join(format!("profiles/{}.json", profile.style_sha256))
     }
 
+    pub fn mark_builtin(&self, id: i64, name: &str) -> Result<()> {
+        changed(self.conn.execute(
+            "UPDATE profiles SET origin='builtin',name=?2 WHERE id=?1",
+            params![id, name],
+        )?)
+    }
+
     pub fn rename_profile(&self, id: i64, name: &str, tags: &[String]) -> Result<()> {
         changed(self.conn.execute(
             "UPDATE profiles SET name=?2,tags=?3 WHERE id=?1",
