@@ -384,7 +384,12 @@ impl Player {
                 }
             }
             Input::FallbackResolved { item_id, video_id } => {
-                if self.resolving && self.current.as_ref().is_some_and(|i| i.id == item_id) {
+                if self.resolving
+                    && self
+                        .current
+                        .as_ref()
+                        .is_some_and(|i| i.id == item_id && !i.started)
+                {
                     self.resolving = false;
                     match video_id {
                         Err(()) => self.schedule(now),
@@ -425,6 +430,12 @@ impl Player {
                     self.last_ok = Some(now);
                     if self.fallback {
                         self.fallback = false;
+                        if self.resolving {
+                            self.resolving = false;
+                            if self.retry_at.is_none() {
+                                self.schedule(now);
+                            }
+                        }
                         self.warn(None, &mut a);
                     }
                 }
@@ -532,12 +543,13 @@ impl Player {
                 } else if self.retry_at.is_some_and(|t| now >= t)
                     && matches!(self.mode, Mode::Starting | Mode::Playing)
                 {
-                    self.play_spotify(&mut a);
                     if self.fallback && !self.resolving {
                         self.resolving = true;
                         a.push(Action::ResolveFallback(
                             self.current.as_ref().unwrap().clone(),
                         ));
+                    } else {
+                        self.play_spotify(&mut a);
                     }
                     self.schedule(now);
                 }
@@ -853,6 +865,81 @@ mod tests {
             Action::ResolveFallback(_)
         )));
     }
+    #[test]
+    fn tick_in_fallback_does_not_also_play_spotify() {
+        let mut p = fallback();
+        p.step(
+            Input::FallbackResolved {
+                item_id: 2,
+                video_id: Err(()),
+            },
+            60001,
+        );
+        let actions = p.step(Input::Tick, 62001);
+        assert!(has(&actions, |a| matches!(a, Action::ResolveFallback(_))));
+        assert!(!has(&actions, |a| matches!(a, Action::SpotifyPlay { .. })));
+    }
+
+    #[test]
+    fn late_fallback_none_after_spotify_recovery_is_ignored() {
+        for video_id in [None, Some("late".into())] {
+            let mut p = fallback();
+            assert!(p.resolving);
+            p.step(Input::Spotify(Ok(None)), 60001);
+            assert!(!p.resolving);
+            let before = p.snapshot();
+            let actions = p.step(
+                Input::FallbackResolved {
+                    item_id: 2,
+                    video_id: Ok(video_id),
+                },
+                60002,
+            );
+            no_cancel(&actions);
+            assert!(!has(&actions, |a| matches!(a, Action::YtPlay { .. })));
+            assert_eq!(p.snapshot(), before);
+            assert!(has(&p.step(Input::Tick, 62001), |a| matches!(
+                a,
+                Action::SpotifyPlay { item_id: 2, .. }
+            )));
+            let actions = p.step(
+                Input::PlayResult {
+                    item_id: 2,
+                    result: Ok(()),
+                },
+                62002,
+            );
+            assert!(has(
+                &actions,
+                |a| matches!(a, Action::Started(i) if i.id == 2)
+            ));
+            assert!(matches!(
+                p.snapshot().0.unwrap().track.source,
+                Source::Spotify { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn fallback_resolved_ignored_for_started_item() {
+        for video_id in [None, Some("late".into())] {
+            let mut p = playing(false);
+            p.resolving = true;
+            let before = p.snapshot();
+            let actions = p.step(
+                Input::FallbackResolved {
+                    item_id: 1,
+                    video_id: Ok(video_id),
+                },
+                1,
+            );
+            no_cancel(&actions);
+            assert!(!has(&actions, |a| matches!(a, Action::YtPlay { .. })));
+            assert_eq!(p.snapshot(), before);
+            assert_eq!(p.mode(), Mode::Playing);
+        }
+    }
+
     fn fallback() -> Player {
         let mut p = playing(false);
         p.step(Input::Enqueue(item(2, false)), 0);
@@ -1228,6 +1315,7 @@ mod tests {
         no_cancel(&p.step(Input::Remove(2), 1));
         p.step(Input::Enqueue(queued), 2);
         p.step(Input::Spotify(Err(())), 60000);
+        let before = p.snapshot();
         no_cancel(&p.step(
             Input::FallbackResolved {
                 item_id: 2,
@@ -1235,7 +1323,8 @@ mod tests {
             },
             60001,
         ));
-        assert_eq!(p.mode(), Mode::Idle);
+        assert_eq!(p.snapshot(), before);
+        assert_eq!(p.mode(), Mode::Starting);
     }
 
     #[test]

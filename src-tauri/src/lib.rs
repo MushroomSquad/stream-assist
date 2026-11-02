@@ -1,6 +1,7 @@
 pub mod app;
 pub mod db;
 pub mod driver;
+pub mod http;
 pub mod i18n;
 pub mod limits;
 pub mod model;

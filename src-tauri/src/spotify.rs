@@ -72,7 +72,7 @@ impl Spotify {
         on_rotate: impl Fn(&Tokens) + Send + Sync + 'static,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::http::http_client(),
             api: api.trim_end_matches('/').into(),
             accounts: accounts.trim_end_matches('/').into(),
             client_id,
@@ -87,7 +87,7 @@ impl Spotify {
         verifier: &str,
         accounts: &str,
     ) -> Result<Tokens> {
-        let t: TokenResponse = Client::new()
+        let t: TokenResponse = crate::http::http_client()
             .post(format!("{}/api/token", accounts.trim_end_matches('/')))
             .form(&[
                 ("grant_type", "authorization_code"),

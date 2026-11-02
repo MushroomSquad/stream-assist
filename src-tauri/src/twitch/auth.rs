@@ -24,7 +24,7 @@ struct TokenResponse {
     expires_in: i64,
 }
 async fn token(form: &[(&str, &str)], base: &str, pending: bool) -> Result<Option<Tokens>> {
-    let response = reqwest::Client::new()
+    let response = crate::http::http_client()
         .post(format!("{}/oauth2/token", base.trim_end_matches('/')))
         .form(form)
         .send()
@@ -49,7 +49,7 @@ async fn token(form: &[(&str, &str)], base: &str, pending: bool) -> Result<Optio
     }))
 }
 pub async fn device_start(client_id: &str, scopes: &str, base: &str) -> Result<DeviceStart> {
-    Ok(reqwest::Client::new()
+    Ok(crate::http::http_client()
         .post(format!("{}/oauth2/device", base.trim_end_matches('/')))
         .form(&[("client_id", client_id), ("scopes", scopes)])
         .send()

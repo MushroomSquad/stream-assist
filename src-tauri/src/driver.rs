@@ -159,7 +159,15 @@ fn prepare_actions(
     mut mark: impl FnMut(&Action) -> bool,
     mut persist: impl FnMut(),
 ) -> Vec<Action> {
-    aa.retain(|a| !matches!(a, Action::Started(_) | Action::Cancel(_, _)) || mark(a));
+    aa.retain(|a| match a {
+        // Fulfill even if history cannot be saved: Twitch must not replay this redemption.
+        Action::Started(_) => {
+            mark(a);
+            true
+        }
+        Action::Cancel(_, _) => mark(a),
+        _ => true,
+    });
     aa.retain(|a| {
         if matches!(a, Action::Persist) {
             persist();
@@ -198,7 +206,8 @@ fn actions(
                 }
                 _ => return true,
             };
-            if result.is_err() {
+            if let Err(error) = &result {
+                eprintln!("Failed to save redemption decision: {error}");
                 warn(c, Some("Не удалось сохранить решение по заказу".into()));
             }
             result.is_ok()
@@ -1014,6 +1023,45 @@ mod tests {
 #[cfg(test)]
 mod action_order_tests {
     use super::*;
+    #[test]
+    fn started_kept_when_history_push_fails() {
+        let item = QueueItem {
+            id: 1,
+            track: Track {
+                source: Source::Spotify { uri: "s1".into() },
+                title: "song".into(),
+                artist: "artist".into(),
+                duration_ms: None,
+                explicit: None,
+                cover_url: None,
+            },
+            requester: "viewer".into(),
+            redemption: Some(RedemptionRef {
+                reward_id: "reward".into(),
+                redemption_id: "redemption".into(),
+            }),
+            started: false,
+        };
+        let mut started = item.clone();
+        started.started = true;
+        let mut marks = 0;
+        let mut persisted = false;
+        let aa = prepare_actions(
+            vec![
+                Action::Started(started.clone()),
+                Action::Cancel(item, player::CancelReason::YtUnavailable),
+                Action::Persist,
+            ],
+            |_| {
+                marks += 1;
+                false
+            },
+            || persisted = true,
+        );
+        assert_eq!(marks, 2);
+        assert!(persisted);
+        assert_eq!(aa, vec![Action::Started(started)]);
+    }
     #[test]
     fn local_marks_then_persist_then_network() {
         let trace = std::cell::RefCell::new(Vec::new());

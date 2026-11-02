@@ -261,3 +261,37 @@ fn oauth_error_with_wrong_state_keeps_pending() {
     assert!(take_pending_if_state_matches(&mut pending, &state).is_some());
     assert!(pending.is_none());
 }
+
+#[tokio::test]
+async fn refresh_times_out_and_releases_lock() {
+    use std::time::Duration;
+    let s = MockServer::start().await;
+    Mock::given(path("/api/token"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+        .expect(1)
+        .mount(&s)
+        .await;
+    let mut sp = client(&s, true);
+    sp.client = crate::http::client_with_timeout(Duration::from_millis(200));
+    let error = tokio::time::timeout(Duration::from_secs(1), sp.me_product())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+    s.reset().await;
+    refresh(&s).await;
+    Mock::given(path("/v1/me"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"product":"premium"})),
+        )
+        .expect(1)
+        .mount(&s)
+        .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), sp.me_product())
+            .await
+            .unwrap()
+            .unwrap(),
+        "premium"
+    );
+}

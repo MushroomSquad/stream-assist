@@ -209,7 +209,7 @@ async fn callback_forwards_error() {
 #[tokio::test]
 async fn callback_full_channel_returns_503() {
     let (p, c) = setup().await;
-    let client = reqwest::Client::new();
+    let client = crate::http::http_client();
     let url = format!("http://127.0.0.1:{p}/callback/spotify?code=abc&state=xyz");
     for _ in 0..c.oauth_rx.max_capacity() {
         assert_eq!(client.get(&url).send().await.unwrap().status(), 200);

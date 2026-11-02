@@ -1,6 +1,5 @@
 use crate::model::{Source, Track};
 use anyhow::Result;
-use reqwest::Client;
 use serde::Deserialize;
 
 pub fn split_title(title: &str, channel: &str) -> (String, String) {
@@ -20,7 +19,7 @@ pub async fn oembed(video_id: &str, base: &str) -> Result<Option<Track>> {
         author_name: String,
         thumbnail_url: String,
     }
-    let response = Client::new()
+    let response = crate::http::http_client()
         .get(format!("{}/oembed", base.trim_end_matches('/')))
         .query(&[
             ("url", format!("https://www.youtube.com/watch?v={video_id}")),
@@ -59,7 +58,7 @@ pub async fn search(api_key: &str, q: &str, base: &str) -> Result<Option<String>
     struct Search {
         items: Vec<Item>,
     }
-    let data: Search = Client::new()
+    let data: Search = crate::http::http_client()
         .get(format!("{}/youtube/v3/search", base.trim_end_matches('/')))
         .query(&[
             ("part", "snippet"),

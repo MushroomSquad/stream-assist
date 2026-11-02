@@ -58,7 +58,7 @@ impl Helix {
         on_rotate: impl Fn(&Tokens) + Send + Sync + 'static,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::http::http_client(),
             client_id,
             api: api.trim_end_matches('/').into(),
             id_base: id_base.trim_end_matches('/').into(),
