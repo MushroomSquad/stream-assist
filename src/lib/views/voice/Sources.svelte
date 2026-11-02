@@ -72,7 +72,7 @@ async function clone() {
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
 <div class="actions">{#each sources as source}<button onclick={() => run(() => choose(source))}>{source.name}</button>{/each}</div>
 {#if selected}<div class="card"><h3>{selected.name}</h3>
-<label class="check"><input type="checkbox" checked={selected.consent} onchange={e => { const s = selected!; const checked = e.currentTarget.checked; void run(async () => { await api.vl_set_consent(s.id, checked); s.consent = checked; await load(); }); }} />{ru.vlConsent}</label>
+<label class="check"><input type="checkbox" checked={selected.consent} onchange={e => { const s = selected!; const checkbox = e.currentTarget, previous = s.consent, checked = checkbox.checked; void run(async () => { try { await api.vl_set_consent(s.id, checked); } catch (e) { checkbox.checked = previous; throw e; } s.consent = checked; await load(); }); }} />{ru.vlConsent}</label>
 <p class="muted">{ru.vlRegion}</p>
 <canvas bind:this={canvas} width="800" height="120" aria-label={ru.vlRegion} onpointerdown={e => { anchor = position(e); startMs = anchor; endMs = anchor; e.currentTarget.setPointerCapture(e.pointerId); }} onpointermove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) { const end = position(e); startMs = Math.min(anchor, end); endMs = Math.max(anchor, end); } }}></canvas>
 <label>{ru.vlStart}<input type="number" min="0" max={selected.durationMs} step="1" bind:value={startMs} /></label>
@@ -89,6 +89,6 @@ async function clone() {
 <button class="primary" disabled={!cloneValid || busy || !listening || job?.status === 'running' || (lang === 'ru' && !transcript.trim())}>{ru.vlClone}</button>
 </form></div>{/if}
 {#if job}<div class="card"><p>{ru.vlJobStatus[job.status as keyof typeof ru.vlJobStatus]}</p>
-{#if job.progress?.event === 'progress'}<p>{ru.vlStage}: {ru.vlStages[job.progress.stage as keyof typeof ru.vlStages] ?? ru.vlClone} · {ru.vlIteration}: {job.progress.iteration}/{job.progress.total} · {ru.vlLoss}: {job.progress.loss}</p><progress value={job.progress.iteration} max={job.progress.total}></progress>{/if}
+{#if job.progress?.event === 'progress'}<p>{ru.vlStage}: {ru.vlStages[job.progress.stage as keyof typeof ru.vlStages] ?? ru.vlClone} · {ru.vlIteration}: {job.progress.iteration}/{job.progress.total} · {ru.vlLoss}: {typeof job.progress.loss === 'number' ? job.progress.loss.toFixed(4) : '—'} · {ru.vlLoss} (best): {typeof job.progress.bestLoss === 'number' ? job.progress.bestLoss.toFixed(4) : '—'}</p><progress value={job.progress.iteration} max={job.progress.total}></progress>{/if}
 {#if job.status === 'running'}<p>{ru.vlElapsed}: {duration(elapsed)} · {ru.vlEta}: {eta === null ? ru.vlEtaPending : `≈ ${duration(eta)}`}</p><button onclick={() => run(() => api.vl_cancel_job(job!.id))}>{ru.vlCancel}</button>{/if}</div>{/if}
 <style>canvas{width:100%;touch-action:none;border:1px solid var(--border)}audio{display:block;margin:16px 0;max-width:100%}</style>

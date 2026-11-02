@@ -16,7 +16,7 @@ function sync() { if (inputs.some(i => i.id === addId) || !addId) addId = profil
 function push() { history.push($state.snapshot(inputs)); sync(); }
 function undo() { inputs = history.undo(); sync(); }
 function redo() { inputs = history.redo(); sync(); }
-function key(e: KeyboardEvent) { if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return; const target = e.target; if (target instanceof HTMLElement && (target.isContentEditable || ['TEXTAREA','SELECT'].includes(target.tagName) || (target instanceof HTMLInputElement && !target.hasAttribute('data-weight')))) return; e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+function key(e: KeyboardEvent) { if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyZ') return; const target = e.target; if (target instanceof HTMLElement && (target.isContentEditable || ['TEXTAREA','SELECT'].includes(target.tagName) || (target instanceof HTMLInputElement && !target.hasAttribute('data-weight')))) return; e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
 async function run(f: () => Promise<void>) { message = ''; try { await f(); } catch (e) { message = errorText(e); } }
 onMount(() => { void run(async () => { profiles = await api.vl_profiles(); addId = profiles[0]?.id ?? 0; }); return () => { disposed = true; if (url) URL.revokeObjectURL(url); }; });
 function tuples(): [number, number][] { return inputs.map(i => [i.id, i.weight]); }
@@ -28,8 +28,8 @@ async function generate() { busy = true; try { const r = await api.vl_mix_previe
 <button disabled={inputs.length >= 8 || !profiles.some(p => p.id === addId) || inputs.some(i => i.id === addId)} onclick={() => { inputs = [...inputs, { id: addId, weight: 50 }]; push(); addId = profiles.find(p => !inputs.some(i => i.id === p.id))?.id ?? 0; }}>{ru.vlAdd}</button>
 {#each inputs as input (input.id)}
 <div class="card"><p>{profiles.find(p => p.id === input.id)?.name}</p>
-<label>{ru.vlWeight}<input data-weight type="range" min="0" max="100" step="1" value={input.weight} oninput={e => { input.weight = e.currentTarget.valueAsNumber; push(); }} /></label>
-<label>{ru.vlWeight}<input data-weight type="number" min="0" max="100" step="1" value={input.weight} oninput={e => { input.weight = e.currentTarget.valueAsNumber; push(); }} /></label>
+<label>{ru.vlWeight}<input data-weight aria-label={`${ru.vlWeight}: ${profiles.find(p => p.id === input.id)?.name}`} type="range" min="0" max="100" step="1" value={input.weight} oninput={e => { input.weight = e.currentTarget.valueAsNumber; }} onchange={push} /></label>
+<label>{ru.vlWeight}<input data-weight aria-label={`${ru.vlWeight}: ${profiles.find(p => p.id === input.id)?.name}`} type="number" min="0" max="100" step="1" value={input.weight} oninput={e => { input.weight = e.currentTarget.valueAsNumber; }} onchange={push} /></label>
 <p class="muted">{ru.vlShare}: {sum > 0 ? (100 * input.weight / sum).toFixed(1) : '0'}%</p>
 <button onclick={() => { inputs = inputs.filter(i => i.id !== input.id); push(); addId = input.id; }}>{ru.remove}</button></div>{/each}
 <div class="actions"><button disabled={!canUndo} onclick={undo}>{ru.vlUndo}</button><button disabled={!canRedo} onclick={redo}>{ru.vlRedo}</button></div>
