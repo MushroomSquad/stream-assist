@@ -384,27 +384,26 @@ impl Player {
                 }
             }
             Input::FallbackResolved { item_id, video_id } => {
-                if self.resolving
-                    && self
-                        .current
-                        .as_ref()
-                        .is_some_and(|i| i.id == item_id && !i.started)
-                {
+                if self.resolving && self.current.as_ref().is_some_and(|i| i.id == item_id) {
                     self.resolving = false;
-                    match video_id {
-                        Err(()) => self.schedule(now),
-                        Ok(Some(video_id)) => {
-                            self.current.as_mut().unwrap().track.source =
-                                Source::YouTube { video_id };
-                            self.start(now, &mut a);
-                        }
-                        Ok(None) => {
-                            Self::cancel(
-                                self.current.take().unwrap(),
-                                CancelReason::YtUnavailable,
-                                &mut a,
-                            );
-                            self.next(now, &mut a);
+                    if self.current.as_ref().unwrap().started {
+                        self.next(now, &mut a);
+                    } else {
+                        match video_id {
+                            Err(()) => self.schedule(now),
+                            Ok(Some(video_id)) => {
+                                self.current.as_mut().unwrap().track.source =
+                                    Source::YouTube { video_id };
+                                self.start(now, &mut a);
+                            }
+                            Ok(None) => {
+                                Self::cancel(
+                                    self.current.take().unwrap(),
+                                    CancelReason::YtUnavailable,
+                                    &mut a,
+                                );
+                                self.next(now, &mut a);
+                            }
                         }
                     }
                 }
@@ -548,7 +547,7 @@ impl Player {
                         a.push(Action::ResolveFallback(
                             self.current.as_ref().unwrap().clone(),
                         ));
-                    } else {
+                    } else if !self.fallback {
                         self.play_spotify(&mut a);
                     }
                     self.schedule(now);
@@ -921,22 +920,86 @@ mod tests {
     }
 
     #[test]
-    fn fallback_resolved_ignored_for_started_item() {
-        for video_id in [None, Some("late".into())] {
-            let mut p = playing(false);
-            p.resolving = true;
+    fn tick_while_resolving_in_fallback_does_not_play_spotify() {
+        for recover_before_result in [false, true] {
+            let mut p = fallback();
+            p.step(
+                Input::FallbackResolved {
+                    item_id: 2,
+                    video_id: Err(()),
+                },
+                60001,
+            );
+            p.step(Input::Tick, 62001);
+            assert!(p.fallback && p.resolving);
             let before = p.snapshot();
+            let actions = p.step(Input::Tick, 66001);
+            assert!(actions.is_empty());
+            assert_eq!(p.snapshot(), before);
+            assert_eq!(p.retry_at, Some(74001));
+            if recover_before_result {
+                p.step(Input::Spotify(Ok(None)), 66002);
+                assert!(!p.fallback && !p.resolving);
+            }
             let actions = p.step(
                 Input::FallbackResolved {
-                    item_id: 1,
-                    video_id: Ok(video_id),
+                    item_id: 2,
+                    video_id: Ok(None),
                 },
-                1,
+                66003,
             );
-            no_cancel(&actions);
-            assert!(!has(&actions, |a| matches!(a, Action::YtPlay { .. })));
-            assert_eq!(p.snapshot(), before);
-            assert_eq!(p.mode(), Mode::Playing);
+            if recover_before_result {
+                no_cancel(&actions);
+                assert_eq!(p.snapshot(), before);
+                assert!(has(&p.step(Input::Tick, 74001), |a| matches!(
+                    a,
+                    Action::SpotifyPlay { item_id: 2, .. }
+                )));
+                p.step(
+                    Input::PlayResult {
+                        item_id: 2,
+                        result: Ok(()),
+                    },
+                    74002,
+                );
+                assert!(p.snapshot().0.unwrap().started);
+            } else {
+                assert!(has(&actions, |a| matches!(
+                    a, Action::Cancel(i, CancelReason::YtUnavailable) if i.id == 2 && !i.started
+                )));
+                assert_eq!(p.mode(), Mode::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_resolved_ignored_for_started_item() {
+        for video_id in [Ok(None), Ok(Some("late".into())), Err(())] {
+            for queued in [false, true] {
+                let mut p = playing(false);
+                if queued {
+                    p.step(Input::Enqueue(item(2, false)), 0);
+                }
+                p.resolving = true;
+                let actions = p.step(
+                    Input::FallbackResolved {
+                        item_id: 1,
+                        video_id: video_id.clone(),
+                    },
+                    1,
+                );
+                no_cancel(&actions);
+                assert!(!has(&actions, |a| matches!(a, Action::YtPlay { .. })));
+                assert!(!p.resolving);
+                assert_eq!(p.snapshot().0, queued.then(|| item(2, false)));
+                assert_eq!(p.mode(), if queued { Mode::Starting } else { Mode::Idle });
+                if queued {
+                    assert!(has(&actions, |a| matches!(
+                        a,
+                        Action::SpotifyPlay { item_id: 2, .. }
+                    )));
+                }
+            }
         }
     }
 
@@ -1315,7 +1378,6 @@ mod tests {
         no_cancel(&p.step(Input::Remove(2), 1));
         p.step(Input::Enqueue(queued), 2);
         p.step(Input::Spotify(Err(())), 60000);
-        let before = p.snapshot();
         no_cancel(&p.step(
             Input::FallbackResolved {
                 item_id: 2,
@@ -1323,8 +1385,9 @@ mod tests {
             },
             60001,
         ));
-        assert_eq!(p.snapshot(), before);
-        assert_eq!(p.mode(), Mode::Starting);
+        assert_eq!(p.snapshot().0, None);
+        assert!(!p.resolving);
+        assert_eq!(p.mode(), Mode::Idle);
     }
 
     #[test]
