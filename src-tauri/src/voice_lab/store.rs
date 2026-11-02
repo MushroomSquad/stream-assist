@@ -303,6 +303,11 @@ impl Store {
         self.render(self.conn.last_insert_rowid())
     }
 
+    pub(super) fn rollback_render(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM renders WHERE id=?1", [id])?;
+        Ok(())
+    }
+
     pub fn render_path(&self, id: i64) -> PathBuf {
         self.root.join(format!("renders/{id}.wav"))
     }

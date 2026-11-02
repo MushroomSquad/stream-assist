@@ -101,3 +101,80 @@ fn preset_row_norms() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+fn real_worker(
+    req: stream_assist_lib::voice_lab::worker::WorkerRequest,
+) -> Vec<stream_assist_lib::voice_lab::worker::WorkerEvent> {
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+    };
+    use stream_assist_lib::voice_lab::worker::WorkerEvent;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("request.json");
+    std::fs::write(&path, serde_json::to_vec(&req).unwrap()).unwrap();
+    let t = Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_stream-assist"))
+        .arg("--vl-worker")
+        .arg(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _stdin = child.stdin.take().unwrap();
+    let events: Vec<WorkerEvent> = BufReader::new(child.stdout.take().unwrap())
+        .lines()
+        .map(Result::unwrap)
+        .filter_map(|l| serde_json::from_str(&l).ok())
+        .collect();
+    let status = child.wait().unwrap();
+    println!("worker_wall_s={:.3}", t.elapsed().as_secs_f64());
+    assert!(status.success(), "{status}: {events:?}");
+    assert!(matches!(events.last(), Some(WorkerEvent::Done { .. })));
+    events
+}
+#[test]
+#[ignore = "requires real model"]
+fn worker_synth_real() {
+    use stream_assist_lib::voice_lab::{store::RenderParams, worker::*};
+    let d = tempfile::tempdir().unwrap();
+    let root = model_dir();
+    let out = d.path().join("out.wav");
+    let events = real_worker(WorkerRequest::Synth {
+        model_dir: root.clone(),
+        style: root.join("voice_styles/M1.json"),
+        out_wav: out.clone(),
+        params: RenderParams {
+            text: "Hello! This is a worker synthesis test.".into(),
+            lang: "en".into(),
+            speed: 1.0,
+            quality: 8,
+        },
+    });
+    let wav = hound::WavReader::open(out).unwrap();
+    assert_eq!(wav.spec().sample_rate, 44100);
+    assert!(wav.duration() > 44100);
+    println!("{events:?}");
+}
+#[test]
+#[ignore = "requires real model and English reference WAV"]
+fn worker_clone_fast_real() {
+    use stream_assist_lib::voice_lab::{style::read_style_file, worker::*};
+    let d = tempfile::tempdir().unwrap();
+    let out = d.path().join("out.json");
+    let events = real_worker(WorkerRequest::Clone {
+        model_dir: model_dir(),
+        reference_wav: std::env::var_os("SUPERTONIC_REF_WAV")
+            .expect("SUPERTONIC_REF_WAV")
+            .into(),
+        out_style: out.clone(),
+        language: "en".into(),
+        transcript: std::env::var("SUPERTONIC_REF_TEXT").ok(),
+        preset: ClonePreset::Fast,
+        seed: 42,
+        speaker_model: None,
+    });
+    read_style_file(&out).unwrap();
+    println!("final_event={:?}", events.last());
+}
