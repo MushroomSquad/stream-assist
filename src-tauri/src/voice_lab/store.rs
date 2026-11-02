@@ -12,7 +12,7 @@ use supertonic3_tts::Style;
 use super::{
     VlError, err,
     mixer::Recipe,
-    style::{canonical_bytes, read_style_file, sha256_hex},
+    style::{canonical_bytes, parse_style, read_style_bytes, sha256_hex},
 };
 
 type Result<T> = std::result::Result<T, VlError>;
@@ -82,13 +82,14 @@ impl Store {
         ] {
             fs::create_dir_all(root.join(sub))?;
         }
-        for entry in fs::read_dir(root.join("tmp"))? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                fs::remove_dir_all(entry.path())?;
+        // Best effort: a file still held by a dying worker must not block startup.
+        for entry in fs::read_dir(root.join("tmp"))?.flatten() {
+            let path = entry.path();
+            let _ = if path.is_dir() {
+                fs::remove_dir_all(path)
             } else {
-                fs::remove_file(entry.path())?;
-            }
+                fs::remove_file(path)
+            };
         }
         let conn = Connection::open(root.join("voice-lab.db"))?;
         conn.execute_batch("PRAGMA foreign_keys=ON;
@@ -240,11 +241,11 @@ impl Store {
     pub fn load_style(&self, id: i64) -> Result<Style> {
         let profile = self.profile(id)?;
         let path = self.profile_path(&profile);
-        let style = read_style_file(&path)?;
-        if sha256_hex(&fs::read(path)?) != profile.style_sha256 {
+        let bytes = read_style_bytes(&path)?;
+        if sha256_hex(&bytes) != profile.style_sha256 {
             return Err(err("PROFILE_HASH_MISMATCH"));
         }
-        Ok(style)
+        parse_style(&bytes)
     }
 
     pub fn profile_path(&self, profile: &Profile) -> PathBuf {

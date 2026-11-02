@@ -46,6 +46,11 @@ pub fn parse_style(bytes: &[u8]) -> Result<Style, VlError> {
 }
 
 pub fn read_style_file(path: &Path) -> Result<Style, VlError> {
+    parse_style(&read_style_bytes(path)?)
+}
+
+/// Reads at most `MAX_STYLE_BYTES + 1` bytes of a style file.
+pub fn read_style_bytes(path: &Path) -> Result<Vec<u8>, VlError> {
     let mut file = std::fs::File::open(path)?;
     if file.metadata()?.len() > MAX_STYLE_BYTES {
         return Err(err("STYLE_TOO_LARGE"));
@@ -56,7 +61,7 @@ pub fn read_style_file(path: &Path) -> Result<Style, VlError> {
     (&mut file)
         .take(MAX_STYLE_BYTES + 1)
         .read_to_end(&mut bytes)?;
-    parse_style(&bytes)
+    Ok(bytes)
 }
 
 pub fn canonical_bytes(style: &Style) -> Vec<u8> {
