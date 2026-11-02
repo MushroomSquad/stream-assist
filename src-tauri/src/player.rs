@@ -104,6 +104,7 @@ pub struct Player {
     last_ok: Option<i64>,
     fallback: bool,
     resolving: bool,
+    needs_unmute: bool,
     retry_at: Option<i64>,
     retry_index: usize,
     warning: Option<String>,
@@ -123,6 +124,7 @@ impl Player {
             last_ok: None,
             fallback: false,
             resolving: false,
+            needs_unmute: false,
             retry_at: None,
             retry_index: 0,
             warning: None,
@@ -193,6 +195,7 @@ impl Player {
         self.retry_at = None;
         self.retry_index = 0;
         self.resolving = false;
+        self.needs_unmute = false;
         let Some(i) = self.current.as_ref() else {
             self.mode = Mode::Idle;
             return;
@@ -294,6 +297,10 @@ impl Player {
                         self.anchor = now;
                         self.mode = Mode::Playing;
                     }
+                    if self.yt() && !pause && self.needs_unmute {
+                        a.push(Action::YtUnmute);
+                        self.needs_unmute = false;
+                    }
                     a.push(match (self.yt(), pause) {
                         (true, true) => Action::YtPause,
                         (true, false) => Action::YtResume,
@@ -308,6 +315,7 @@ impl Player {
                     && !self.resolving
                 {
                     match result {
+                        Ok(()) if self.mode == Mode::Playing => {}
                         Ok(()) => self.confirmed(now, &mut a),
                         Err(e) => {
                             if e == PlayError::NoDevice {
@@ -326,6 +334,7 @@ impl Player {
                 if self.yt() && self.current.as_ref().is_some_and(|i| i.id == item_id) {
                     match ev {
                         YtEvent::Started { duration_ms: _ } if self.mode == Mode::Paused => {
+                            self.needs_unmute = true;
                             a.push(Action::YtPause)
                         }
                         YtEvent::Started { duration_ms } => {
@@ -341,14 +350,14 @@ impl Player {
                                 self.current.as_mut().unwrap().track.duration_ms =
                                     Some(duration_ms);
                                 // Reconnect acknowledgements preserve the existing clock.
+                                self.needs_unmute = false;
                                 a.push(Action::YtUnmute);
                                 if self.mode == Mode::Starting {
                                     self.confirmed(now, &mut a);
                                 }
                             }
                         }
-                        YtEvent::Ended => self.next(now, &mut a),
-                        YtEvent::Error => {
+                        YtEvent::Ended | YtEvent::Error => {
                             Self::cancel(
                                 self.current.take().unwrap(),
                                 CancelReason::YtUnavailable,
@@ -419,26 +428,36 @@ impl Player {
                 }
                 if self.current.is_some()
                     && !self.yt()
-                    && matches!(self.mode, Mode::Playing | Mode::Paused | Mode::Suspended)
+                    && matches!(
+                        self.mode,
+                        Mode::Starting | Mode::Playing | Mode::Paused | Mode::Suspended
+                    )
                 {
                     match result {
                         Err(()) => {
-                            if self.mode == Mode::Playing
+                            if !self.resolving
                                 && now.saturating_sub(self.last_ok.unwrap_or(now)) >= OUTAGE_MS
-                                && self.progress(now) >= self.duration()
+                                && (self.mode == Mode::Starting
+                                    || (self.mode == Mode::Playing
+                                        && self.progress(now) >= self.duration()))
                             {
                                 self.fallback = true;
                                 self.warn(
                                     Some("Spotify: недоступен, переход на YouTube".into()),
                                     &mut a,
                                 );
-                                self.next(now, &mut a);
+                                if self.mode == Mode::Starting {
+                                    self.start(now, &mut a);
+                                } else {
+                                    self.next(now, &mut a);
+                                }
                             }
                         }
-                        Ok(snapshot) if self.mode != Mode::Suspended => {
+                        Ok(snapshot) if matches!(self.mode, Mode::Playing | Mode::Paused) => {
                             let own=snapshot.as_ref().is_some_and(|s|matches!(&self.current.as_ref().unwrap().track.source,Source::Spotify{uri} if s.track_uri.as_ref()==Some(uri)));
-                            let near = self.last_progress
-                                >= self.duration().saturating_sub(END_TOLERANCE_MS + POLL_MS);
+                            let near = self.duration() > END_TOLERANCE_MS + POLL_MS
+                                && self.progress(now)
+                                    >= self.duration() - (END_TOLERANCE_MS + POLL_MS);
                             if let Some(s) = &snapshot {
                                 if s.device_id.is_some() {
                                     self.last_device = s.device_id.clone();
@@ -451,8 +470,9 @@ impl Player {
                                 self.current.as_mut().unwrap().track.duration_ms =
                                     Some(s.duration_ms);
                                 if !s.is_playing
-                                    && s.progress_ms
+                                    && (s.progress_ms
                                         >= s.duration_ms.saturating_sub(END_TOLERANCE_MS)
+                                        || (s.progress_ms < END_TOLERANCE_MS && near))
                                 {
                                     self.next(now, &mut a);
                                 } else if s.device_id.is_none()
@@ -1275,5 +1295,151 @@ mod tests {
         assert_eq!(p.mode(), Mode::Idle);
         let mut p = playing(false);
         assert!(p.step(Input::YtPlayerConnected, 10000).is_empty());
+    }
+    #[test]
+    fn own_uri_progress_reset_after_end_is_end() {
+        for queued in [false, true] {
+            let mut p = playing(false);
+            if queued {
+                p.step(Input::Enqueue(item(2, false)), 0);
+            }
+            p.step(snap("s1", true, 54000), 54000);
+            let a = p.step(snap("s1", false, 0), 55000);
+            no_cancel(&a);
+            assert_eq!(p.mode(), if queued { Mode::Starting } else { Mode::Idle });
+            assert_eq!(
+                p.snapshot().0.map(|i| i.id),
+                if queued { Some(2) } else { None }
+            );
+        }
+    }
+
+    #[test]
+    fn outage_during_starting_triggers_fallback() {
+        for failed in [false, true] {
+            let mut p = setup(false);
+            if failed {
+                p.step(
+                    Input::PlayResult {
+                        item_id: 1,
+                        result: Err(PlayError::Net),
+                    },
+                    0,
+                );
+            }
+            assert!(p.step(Input::Spotify(Err(())), OUTAGE_MS - 1).is_empty());
+            let a = p.step(Input::Spotify(Err(())), OUTAGE_MS);
+            assert!(has(&a, |a| matches!(a, Action::Warn(Some(_)))));
+            assert!(has(
+                &a,
+                |a| matches!(a, Action::ResolveFallback(i) if i.id == 1)
+            ));
+            no_cancel(&a);
+            assert!(!p.snapshot().0.unwrap().started);
+            assert_eq!(p.retry_at, None);
+            assert!(p.step(Input::Spotify(Err(())), OUTAGE_MS + 1).is_empty());
+        }
+    }
+
+    #[test]
+    fn resume_after_paused_reconnect_unmutes() {
+        let mut p = playing(true);
+        p.step(Input::TogglePause, 10000);
+        p.step(Input::YtPlayerConnected, 20000);
+        assert_eq!(
+            p.step(
+                Input::Yt {
+                    item_id: 1,
+                    ev: YtEvent::Started { duration_ms: 60000 }
+                },
+                20001
+            ),
+            vec![Action::YtPause]
+        );
+        let a = p.step(Input::TogglePause, 30000);
+        assert!(has(&a, |a| matches!(a, Action::YtResume)));
+        assert!(has(&a, |a| matches!(a, Action::YtUnmute)));
+        assert_eq!(p.progress(31000), 11000);
+        p.step(Input::TogglePause, 32000);
+        assert!(!has(&p.step(Input::TogglePause, 33000), |a| matches!(
+            a,
+            Action::YtUnmute
+        )));
+    }
+
+    #[test]
+    fn yt_ended_before_start_cancels() {
+        for started in [false, true] {
+            let mut p = if started {
+                restored(true).0
+            } else {
+                setup(true)
+            };
+            p.step(Input::Enqueue(item(2, false)), 0);
+            let a = p.step(
+                Input::Yt {
+                    item_id: 1,
+                    ev: YtEvent::Ended,
+                },
+                1,
+            );
+            assert_eq!(
+                has(
+                    &a,
+                    |a| matches!(a, Action::Cancel(i, CancelReason::YtUnavailable) if i.id == 1)
+                ),
+                !started
+            );
+            assert!(has(&a, |a| matches!(
+                a,
+                Action::SpotifyPlay { item_id: 2, .. }
+            )));
+        }
+    }
+
+    #[test]
+    fn unknown_duration_not_treated_as_end() {
+        for duration in [None, Some(0), Some(END_TOLERANCE_MS + POLL_MS)] {
+            for foreign in [false, true] {
+                let mut p = playing(false);
+                p.current.as_mut().unwrap().track.duration_ms = duration;
+                let input = if foreign {
+                    snap("foreign", true, 0)
+                } else {
+                    Input::Spotify(Ok(None))
+                };
+                let a = p.step(input, 6000);
+                assert_eq!(p.snapshot().0.unwrap().id, 1);
+                assert_eq!(
+                    p.mode(),
+                    if foreign {
+                        Mode::Suspended
+                    } else {
+                        Mode::Playing
+                    }
+                );
+                no_cancel(&a);
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_play_ok_ignored() {
+        let mut p = playing(false);
+        p.step(snap("s1", true, 10000), 10000);
+        let progress = p.progress(15000);
+        let confirmed_at = p.confirmed_at;
+        assert!(
+            p.step(
+                Input::PlayResult {
+                    item_id: 1,
+                    result: Ok(())
+                },
+                15000
+            )
+            .is_empty()
+        );
+        assert_eq!(p.progress(15000), progress);
+        assert_eq!(p.confirmed_at, confirmed_at);
     }
 }
