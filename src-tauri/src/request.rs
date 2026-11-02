@@ -41,7 +41,7 @@ pub fn parse_request(input: &str) -> RequestInput {
                     }
                 }
             }
-            Some("youtube.com" | "www.youtube.com" | "music.youtube.com") => {
+            Some("youtube.com" | "www.youtube.com" | "music.youtube.com" | "m.youtube.com") => {
                 if url.path() == "/watch" {
                     if let Some((_, id)) = url
                         .query_pairs()
@@ -89,6 +89,10 @@ mod tests {
         );
         assert_eq!(
             parse_request("https://music.youtube.com/watch?v=dQw4w9WgXcQ"),
+            YouTube("dQw4w9WgXcQ".into())
+        );
+        assert_eq!(
+            parse_request("https://m.youtube.com/watch?v=dQw4w9WgXcQ"),
             YouTube("dQw4w9WgXcQ".into())
         );
         assert_eq!(parse_request("  "), Empty);

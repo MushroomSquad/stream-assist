@@ -29,6 +29,8 @@ pub enum LimitViolation {
     Blocked,
 }
 
+/// Checks limits with `recent` ordered oldest to newest; only its last
+/// `no_repeat_last_n` entries are considered for recent repeats.
 pub fn check(
     l: &Limits,
     t: &Track,
@@ -67,7 +69,7 @@ pub fn check(
     let description = format!("{} — {}", t.artist, t.title).to_lowercase();
     if l.blocklist
         .iter()
-        .any(|entry| description.contains(&entry.to_lowercase()))
+        .any(|entry| !entry.trim().is_empty() && description.contains(&entry.to_lowercase()))
     {
         return Err(LimitViolation::Blocked);
     }
@@ -263,6 +265,14 @@ mod tests {
             check(&Limits::default(), &t, "viewer", &[], None, &[]),
             Ok(())
         );
+    }
+    #[test]
+    fn blocklist_ignores_blank_entries() {
+        let l = Limits {
+            blocklist: vec!["".into(), "  ".into()],
+            ..Limits::default()
+        };
+        assert_eq!(check(&l, &track(), "viewer", &[], None, &[]), Ok(()));
     }
     #[test]
     fn blocklist_case_insensitive() {
