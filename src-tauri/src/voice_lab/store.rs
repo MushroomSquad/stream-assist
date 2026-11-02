@@ -147,6 +147,11 @@ impl Store {
         self.source(self.conn.last_insert_rowid())
     }
 
+    pub(crate) fn rollback_source(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM sources WHERE id=?1", [id])?;
+        Ok(())
+    }
+
     pub fn source_peaks(&self, id: i64) -> Result<Vec<f32>> {
         let json: String = self
             .conn

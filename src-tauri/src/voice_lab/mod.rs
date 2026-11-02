@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod mixer;
 pub mod models;
 pub mod store;
