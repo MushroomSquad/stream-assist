@@ -3,6 +3,8 @@ pub mod limits;
 pub mod model;
 pub mod request;
 pub mod router;
+pub mod secrets;
+pub mod spotify;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
