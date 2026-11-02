@@ -1,7 +1,56 @@
-# Tauri + SvelteKit + TypeScript
+# Stream Assist
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+Stream Assist — настольное приложение для заказа музыки за баллы канала Twitch.
+Треки идут через собственную очередь приложения и воспроизводятся в Spotify
+стримера или через YouTube в браузерном источнике OBS. Панель позволяет управлять
+очередью, наградой, лимитами и темами виджета. Приложение использует Tauri v2,
+Rust и SvelteKit.
 
-## Recommended IDE Setup
+## Сборка
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+Нужны Node.js с npm, Rust и системные зависимости Tauri v2 для вашей ОС
+(на Linux — в том числе WebKitGTK 4.1 и инструменты сборки).
+
+1. Зарегистрируйте приложение в [Twitch Developer Console](https://dev.twitch.tv/console/apps).
+   Выберите Client Type **Public**. Вход в Stream Assist использует **Device Code Flow**
+   без Client Secret.
+2. Установите зависимости и соберите приложение, подставив Client ID Twitch:
+
+   ```sh
+   npm ci
+   TWITCH_CLIENT_ID=… npm run tauri build
+   ```
+
+   Переменная задаётся при сборке: Client ID встраивается в Rust-приложение.
+   Значение `dummy` подходит только для проверки сборки, вход в Twitch с ним не работает.
+3. Пакеты сборки находятся в `src-tauri/target/release/bundle/`.
+   Для разработки: `TWITCH_CLIENT_ID=… npm run tauri dev`.
+
+## Подключение
+
+- **Twitch:** в разделе «Подключения» начните вход и подтвердите код в браузере.
+  Настройте название, стоимость и кулдаун музыкальной награды в разделе «Награды».
+- **Spotify:** создайте своё приложение в [Spotify Dashboard](https://developer.spotify.com/dashboard),
+  добавьте Redirect URI `http://127.0.0.1:47821/callback/spotify`, вставьте Client ID
+  в панель и войдите. Используется PKCE без Client Secret. Для воспроизведения
+  нужен **Spotify Premium** и доступное устройство Spotify. Выключите
+  «Автовоспроизведение» в Spotify.
+- **Linux:** для хранения токенов нужен работающий **Secret Service** —
+  например, gnome-keyring или KWallet с поддержкой Secret Service.
+  Refresh-токены сохраняются в системном хранилище ключей.
+- **OBS:** включите сервер OBS WebSocket, укажите его хост, порт и пароль
+  в «Подключениях». В разделе «Виджет» нажмите «Добавить в OBS» или добавьте
+  браузерный источник вручную по URL `http://127.0.0.1:47821/widget/music`.
+  YouTube-треки играют через браузерный источник OBS: включите для него
+  мониторинг звука («Мониторинг и вывод»). Кнопка «Добавить в OBS» настраивает
+  его автоматически. Превью в панели звук YouTube не воспроизводит.
+- **YouTube:** прямые ссылки работают без API-ключа; необязательный YouTube API key
+  в «Подключениях» нужен для поиска запасного трека, когда Spotify недоступен.
+
+Сервер виджета слушает только `127.0.0.1`, по умолчанию порт `47821`.
+Изменение порта в разделе «Виджет» применяется **после перезапуска программы**.
+После перезапуска обновите URL источника в OBS (или нажмите «Добавить в OBS»)
+и Redirect URI в настройках своего приложения Spotify.
+
+Встроенные темы: `underground`, `glass`, `crt`, `block`.
+Создание и импорт своих тем описаны в [docs/themes.md](docs/themes.md).

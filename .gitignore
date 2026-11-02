@@ -5,7 +5,6 @@ target/
 dist/
 
 .DS_Store
-node_modules
 /build
 /.svelte-kit
 /package
@@ -17,5 +16,3 @@ vite.config.ts.timestamp-*
 
 src-tauri/target/
 src-tauri/gen/
-build/
-.svelte-kit/
