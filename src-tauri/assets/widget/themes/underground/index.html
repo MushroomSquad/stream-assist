@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stream Assist — Underground</title>
+<link rel="stylesheet" href="/widget/theme/underground/style.css"></head>
+<body><main id="widget" hidden>
+<section class="qp"><div class="h"><span>Очередь</span><span id="count">0</span></div><div id="queue"></div></section>
+<section class="np"><div class="disc"><span id="note">♪</span><img id="cover" alt="Обложка" hidden></div><div class="box">
+<div class="a" id="artist"></div><div class="t" id="title"></div><div class="by" id="requester"></div>
+<div class="prog"><i id="progress"></i></div><div class="tab">MUSIC</div></div></section></main>
+<script src="/widget/sdk.js"></script><script>
+const el = id => document.getElementById(id);
+StreamAssist.on('state', state => {
+  el('widget').hidden = !state.visible;
+  const now = state.now;
+  el('artist').textContent = now?.track.artist || '';
+  el('title').textContent = now ? '"' + now.track.title + '"' : '';
+  el('requester').textContent = now ? 'Заказал: ' + now.requester : '';
+  const cover = el('cover'), url = now?.track.cover_url;
+  cover.hidden = !url; el('note').hidden = !!url;
+  cover.onerror = () => { cover.hidden = true; el('note').hidden = false; };
+  if (url && cover.getAttribute('src') !== url) cover.src = url;
+  if (!url) cover.removeAttribute('src');
+  el('progress').style.width = Math.min(100, Math.max(0, state.progress_ms / (now?.track.duration_ms || Infinity) * 100)) + '%';
+  el('count').textContent = state.queue.length;
+  el('queue').replaceChildren(...state.queue.map((item, index) => {
+    const row = document.createElement('div'); row.className = 'r';
+    const number = document.createElement('span'); number.className = 'n'; number.textContent = index + 1;
+    const track = document.createElement('span'); track.textContent = item.track.artist + ' — ' + item.track.title;
+    const user = document.createElement('small'); user.textContent = item.requester; track.append(user); row.append(number, track); return row;
+  }));
+});
+</script></body></html>

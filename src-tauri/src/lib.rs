@@ -5,6 +5,7 @@ pub mod player;
 pub mod request;
 pub mod router;
 pub mod secrets;
+pub mod server;
 pub mod spotify;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
