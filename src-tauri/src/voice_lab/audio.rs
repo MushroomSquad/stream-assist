@@ -170,8 +170,8 @@ pub fn import(
             }
         };
         if let Err(e) = fs::rename(&tmp, s.source_work_path(source.id)) {
-            s.rollback_source(source.id)?;
             let _ = fs::remove_file(&original);
+            let _ = s.rollback_source(source.id);
             return Err(e.into());
         }
         Ok(source)
@@ -190,8 +190,9 @@ pub fn load_mono(wav: &Path) -> Result<Vec<f32>, VlError> {
 pub fn peaks(samples: &[f32], n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
-            let start = i * samples.len() / n;
-            let end = (i + 1) * samples.len() / n;
+            let len = samples.len() as u64;
+            let start = (i as u64 * len / n as u64) as usize;
+            let end = ((i as u64 + 1) * len / n as u64) as usize;
             samples[start..end]
                 .iter()
                 .fold(0.0f32, |p, x| p.max(x.abs()))
