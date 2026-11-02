@@ -1,5 +1,6 @@
 pub mod mixer;
 pub mod models;
+pub mod store;
 pub mod style;
 
 #[derive(Debug, thiserror::Error)]
