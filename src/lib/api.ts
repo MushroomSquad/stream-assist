@@ -9,10 +9,10 @@ export interface WidgetState { visible: boolean; now: QueueItem | null; queue: Q
 export interface Settings { limits: { max_duration_ms: number | null; no_repeat_last_n: number; max_per_user_in_queue: number | null; block_explicit: boolean; blocklist: string[] }; reward_title: string; reward_cost: number; reward_cooldown_s: number; port: number; active_theme: string; youtube_api_key: string | null; obs: { host: string; port: number; password: string | null }; music_reward_id: string | null; spotify_client_id: string | null }
 export interface ThemeMeta { id: string; name: string; author: string; width: number; height: number }
 export interface DeviceStart { user_code: string; verification_uri: string; interval: number; expires_in: number }
-export interface SpotifyStatus { connected: boolean; premium: boolean }
+export interface SpotifyStatus { connected: boolean; premium: boolean | null }
 export const emptyState: WidgetState = { visible: false, now: null, queue: [], progress_ms: 0, mode: 'Idle', warning: null };
 export const defaultSettings: Settings = { limits: { max_duration_ms: 420000, no_repeat_last_n: 10, max_per_user_in_queue: 2, block_explicit: false, blocklist: [] }, reward_title: ru.rewardDefault, reward_cost: 500, reward_cooldown_s: 0, port: 47821, active_theme: 'underground', youtube_api_key: null, obs: { host: 'localhost', port: 4455, password: null }, music_reward_id: null, spotify_client_id: null };
-function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : Promise.reject(new Error(ru.browser)); }
+function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : Promise.reject(new Error('browser')); }
 export const get_state = () => isTauri() ? call<WidgetState>('get_state') : Promise.resolve(emptyState);
 export const get_settings = () => isTauri() ? call<Settings>('get_settings') : Promise.resolve(structuredClone(defaultSettings));
 export const skip = () => call<void>('skip');
@@ -33,5 +33,10 @@ export const list_themes = () => isTauri() ? call<ThemeMeta[]>('list_themes') : 
 export const import_theme = (path: string) => call<string>('import_theme', { path });
 export const widget_test = () => call<void>('widget_test');
 export const onState = (callback: (s: WidgetState) => void) => isTauri() ? listen<WidgetState>('state', e => callback(e.payload)) : Promise.resolve(() => {});
-export const openExternal = (url: string) => isTauri() ? openUrl(url) : Promise.reject(new Error(ru.browser));
-export const chooseTheme = () => isTauri() ? open({ multiple: false, directory: false, filters: [{ name: ru.zip, extensions: ['zip'] }] }) : Promise.reject(new Error(ru.browser));
+export const openExternal = (url: string) => isTauri() ? openUrl(url) : Promise.reject(new Error('browser'));
+export const chooseTheme = () => isTauri() ? open({ multiple: false, directory: false, filters: [{ name: ru.zip, extensions: ['zip'] }] }) : Promise.reject(new Error('browser'));
+
+export const running_port = () => isTauri() ? call<number>("running_port") : Promise.resolve(defaultSettings.port);
+export const twitch_status = () => call<boolean>("twitch_status");
+
+export const spotify_volume = () => isTauri() ? call<number | null>("spotify_volume") : Promise.resolve(null);

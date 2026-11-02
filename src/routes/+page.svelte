@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from 'svelte';
 import * as api from '$lib/api';
-import { ru } from '$lib/i18n/ru';
+import { ru, errorText } from '$lib/i18n/ru';
 import NowQueue from '$lib/views/NowQueue.svelte';
 import Rewards from '$lib/views/Rewards.svelte';
 import Limits from '$lib/views/Limits.svelte';
@@ -13,12 +13,12 @@ let settings = $state<api.Settings>(structuredClone(api.defaultSettings));
 let themes = $state<api.ThemeMeta[]>([]);
 let ready = $state(false);
 let message = $state('');
-let savedPort = 47821;
+let runningPort = $state(47821);
 const tabs = ['now', 'rewards', 'limits', 'widget', 'connections'] as const;
-async function run(f: () => Promise<unknown>) { message = ''; try { await f(); } catch (e) { message = e instanceof Error ? e.message : typeof e === 'string' ? e : ru.error; } }
+async function run(f: () => Promise<unknown>) { message = ''; try { await f(); } catch (e) { message = errorText(e); } }
 async function refreshThemes() { themes = await api.list_themes(); }
-async function load() { await run(async () => { settings = await api.get_settings(); savedPort = settings.port; await refreshThemes(); ready = true; }); }
-function save() { void run(async () => { await api.save_settings($state.snapshot(settings)); message = ru.saved; if (settings.port !== savedPort) { message = ru.portWarning; tab = 'connections'; savedPort = settings.port; } }); }
+async function load() { await run(async () => { settings = await api.get_settings(); runningPort = await api.running_port(); await refreshThemes(); ready = true; }); }
+function save() { void run(async () => { await api.save_settings($state.snapshot(settings)); message = ru.saved; if (settings.port !== runningPort) { message = ru.portWarning;  } }); }
 onMount(() => {
   let disposed = false;
   let unlisten = () => {};
@@ -35,8 +35,8 @@ onMount(() => {
 {:else if !ready}<p>{ru.settingsLoading}</p><button onclick={load}>{ru.reload}</button>
 {:else if tab === 'rewards'}<Rewards {settings} {save} />
 {:else if tab === 'limits'}<Limits {settings} {save} />
-{:else if tab === 'widget'}<Widget {settings} {themes} {save} {run} {refreshThemes} />
-{:else}<Connections {settings} {save} {run} />{/if}
+{:else if tab === 'widget'}<Widget {runningPort} {settings} {themes} {save} {run} {refreshThemes} />
+{:else}<Connections {runningPort} {settings} {save} {run} />{/if}
 </main>
 <style>
 :global(:root){font-family:system-ui,sans-serif;color:#24312e;background:#f5f6f5;font-synthesis:none;color-scheme:light dark;--surface:#fff;--border:#d8dfdc;--muted:#64716c;--accent:#246b55;--notice:#fff3d7}

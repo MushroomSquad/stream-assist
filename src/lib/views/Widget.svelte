@@ -1,8 +1,8 @@
 <script lang="ts">
 import * as api from '$lib/api';
 import { ru } from '$lib/i18n/ru';
-let { settings, themes, save, run, refreshThemes }: { settings: api.Settings; themes: api.ThemeMeta[]; save: () => void; run: (f: () => Promise<unknown>) => void; refreshThemes: () => Promise<void> } = $props();
-const url = $derived(`http://127.0.0.1:${settings.port}/widget/music`);
+let { runningPort, settings, themes, save, run, refreshThemes }: { runningPort: number; settings: api.Settings; themes: api.ThemeMeta[]; save: () => void; run: (f: () => Promise<unknown>) => void; refreshThemes: () => Promise<void> } = $props();
+const url = $derived(`http://127.0.0.1:${runningPort}/widget/music`);
 </script>
 <section><h2>{ru.widget}</h2>
 <label>{ru.theme}<select bind:value={settings.active_theme}>{#each themes as theme}<option value={theme.id}>{theme.name}</option>{/each}</select></label>

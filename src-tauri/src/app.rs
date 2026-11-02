@@ -24,13 +24,7 @@ pub fn save_tokens(key: &'static str, t: &Tokens, app: tauri::AppHandle) {
         .await;
         if !matches!(result, Ok(Ok(()))) {
             if let Some(state) = app.try_state::<AppState>() {
-                let _ = send(
-                    &state,
-                    DriverMsg::Warning(
-                        "Хранилище ключей недоступно: проверьте Secret Service".into(),
-                    ),
-                )
-                .await;
+                let _ = send(&state, DriverMsg::Warning("keyring_unavailable".into())).await;
             }
         }
     });
@@ -88,7 +82,7 @@ pub fn setup(app: &mut tauri::App) -> anyhow::Result<()> {
             .is_err()
         {
             let mut s = state_tx.borrow().clone();
-            s.warning = Some("Не удалось открыть базу или запустить сервер виджета".into());
+            s.warning = Some("startup_failed".into());
             state_tx.send_replace(s.clone());
             let _ = tauri::Emitter::emit(&handle, "state", s);
         }
@@ -120,7 +114,7 @@ async fn start(
             .map(|id| spotify_client(id, t, handle.clone())),
         Ok(None) => None,
         Err(_) => {
-            warning = Some("Хранилище ключей недоступно: проверьте Secret Service".into());
+            warning = Some("keyring_unavailable".into());
             None
         }
     };
@@ -128,7 +122,7 @@ async fn start(
         Ok(Some(t)) => Some(twitch_client(t, handle.clone())),
         Ok(None) => None,
         Err(_) => {
-            warning = Some("Хранилище ключей недоступно: проверьте Secret Service".into());
+            warning = Some("keyring_unavailable".into());
             None
         }
     };
@@ -146,11 +140,11 @@ async fn start(
         state,
     )
     .await?;
+    handle.manage(RunningPort(ws.running_port));
     crate::driver::run(
         DriverCtx {
             db,
             active_theme,
-            themes_dir: dir.join("themes"),
             state_tx,
             ws,
             app: handle,
@@ -232,7 +226,7 @@ async fn send(state: &AppState, msg: DriverMsg) -> Result<(), String> {
         .driver
         .send(msg)
         .await
-        .map_err(|_| "Служба управления недоступна".into())
+        .map_err(|_| "driver_closed".into())
 }
 #[tauri::command]
 pub fn get_state(state: tauri::State<'_, AppState>) -> WidgetState {
@@ -271,20 +265,19 @@ pub async fn set_volume(state: tauri::State<'_, AppState>, pct: u8) -> Result<()
 pub fn get_settings(app: tauri::AppHandle) -> Result<Settings, String> {
     let db = app
         .try_state::<Arc<Mutex<crate::db::Db>>>()
-        .ok_or("Служба запускается")?;
+        .ok_or("starting")?;
     db.lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_setting("settings")
         .map(|s| s.unwrap_or_default())
-        .map_err(|_| "Не удалось прочитать настройки".into())
+        .map_err(|_| "settings_read_failed".into())
 }
 #[tauri::command]
 pub async fn save_settings(state: tauri::State<'_, AppState>, s: Settings) -> Result<(), String> {
     validate_settings(&s)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     send(&state, DriverMsg::SaveSettings(s, tx)).await?;
-    rx.await
-        .map_err(|_| "Служба управления недоступна".to_string())?
+    rx.await.map_err(|_| "driver_closed".to_string())?
 }
 #[derive(Default)]
 pub struct DeviceFlow(
@@ -300,7 +293,7 @@ const SCOPES: &str = "channel:read:redemptions channel:manage:redemptions user:w
 fn twitch_id() -> Result<&'static str, String> {
     option_env!("TWITCH_CLIENT_ID")
         .filter(|s| !s.is_empty())
-        .ok_or("В сборке не задан Twitch Client ID".into())
+        .ok_or("twitch_client_missing".into())
 }
 #[tauri::command]
 pub async fn twitch_login_start(
@@ -311,8 +304,8 @@ pub async fn twitch_login_start(
         crate::twitch::auth::device_start(twitch_id()?, SCOPES, "https://id.twitch.tv"),
     )
     .await
-    .map_err(|_| "Twitch не отвечает")?
-    .map_err(|_| "Не удалось начать вход в Twitch")?;
+    .map_err(|_| "twitch_timeout")?
+    .map_err(|_| "twitch_login_start_failed")?;
     let response = crate::twitch::auth::DeviceStart {
         device_code: String::new(),
         user_code: start.user_code.clone(),
@@ -330,10 +323,10 @@ pub async fn twitch_login_poll(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
     let mut pending = flow.0.lock().await;
-    let (start, created, last) = pending.as_mut().ok_or("Сначала начните вход в Twitch")?;
+    let (start, created, last) = pending.as_mut().ok_or("twitch_login_required")?;
     if created.elapsed().as_secs() >= start.expires_in {
         *pending = None;
-        return Err("Код Twitch истёк".into());
+        return Err("twitch_expired".into());
     }
     if last.elapsed().as_secs() < start.interval {
         return Ok(false);
@@ -349,8 +342,8 @@ pub async fn twitch_login_poll(
         ),
     )
     .await
-    .map_err(|_| "Twitch не отвечает")?
-    .map_err(|_| "Не удалось войти в Twitch")?;
+    .map_err(|_| "twitch_timeout")?
+    .map_err(|_| "twitch_login_failed")?;
     if let Some(tokens) = tokens {
         persist_login("twitch", tokens.clone()).await?;
         send(&state, DriverMsg::TwitchLogin(tokens)).await?;
@@ -363,8 +356,8 @@ pub async fn twitch_login_poll(
 async fn persist_login(key: &'static str, t: Tokens) -> Result<(), String> {
     tokio::task::spawn_blocking(move || crate::secrets::store(key, &serde_json::to_string(&t)?))
         .await
-        .map_err(|_| "Хранилище ключей недоступно")?
-        .map_err(|_| "Хранилище ключей недоступно: проверьте Secret Service".into())
+        .map_err(|_| "keyring_unavailable")?
+        .map_err(|_| "keyring_unavailable".into())
 }
 #[tauri::command]
 pub async fn twitch_logout(
@@ -381,44 +374,47 @@ pub async fn spotify_login(
     client_id: String,
 ) -> Result<String, String> {
     if client_id.trim().is_empty() {
-        return Err("Введите Client ID".into());
+        return Err("client_id_required".into());
     }
-    let mut s = get_settings(app)?;
+    let mut s = get_settings(app.clone())?;
     s.spotify_client_id = Some(client_id.clone());
     let pkce = crate::spotify::new_pkce();
     let url = crate::spotify::authorize_url(
         &client_id,
-        &format!("http://127.0.0.1:{}/callback/spotify", s.port),
+        &format!(
+            "http://127.0.0.1:{}/callback/spotify",
+            running_port(app.clone())?
+        ),
         &pkce,
     );
     let (tx, rx) = tokio::sync::oneshot::channel();
     send(&state, DriverMsg::SaveSettings(s, tx)).await?;
-    rx.await.map_err(|_| "Служба управления недоступна")??;
+    rx.await.map_err(|_| "driver_closed")??;
     send(&state, DriverMsg::SpotifyLoginStart(pkce)).await?;
     Ok(url)
 }
 #[derive(serde::Serialize)]
 pub struct SpotifyStatus {
     pub connected: bool,
-    pub premium: bool,
+    pub premium: Option<bool>,
 }
 #[tauri::command]
 pub async fn spotify_status(state: tauri::State<'_, AppState>) -> Result<SpotifyStatus, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     send(&state, DriverMsg::SpotifyStatus(tx)).await?;
-    rx.await.map_err(|_| "Служба управления недоступна".into())
+    rx.await.map_err(|_| "driver_closed".into())
 }
 #[tauri::command]
 pub async fn obs_check(app: tauri::AppHandle) -> Result<String, String> {
     crate::obs::check(&get_settings(app)?.obs)
         .await
-        .map_err(|_| "Не удалось подключиться к OBS".into())
+        .map_err(|_| "obs_connect_failed".into())
 }
 fn themes_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|p| p.join("themes"))
-        .map_err(|_| "Каталог тем недоступен".into())
+        .map_err(|_| "themes_unavailable".into())
 }
 #[tauri::command]
 pub fn list_themes(app: tauri::AppHandle) -> Result<Vec<crate::server::ThemeMeta>, String> {
@@ -431,24 +427,25 @@ pub async fn import_theme(app: tauri::AppHandle, path: String) -> Result<String,
         crate::server::import_theme_zip(std::path::Path::new(&path), &dir)
     })
     .await
-    .map_err(|_| "Не удалось импортировать тему")?
-    .map_err(|_| "Не удалось импортировать тему: проверьте zip".into())
+    .map_err(|_| "theme_import_failed")?
+    .map_err(|_| "theme_import_failed".into())
 }
 #[tauri::command]
 pub async fn obs_add_widget(app: tauri::AppHandle) -> Result<(), String> {
     let s = get_settings(app.clone())?;
+    let port = running_port(app.clone())?;
     let theme = list_themes(app)?
         .into_iter()
         .find(|t| t.id == s.active_theme)
-        .ok_or("Тема не найдена")?;
+        .ok_or("theme_missing")?;
     crate::obs::add_widget_to_current_scene(
         &s.obs,
-        &format!("http://127.0.0.1:{}/widget/music", s.port),
+        &format!("http://127.0.0.1:{}/widget/music", port),
         theme.width,
         theme.height,
     )
     .await
-    .map_err(|_| "Не удалось добавить виджет в OBS".into())
+    .map_err(|_| "obs_add_failed".into())
 }
 #[tauri::command]
 pub async fn widget_test(state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -457,15 +454,36 @@ pub async fn widget_test(state: tauri::State<'_, AppState>) -> Result<(), String
 
 fn validate_volume(pct: u8) -> Result<(), String> {
     if pct > 100 {
-        Err("Громкость должна быть от 0 до 100".into())
+        Err("volume_invalid".into())
     } else {
         Ok(())
     }
 }
 fn validate_settings(s: &Settings) -> Result<(), String> {
     if s.port == 0 || s.obs.port == 0 || s.reward_cost == 0 || s.reward_title.trim().is_empty() {
-        Err("Укажите название, порт и стоимость больше нуля".into())
+        Err("settings_invalid".into())
     } else {
         Ok(())
     }
+}
+
+pub struct RunningPort(pub u16);
+#[tauri::command]
+pub fn running_port(app: tauri::AppHandle) -> Result<u16, String> {
+    app.try_state::<RunningPort>()
+        .map(|p| p.0)
+        .ok_or("starting".into())
+}
+#[tauri::command]
+pub async fn twitch_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    send(&state, DriverMsg::TwitchStatus(tx)).await?;
+    rx.await.map_err(|_| "driver_closed".into())
+}
+
+#[tauri::command]
+pub async fn spotify_volume(state: tauri::State<'_, AppState>) -> Result<Option<u8>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    send(&state, DriverMsg::SpotifyVolume(tx)).await?;
+    rx.await.map_err(|_| "driver_closed".into())
 }

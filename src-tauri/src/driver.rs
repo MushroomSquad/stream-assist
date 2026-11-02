@@ -68,12 +68,13 @@ pub enum DriverMsg {
     Warning(String),
     SettingsChanged(Settings),
     SaveSettings(Settings, tokio::sync::oneshot::Sender<Result<(), String>>),
+    SpotifyVolume(tokio::sync::oneshot::Sender<Option<u8>>),
+    TwitchStatus(tokio::sync::oneshot::Sender<bool>),
     SpotifyStatus(tokio::sync::oneshot::Sender<crate::app::SpotifyStatus>),
 }
 pub struct DriverCtx {
     pub db: Arc<Mutex<Db>>,
     pub active_theme: Arc<std::sync::RwLock<String>>,
-    pub themes_dir: std::path::PathBuf,
     pub state_tx: watch::Sender<WidgetState>,
     pub ws: ServerChannels,
     pub app: tauri::AppHandle,
@@ -404,6 +405,7 @@ fn connect_twitch(
     Some(task)
 }
 pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
+    let running_port = ctx.ws.running_port;
     let (tx, mut internal) = mpsc::unbounded_channel();
     let mut player = Player::new(ctx.settings.limits.max_duration_ms);
     let mut pending = None;
@@ -457,7 +459,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                         if let Some(pkce) = spotify::take_pending_if_state_matches(&mut pending, &state) {
                             if let Some(id) = ctx.settings.spotify_client_id.clone() {
                                 let tx = tx.clone();
-                                let redirect = format!("http://127.0.0.1:{}/callback/spotify", ctx.settings.port);
+                                let redirect = format!("http://127.0.0.1:{}/callback/spotify", running_port);
                                 tokio::spawn(async move {
                                     let result = bounded(Spotify::exchange_code(
                                         &id, &code, &redirect, &pkce.verifier, "https://accounts.spotify.com"
@@ -652,20 +654,42 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 s.now = Some(widget_test_item());
                 publish(&ctx, s);
             }
+            Internal::Msg(DriverMsg::SpotifyVolume(reply)) => {
+                let sp = ctx.spotify.clone();
+                tokio::spawn(async move {
+                    let volume = if let Some(sp) = sp {
+                        bounded(sp.volume()).await.ok().flatten()
+                    } else {
+                        None
+                    };
+                    let _ = reply.send(volume);
+                });
+            }
+            Internal::Msg(DriverMsg::TwitchStatus(reply)) => {
+                let _ = reply.send(ctx.helix.is_some());
+            }
             Internal::Msg(DriverMsg::SpotifyStatus(reply)) => {
                 let sp = ctx.spotify.clone();
                 tokio::spawn(async move {
                     let connected = sp.is_some();
                     let premium = if let Some(sp) = sp {
-                        bounded(sp.me_product()).await.is_ok_and(|p| p == "premium")
+                        bounded(sp.me_product()).await.ok().map(|p| p == "premium")
                     } else {
-                        false
+                        None
                     };
                     let _ = reply.send(crate::app::SpotifyStatus { connected, premium });
                 });
             }
             Internal::Msg(DriverMsg::SaveSettings(s, reply)) => {
-                let result = apply_settings(&mut ctx, s).await;
+                let result = apply_settings(
+                    &mut ctx.settings,
+                    &ctx.db,
+                    &ctx.active_theme,
+                    &ctx.ws,
+                    ctx.helix.clone(),
+                    s,
+                )
+                .await;
                 if result.is_ok() {
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
@@ -673,17 +697,27 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     );
                     actions(&ctx, &player, aa, &tx, &mut polls);
                 }
-                let _ = reply.send(result.map_err(|_| "Не удалось сохранить настройки".into()));
+                let _ = reply.send(result.map_err(|_| "settings_save_failed".into()));
             }
             Internal::Msg(DriverMsg::SettingsChanged(s)) => {
-                if apply_settings(&mut ctx, s).await.is_ok() {
+                if apply_settings(
+                    &mut ctx.settings,
+                    &ctx.db,
+                    &ctx.active_theme,
+                    &ctx.ws,
+                    ctx.helix.clone(),
+                    s,
+                )
+                .await
+                .is_ok()
+                {
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
                         now(),
                     );
                     actions(&ctx, &player, aa, &tx, &mut polls);
                 } else {
-                    warn(&ctx, Some("Не удалось сохранить настройки".into()));
+                    warn(&ctx, Some("settings_save_failed".into()));
                 }
             }
 
@@ -691,7 +725,6 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 if let Some(old) = es.take() {
                     old.abort();
                 }
-                crate::app::save_tokens("twitch", &t, ctx.app.clone());
                 ctx.helix = Some(crate::app::twitch_client(t, ctx.app.clone()));
                 es = connect_twitch(&ctx, &tx);
             }
@@ -737,48 +770,187 @@ fn widget_test_item() -> QueueItem {
     }
 }
 
-async fn apply_settings(ctx: &mut DriverCtx, incoming: Settings) -> Result<()> {
-    let s = keep_reward_id(&ctx.settings, incoming);
-    if s.port != ctx.settings.port {
-        let ws = crate::server::serve(
-            s.port,
-            ctx.themes_dir.clone(),
-            ctx.active_theme.clone(),
-            ctx.state_tx.subscribe(),
-        )
-        .await?;
-        if let Some(task) = ctx.ws.task.take() {
-            task.abort();
-        }
-        ctx.ws = ws;
-    }
-    ctx.db
-        .lock()
+async fn apply_settings(
+    current: &mut Settings,
+    db: &Arc<Mutex<Db>>,
+    active_theme: &Arc<std::sync::RwLock<String>>,
+    ws: &ServerChannels,
+    helix: Option<Arc<Helix>>,
+    incoming: Settings,
+) -> Result<()> {
+    let s = keep_reward_id(current, incoming);
+    db.lock()
         .unwrap_or_else(|e| e.into_inner())
         .set_setting("settings", &s)?;
-    if s.active_theme != ctx.settings.active_theme {
-        *ctx.active_theme.write().unwrap_or_else(|e| e.into_inner()) = s.active_theme.clone();
-        let _ = ctx.ws.out_tx.send(WsOut::Reload);
+    if s.active_theme != current.active_theme {
+        *active_theme.write().unwrap_or_else(|e| e.into_inner()) = s.active_theme.clone();
+        let _ = ws.out_tx.send(WsOut::Reload);
     }
-    if let (Some(h), Some(id)) = (ctx.helix.clone(), s.music_reward_id.clone()) {
+    if let (Some(h), Some(id)) = (helix, s.music_reward_id.clone()) {
         if (s.reward_title.as_str(), s.reward_cost, s.reward_cooldown_s)
             != (
-                ctx.settings.reward_title.as_str(),
-                ctx.settings.reward_cost,
-                ctx.settings.reward_cooldown_s,
+                current.reward_title.as_str(),
+                current.reward_cost,
+                current.reward_cooldown_s,
             )
         {
             let body = serde_json::json!({"title":s.reward_title,"cost":s.reward_cost,"global_cooldown_setting":{"is_enabled":s.reward_cooldown_s > 0,"global_cooldown_seconds":s.reward_cooldown_s}});
             background(async move { h.update_reward(&id, &body).await });
         }
     }
-    ctx.settings = s;
+    *current = s;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn settings_fixture() -> (
+        Settings,
+        Arc<Mutex<Db>>,
+        Arc<std::sync::RwLock<String>>,
+        ServerChannels,
+        u16,
+    ) {
+        let current = Settings::default();
+        let db = Arc::new(Mutex::new(
+            Db::open(std::path::Path::new(":memory:")).unwrap(),
+        ));
+        let theme = Arc::new(std::sync::RwLock::new(current.active_theme.clone()));
+        let (_, state) = watch::channel(WidgetState {
+            visible: false,
+            now: None,
+            queue: vec![],
+            progress_ms: 0,
+            mode: "Idle".into(),
+            warning: None,
+        });
+        let ws = crate::server::serve(0, std::env::temp_dir(), theme.clone(), state)
+            .await
+            .unwrap();
+        // The server remains reachable throughout settings changes.
+        {
+            let port = ws.running_port;
+            (current, db, theme, ws, port)
+        }
+    }
+    #[tokio::test]
+    async fn apply_settings_theme_change_sends_reload() {
+        let (mut current, db, theme, ws, _) = settings_fixture().await;
+        let mut events = ws.out_tx.subscribe();
+        let mut incoming = current.clone();
+        incoming.active_theme = "glass".into();
+        apply_settings(&mut current, &db, &theme, &ws, None, incoming)
+            .await
+            .unwrap();
+        assert!(matches!(events.recv().await.unwrap(), WsOut::Reload));
+        assert_eq!(*theme.read().unwrap(), "glass");
+        ws.task.unwrap().abort();
+    }
+    #[tokio::test]
+    async fn apply_settings_port_change_deferred() {
+        let (mut current, db, theme, ws, running_port) = settings_fixture().await;
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let task_id = ws.task.as_ref().unwrap().id();
+        let mut incoming = current.clone();
+        incoming.port = port;
+        // Saving an occupied port succeeds because no bind is attempted.
+        apply_settings(&mut current, &db, &theme, &ws, None, incoming)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.lock()
+                .unwrap()
+                .get_setting::<Settings>("settings")
+                .unwrap()
+                .unwrap()
+                .port,
+            port
+        );
+        assert_eq!(ws.running_port, running_port);
+        assert!(
+            reqwest::get(format!("http://127.0.0.1:{running_port}/widget/sdk.js"))
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        assert_eq!(ws.task.as_ref().unwrap().id(), task_id);
+        assert!(!ws.task.as_ref().unwrap().is_finished());
+        ws.task.unwrap().abort();
+    }
+    #[tokio::test]
+    async fn apply_settings_keeps_reward_id_and_updates_reward() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path, query_param},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/helix/users"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data":[{"id":"b","login":"streamer"}]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH")).and(path("/helix/channel_points/custom_rewards"))
+            .and(query_param("id", "owned"))
+            .and(body_json(serde_json::json!({"title":"New reward","cost":123,"global_cooldown_setting":{"is_enabled":true,"global_cooldown_seconds":60}})))
+            .respond_with(ResponseTemplate::new(200)).expect(1).mount(&server).await;
+        let helix = Arc::new(Helix::new(
+            "client".into(),
+            Tokens {
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                expires_at: i64::MAX,
+            },
+            &server.uri(),
+            &server.uri(),
+            |_| {},
+        ));
+        let (mut current, db, theme, ws, _) = settings_fixture().await;
+        current.music_reward_id = Some("owned".into());
+        let mut incoming = current.clone();
+        incoming.music_reward_id = Some("stale".into());
+        incoming.reward_title = "New reward".into();
+        incoming.reward_cost = 123;
+        incoming.reward_cooldown_s = 60;
+        apply_settings(&mut current, &db, &theme, &ws, Some(helix), incoming)
+            .await
+            .unwrap();
+        assert_eq!(current.music_reward_id.as_deref(), Some("owned"));
+        assert_eq!(
+            db.lock()
+                .unwrap()
+                .get_setting::<Settings>("settings")
+                .unwrap()
+                .unwrap()
+                .music_reward_id
+                .as_deref(),
+            Some("owned")
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.method == "PATCH")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        server.verify().await;
+        ws.task.unwrap().abort();
+    }
+
     #[test]
     fn widget_test_uses_fake_track_without_redemption() {
         let sample = widget_test_item();

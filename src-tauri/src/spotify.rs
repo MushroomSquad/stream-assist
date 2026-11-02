@@ -312,6 +312,20 @@ impl Spotify {
             .error_for_status()?;
         Ok(())
     }
+    pub async fn volume(&self) -> Result<Option<u8>> {
+        let response = self
+            .request(Method::GET, "/v1/me/player", &[], None)
+            .await?
+            .error_for_status()?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        let state: serde_json::Value = response.json().await?;
+        Ok(state["device"]["volume_percent"]
+            .as_u64()
+            .filter(|v| *v <= 100)
+            .map(|v| v as u8))
+    }
     pub async fn set_volume(&self, pct: u8) -> Result<()> {
         self.request(
             Method::PUT,

@@ -1,20 +1,24 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import * as api from '$lib/api';
-  import { ru } from '$lib/i18n/ru';
+  import { errorMessages, errorText, ru } from '$lib/i18n/ru';
   let { snapshot, run }: { snapshot: api.WidgetState; run: (f: () => Promise<unknown>) => void } = $props();
   let volume = $state(50);
+  let volumeKnown = $state(false);
+  const apiWarning = (warning: string) => warning in errorMessages ? errorText(warning) : warning;
+  onMount(() => { let disposed = false; void api.spotify_volume().then(value => { if (!disposed && !volumeKnown && value !== null) { volume = value; volumeKnown = true; } }).catch(() => {}); return () => { disposed = true; }; });
   let dragged: number | null = null;
 </script>
 <section>
   <h2>{ru.now}</h2>
-  {#if snapshot.warning}<p class="notice" role="alert">{snapshot.warning}</p>{/if}
+  {#if snapshot.warning}<p class="notice" role="alert">{apiWarning(snapshot.warning)}</p>{/if}
   {#if snapshot.mode === 'Suspended'}<button class="primary" onclick={() => run(api.resume_queue)}>{ru.resume}</button>{/if}
   <div class="card">
     <h3>{snapshot.now ? snapshot.now.track.title : ru.empty}</h3>
     {#if snapshot.now}<p>{snapshot.now.track.artist} · {snapshot.now.requester}</p>{/if}
     <progress aria-label={ru.now} value={snapshot.progress_ms} max={snapshot.now?.track.duration_ms || 1}></progress>
     <div class="actions"><button disabled={!snapshot.now} onclick={() => run(api.skip)}>{ru.skip}</button><button disabled={!snapshot.now} onclick={() => run(api.toggle_pause)}>{snapshot.mode === 'Paused' ? ru.play : ru.pause}</button></div>
-    <label>{ru.volume} · {volume}%<input type="range" min="0" max="100" bind:value={volume} onchange={() => run(() => api.set_volume(volume))} /></label>
+    <label>{ru.volume}{volumeKnown ? ` · ${volume}%` : ''}<input type="range" min="0" max="100" bind:value={volume} onchange={() => { volumeKnown = true; run(() => api.set_volume(volume)); }} /></label>
   </div>
   <h3>{ru.queue} · {snapshot.queue.length}</h3><p class="muted">{ru.drag}</p>
   <ol aria-label={ru.queue}>

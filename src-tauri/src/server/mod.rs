@@ -31,6 +31,7 @@ pub enum WsOut {
     Reload,
 }
 pub struct ServerChannels {
+    pub running_port: u16,
     pub task: Option<tokio::task::JoinHandle<()>>,
     pub out_tx: broadcast::Sender<WsOut>,
     pub yt_rx: mpsc::Receiver<player::Input>,
@@ -84,6 +85,7 @@ fn build(
             .route("/callback/spotify", get(callback))
             .with_state(app),
         ServerChannels {
+            running_port: port,
             task: None,
             out_tx: out,
             yt_rx,
