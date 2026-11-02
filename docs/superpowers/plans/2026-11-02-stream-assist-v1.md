@@ -6,7 +6,7 @@
 
 **Architecture:** Rust-ядро внутри Tauri v2. Логика очереди и сторожа — чистый детерминированный автомат `Player::step(input, now) -> Vec<Action>`, который тестируется без сети. Им единолично владеет async-драйвер (без мьютекса). Драйвер исполняет `Action` через HTTP-клиенты и **возвращает результаты в автомат как `Input`**: результат play, события YouTube, опрос Spotify. Локальный axum-сервер на `127.0.0.1` отдаёт виджет, `sdk.js`, темы, WebSocket и OAuth-callback. Панель на SvelteKit (SPA, adapter-static), с ядром общается через Tauri-команды и событие `state`.
 
-**Tech Stack:** Rust 1.93, Tauri 2.x (+ `tauri-plugin-opener`, `tauri-plugin-dialog`), tokio, axum 0.8, reqwest (rustls, json), rusqlite (bundled), keyring 3 с features `apple-native windows-native sync-secret-service crypto-rust`, tokio-tungstenite (rustls), obws, sha2, base64, rand, include_dir, zip, url, serde/serde_json, thiserror; dev: wiremock. Фронт: Node 24, SvelteKit + Svelte 5 + TypeScript (шаблон create-tauri-app `svelte-ts`), npm.
+**Tech Stack:** Rust 1.93, Tauri 2.x (+ `tauri-plugin-opener`, `tauri-plugin-dialog`), tokio, axum 0.8, reqwest (rustls, json), rusqlite (bundled), keyring 3 с features `apple-native windows-native sync-secret-service crypto-rust`, tokio-tungstenite (rustls), obws, sha2, base64, rand, include_dir, zip, url, serde/serde_json, thiserror, anyhow (голый `Result` в сигнатурах = `anyhow::Result`); dev: wiremock, tower (`ServiceExt`). Фронт: Node 24, SvelteKit + Svelte 5 + TypeScript (шаблон create-tauri-app `svelte-ts`), npm.
 
 **Spec:** `docs/superpowers/specs/2026-11-02-stream-assist-design.md`
 
@@ -16,7 +16,7 @@
 - WebSocket `/ws` принимает соединение, только если `Origin` равен `http://127.0.0.1:<port>` или `http://localhost:<port>`, а `Host` — `127.0.0.1:<port>` или `localhost:<port>`. Иначе 403.
 - Spotify: redirect URI `http://127.0.0.1:<port>/callback/spotify`. PKCE без client secret, Client ID вводит стример. Параметр `state` сверяется точно и действует один раз; если логин не начат, callback отклоняется.
 - Spotify scopes: `user-read-playback-state user-modify-playback-state user-read-currently-playing user-read-private`.
-- Twitch: Device Code Flow, публичный клиент, Client ID из `option_env!("TWITCH_CLIENT_ID")`. Scopes: `channel:read:redemptions channel:manage:redemptions user:write:chat`.
+- Twitch: Device Code Flow, публичный клиент, Client ID из `option_env!("TWITCH_CLIENT_ID")`. Scopes: `channel:read:redemptions channel:manage:redemptions user:write:chat`. `user:read:chat` из спеки убран: чат в v1 не читаем, а лишний scope только пугает на экране согласия.
 - Refresh-токены лежат только в keyring (service `stream-assist`). Ротация refresh-токена сохраняется сразу. Refresh однопоточный под `tokio::Mutex`: перед каждым запросом, если до истечения меньше 300 с, плюс один повтор после 401. Если keyring недоступен (на Linux нет Secret Service), панель показывает понятную ошибку.
 - Очередь своя, не очередь Spotify. Следующий трек — `PUT /v1/me/player/play` с `uris`.
 - Опрос Spotify раз в 2.5 с.
@@ -213,6 +213,7 @@ pub fn pick_device(devs: &[Device]) -> Option<String>;  // активное, и�
   - `concurrent_calls_refresh_once` (два параллельных запроса → один POST /api/token);
   - `retry_once_on_401`;
   - `play_404_is_no_device`;
+  - `me_product_reads_premium` (`GET /v1/me` → `product: "premium"`);
   - `search_maps_track_fields` (артисты через ", ", обложка — самая большая картинка);
   - `pick_device_prefers_active_then_computer`.
 - [ ] **Step 2:** FAIL → реализовать → `cargo test spotify::` PASS. Для `secrets` тестов нет, это тонкая обёртка.
@@ -269,7 +270,7 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
 
 **Правила:**
 - **Старт элемента, Spotify.** `SpotifyPlay` (device = last_device), режим `Starting`. `PlayResult Ok` → `Started(item)`, `started=true`, режим `Playing`. `PlayResult Err` → `Warn(Some("Spotify: нет активного устройства / ошибка"))` и повтор по `RETRY_BACKOFF_MS` на `Tick`, без отмены, элемент остаётся текущим. При `NoDevice` ещё и `last_device = None`, чтобы драйвер выбрал устройство заново.
-- **Старт элемента, YouTube.** `YtPlay{start_ms:0}` (плеер стартует без звука), режим `Starting`. `Yt Started{d}`: если `d > max` → `YtStop` + `Cancel(TooLong)` + следующий; иначе `YtUnmute` + `Started(item)` (если ещё не started) + `Playing`. `Yt Error` до старта → `Cancel(YtUnavailable)` + следующий. Нет `Started` за `YT_START_TIMEOUT_MS` → `YtStop` + `Cancel(YtUnavailable)` + следующий.
+- **Старт элемента, YouTube.** `SpotifyPause` (ошибку драйвер игнорирует; нужно, чтобы автоплей Spotify не играл поверх), затем `YtPlay{start_ms:0}` (плеер стартует без звука), режим `Starting`. `Yt Started{d}`: если `d > max` → `YtStop` + `Cancel(TooLong)` + следующий; иначе `YtUnmute` + `Started(item)` (если ещё не started) + `Playing`. `Yt Error` до старта → `Cancel(YtUnavailable)` + следующий. Нет `Started` за `YT_START_TIMEOUT_MS` → `YtStop` + `Cancel(YtUnavailable)` + следующий.
 - **`PlayResult` и Yt-события с чужим `item_id`** игнорируются.
 - **YouTube-сторож.** В `Playing` для YouTube: если `Ended` не пришёл к `started_at + duration + YT_END_SLACK_MS` (время на паузе не считается), то это конец трека. Проверяется на `Tick`.
 - **`YtPlayerConnected`.** Если текущий трек из YouTube, то `YtPlay{start_ms: прогресс по часам}` повторно, а для `Paused` — ещё и `YtPause`. Иначе ничего. `Yt Started` в режиме `Paused` → только `YtPause`, режим не меняется, звук не включается.
@@ -290,7 +291,7 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
   - `manual_pause_does_nothing`, `manual_resume_back_to_playing`, `foreign_track_suspends`, `foreign_track_within_grace_ignored`, `resume_queue_plays_next`;
   - `device_lost_replays_with_backoff`, `short_outage_no_fallback`, `outage_before_expected_end_no_fallback`, `outage_after_end_triggers_fallback`, `fallback_unresolved_cancels`, `recovery_clears_warning`;
   - `youtube_playing_ignores_spotify_snapshot`, `yt_error_before_start_cancels`, `yt_too_long_cancels`, `yt_start_timeout_cancels`, `yt_stale_item_ignored`;
-  - `toggle_pause_youtube_uses_yt_actions`, `remove_queued_cancels`, `skip_started_no_refund`, `skip_starting_cancels`;
+  - `toggle_pause_youtube_uses_yt_actions`, `toggle_pause_spotify_uses_spotify_actions`, `move_reorders`, `yt_start_pauses_spotify`, `remove_queued_cancels`, `skip_started_no_refund`, `skip_starting_cancels`;
   - `restore_spotify_no_refulfill`, `restore_youtube_replays`, `persist_first_in_batch`;
   - `play_result_stale_ignored`, `no_device_clears_last_device`, `yt_unmute_only_after_length_ok`;
   - `restored_started_yt_error_no_cancel`, `skip_restored_started_no_cancel`;
@@ -440,24 +441,38 @@ pub async fn add_widget_to_current_scene(cfg: &ObsCfg, url: &str, w: u32, h: u32
 **Interfaces — Produces:**
 ```rust
 // music.rs
-pub enum Resolved { Ok(Track), NotFound }
-pub async fn resolve(input: RequestInput, sp: &Spotify, yt_base: &str) -> Result<Resolved>;
+pub enum Resolution { Candidates(Vec<Track>) /* по убыванию релевантности, ≥1 */, NotFound }
+pub async fn resolve(input: RequestInput, sp: &Spotify, yt_base: &str) -> Result<Resolution>;
+//   Query → до 5 результатов поиска; SpotifyTrack/YouTube → один кандидат.
 pub fn normalize_title(s: &str) -> String;  // lower, без (...)/[...], без "official video|audio|lyrics|mv|hd"
 pub enum Decision { Enqueue(Track), Reject(String) }
-pub fn decide(res: Resolved, limits: &Limits, requester: &str, queue: &[QueueItem], current: Option<&QueueItem>, recent: &[Source]) -> Decision;
+// decide берёт первого кандидата, прошедшего limits::check; если не прошёл никто — Reject(violation_text(нарушение первого кандидата))
+pub fn decide(res: Resolution, limits: &Limits, requester: &str, queue: &[QueueItem], current: Option<&QueueItem>, recent: &[Source]) -> Decision;
 // driver.rs
-pub enum DriverMsg { Cmd(player::Input), Es(EsSignal), Resolved { red: Redemption, res: Result<Resolved> },
-  TwitchLogin(Tokens), SpotifyLoginStart(Pkce), SettingsChanged }
+pub enum DriverMsg { Cmd(player::Input), Es(EsSignal), ResolveDone { red: Redemption, res: Result<Resolution> },
+  TwitchLogin(Tokens), TwitchLogout, SpotifyLoginStart(Pkce), SetVolume(u8) /* сразу → spotify.set_volume, мимо Player */,
+  WidgetTest, SettingsChanged(Settings) }
 pub async fn run(ctx: DriverCtx, rx: mpsc::Receiver<DriverMsg>);
 pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::Sender<WidgetState>, pub ws: ServerChannels,
-  pub app: tauri::AppHandle /* emit("state") */, /* клиенты Option<Arc<..>>, Settings */ }
+  pub app: tauri::AppHandle /* emit("state") */, pub settings: Settings /* + клиенты Option<Arc<Spotify|Helix>> */ }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Settings { pub limits: Limits, pub reward_title: String /* "Заказать трек" */, pub reward_cost: u32 /* 500 */,
+  pub reward_cooldown_s: u32 /* 0 */, pub music_reward_id: Option<String>, pub port: u16 /* 47821 */,
+  pub active_theme: String /* "underground" */, pub youtube_api_key: Option<String>, pub obs: ObsCfg,
+  pub spotify_client_id: Option<String> }   // хранится в Db под ключом "settings"
+pub enum ReconcileStep { Skip, Fulfill(RedemptionRef), Recancel(RedemptionRef), Process(Redemption) }
+pub fn plan_reconcile(states: &[(Redemption, RedemptionState)]) -> Vec<ReconcileStep>;
+// spotify.rs (дополнение к Task 4, реализуется здесь):
+pub fn take_pending_if_state_matches(pending: &mut Option<Pkce>, state: &str) -> Option<Pkce>;
+//   Some только если pending есть и state совпадает точно; при совпадении pending становится None
 ```
-Драйвер владеет `Player` и `Option<Pkce>` для ожидающего логина Spotify. `select!` ждёт: tick `POLL_MS` (`Input::Tick` + опрос `player()` → `Input::Spotify`), `rx`, `yt_rx`, `oauth_rx`. Сверка OAuth: `state == pending.state`, после проверки `pending.take()`; иначе событие игнорируется.
+Команды OBS (`obs_check`, `obs_add_widget`) вызывают `obs.rs` прямо из Tauri-команды, без драйвера.
+Драйвер владеет `Player` и `Option<Pkce>` для ожидающего логина Spotify. `select!` ждёт: tick `POLL_MS` (`Input::Tick` + опрос `player()` → `Input::Spotify`), `rx`, `yt_rx`, `oauth_rx`. Сверка OAuth — через `take_pending_if_state_matches`; `None` → событие игнорируется.
 
 **Выкуп** (`EsSignal::Redemption` или reconcile):
-- `route(reward_id)` ≠ Music → игнор. `db.redemption_state(id)` ≠ Unknown или id в `inflight: HashSet` → игнор.
-- Иначе id добавляется в `inflight` и запускается `tokio::spawn(resolve)`; результат приходит как `DriverMsg::Resolved`.
-- На `Resolved`: `decide` по **текущему** снимку `Player` (без гонок квоты), затем:
+- `route(reward_id, settings.music_reward_id.as_deref())` ≠ `Some(Music)` → игнор. `db.redemption_state(id)` ≠ Unknown или id в `inflight: HashSet` → игнор.
+- Иначе id добавляется в `inflight` и запускается `tokio::spawn(resolve)`; результат приходит как `DriverMsg::ResolveDone`.
+- На `ResolveDone`: `decide` по **текущему** снимку `Player` (без гонок квоты), затем:
   - `Enqueue` → `db.insert_item` (`Duplicate` → игнор) → `player.step(Enqueue)` → чат `chat_added`;
   - `Reject` → `db.mark_cancelled` → Cancel в Twitch + `chat_rejected`;
   - `Err` (сеть, Spotify не подключён) → `db.mark_cancelled` → Cancel + `TEXT_SERVICE_DOWN`.
@@ -492,7 +507,7 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
 
 **Выход:** `RunEvent::ExitRequested { code: None, api }` → `api.prevent_exit()` → `update_reward{is_paused:true}` (таймаут 2 с) → `app.exit(0)`. `ExitRequested` с `code: Some(_)` пропускается, иначе выход зациклится.
 
-- [ ] **Step 1: тесты music:** `decide_rejects_on_violation`, `decide_not_found_rejects`, `normalize_title_strips_noise`, `resolve_youtube_matches_spotify` (wiremock: oEmbed «Daft Punk - Around The World (Official Video)», поиск вернул Daft Punk / Around the World → `Source::Spotify`), `resolve_youtube_no_match_stays_youtube`.
+- [ ] **Step 1: тесты music:** `decide_rejects_on_violation`, `decide_not_found_rejects`, `decide_picks_first_passing_candidate` (1-й слишком длинный, 2-й проходит → Enqueue(2-й)), `oauth_state_mismatch_rejected`, `oauth_state_single_use`, `oauth_no_pending_rejected`, `normalize_title_strips_noise`, `resolve_youtube_matches_spotify` (wiremock: oEmbed «Daft Punk - Around The World (Official Video)», поиск вернул Daft Punk / Around the World → `Source::Spotify`), `resolve_youtube_no_match_stays_youtube`.
 - [ ] **Step 2: тесты driver** (функция `fn plan_reconcile(states: &[(Redemption, RedemptionState)]) -> Vec<ReconcileStep>` вынесена отдельно, чтобы тестировать без сети): `reconcile_queued_skipped`, `reconcile_started_fulfilled`, `reconcile_cancelled_recancelled`, `reconcile_unknown_processed`.
 - [ ] **Step 3:** FAIL → реализовать → `cargo test` (весь крейт) PASS.
 - [ ] **Step 4:** commit `feat(music): redemption pipeline and driver`.
