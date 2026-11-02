@@ -12,7 +12,8 @@ fn main() {
     if let Ok(path) = std::env::var("VL_FAKE_PID_FILE") {
         std::fs::write(path, std::process::id().to_string()).unwrap();
     }
-    if let Ok(output) = std::env::var("VL_FAKE_STDOUT") {
+    if let Ok(path) = std::env::var("VL_FAKE_STDOUT_FILE") {
+        let output = std::fs::read_to_string(path).unwrap();
         print!("{output}");
         std::io::stdout().flush().unwrap();
         return;

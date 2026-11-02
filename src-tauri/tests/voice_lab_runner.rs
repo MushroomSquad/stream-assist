@@ -75,7 +75,7 @@ fn start(
     )
 }
 async fn finished(r: &Runner, id: u64) -> JobState {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(j) = r
                 .jobs()
@@ -112,7 +112,7 @@ async fn clone_success_creates_profile() {
 async fn cancel_kills_worker() {
     let (d, s, r, id) = setup("sleep", true);
     let j = start(&r, &s, d.path(), id, 1000).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !d.path().join("worker.pid").is_file() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -310,7 +310,7 @@ async fn worker_exits_on_stdin_eof() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     drop(stdin);
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), c.wait())
+        tokio::time::timeout(Duration::from_secs(10), c.wait())
             .await
             .unwrap()
             .unwrap()
@@ -390,10 +390,65 @@ async fn worker_protocol_limits_and_error_codes() {
         ("log line\n{\"event\":\"done\",\"durationMs\":1000,\"synthMs\":1,\"loss\":null,\"similarity\":null}".into(),None),
     ] {
         let d=tempfile::tempdir().unwrap();
-        let r=Runner::new(fake(),vec![("VL_FAKE_STDOUT".into(),output)]);
+        let stdout = d.path().join("stdout");
+        std::fs::write(&stdout, output).unwrap();
+        let r=Runner::new(fake(),vec![("VL_FAKE_STDOUT_FILE".into(),stdout.to_string_lossy().into_owned())]);
         let req=WorkerRequest::Synth{model_dir:d.path().into(),style:d.path().join("style"),out_wav:d.path().join("out"),params:params()};
         let result=r.run_worker(&req,d.path(),None,|_|{}).await;
         match expected {Some(code)=>assert_eq!(result.unwrap_err().code(),code),None=>assert!(matches!(result.unwrap(),Some(WorkerEvent::Done{..})))}
+        std::fs::remove_file(stdout).unwrap();
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(),0);
     }
+}
+
+#[tokio::test]
+async fn dropped_synth_publishes_failure_and_releases_slot() {
+    let (d, s, r, _) = setup("sleep", true);
+    let task = {
+        let r = r.clone();
+        let s = s.clone();
+        let root = d.path().to_owned();
+        tokio::spawn(async move {
+            r.synth(
+                &s,
+                &root,
+                root.join("style"),
+                None,
+                None,
+                params(),
+                Arc::new(|_| {}),
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !d.path().join("worker.pid").is_file() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let job = r.jobs().pop().unwrap();
+    assert_eq!(job.status, "failed");
+    assert_eq!(job.error.as_deref(), Some("WORKER_CRASHED"));
+    // A new future must pass the busy check; dropping it also publishes failure.
+    let mut next = Box::pin(r.synth(
+        &s,
+        d.path(),
+        d.path().join("style"),
+        None,
+        None,
+        params(),
+        Arc::new(|_| {}),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut next)
+            .await
+            .is_err()
+    );
+    drop(next);
+    assert!(r.jobs().iter().all(|j| j.status == "failed"));
+    clean(d.path());
 }

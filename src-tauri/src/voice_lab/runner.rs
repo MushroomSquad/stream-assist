@@ -12,10 +12,10 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc, Mutex, Mutex as StdMutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -42,10 +42,43 @@ pub struct Runner {
     synth_busy: AtomicBool,
     jobs: Mutex<HashMap<u64, JobState>>,
 }
-struct BusyGuard<'a>(&'a AtomicBool);
-impl Drop for BusyGuard<'_> {
+struct JobGuard<R: std::ops::Deref<Target = Runner>> {
+    runner: R,
+    id: u64,
+    clone: bool,
+    finished: bool,
+    emit: Emit,
+}
+impl<R: std::ops::Deref<Target = Runner>> Drop for JobGuard<R> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        let job = self
+            .runner
+            .jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&self.id)
+            .filter(|j| j.status == "running")
+            .cloned();
+        if let Some(mut job) = job.filter(|_| !self.finished) {
+            job.status = "failed".into();
+            job.error = Some("WORKER_CRASHED".into());
+            // A callback must not prevent releasing the slot, including during unwinding.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.runner.publish(job, &self.emit);
+            }));
+        }
+        if self.clone {
+            let mut slot = self
+                .runner
+                .clone_slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if slot.as_ref().is_some_and(|(id, _)| *id == self.id) {
+                *slot = None;
+            }
+        } else {
+            self.runner.synth_busy.store(false, Ordering::SeqCst);
+        }
     }
 }
 struct TempFiles(Vec<PathBuf>);
@@ -86,7 +119,7 @@ impl Runner {
         self.next.fetch_add(1, Ordering::Relaxed)
     }
     fn publish(&self, j: JobState, emit: &Emit) {
-        let mut jobs = self.jobs.lock().expect("jobs lock");
+        let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
         if j.status != "running" {
             jobs.retain(|_, v| v.kind != j.kind || v.status == "running");
         }
@@ -202,7 +235,7 @@ impl Runner {
     #[allow(clippy::too_many_arguments)]
     pub async fn synth(
         &self,
-        store: &Arc<StdMutex<Store>>,
+        store: &Arc<Mutex<Store>>,
         root: &Path,
         style_path: PathBuf,
         profile_id: Option<i64>,
@@ -217,8 +250,14 @@ impl Runner {
         {
             return Err(err("JOB_BUSY"));
         }
-        let _busy = BusyGuard(&self.synth_busy);
         let id = self.id();
+        let _guard = JobGuard {
+            runner: self,
+            id,
+            clone: false,
+            finished: false,
+            emit: emit.clone(),
+        };
         let out = root.join(format!("tmp/render-{id}.wav"));
         let files = TempFiles(vec![out.clone()]);
         let mut job = JobState {
@@ -239,12 +278,15 @@ impl Runner {
             params: params.clone(),
         };
         let result = async {
-            let event = self
-                .run_worker(&req, &root.join("tmp"), None, |e| {
+            let event = tokio::time::timeout(
+                Duration::from_secs(300),
+                self.run_worker(&req, &root.join("tmp"), None, |e| {
                     job.progress = Some(e);
                     self.publish(job.clone(), &emit);
-                })
-                .await?;
+                }),
+            )
+            .await
+            .map_err(|_| err("WORKER_CRASHED"))??;
             let Some(WorkerEvent::Done {
                 duration_ms,
                 synth_ms,
@@ -286,7 +328,7 @@ impl Runner {
     #[allow(clippy::too_many_arguments)]
     pub fn start_clone(
         self: &Arc<Self>,
-        store: Arc<StdMutex<Store>>,
+        store: Arc<Mutex<Store>>,
         root: PathBuf,
         model_dir: PathBuf,
         speaker_model: Option<PathBuf>,
@@ -300,8 +342,11 @@ impl Runner {
         seed: u64,
         emit: Emit,
     ) -> Result<u64, VlError> {
-        let mut slot = self.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
-        if slot.is_some()
+        if self
+            .clone_slot
+            .lock()
+            .map_err(|_| err("IO_FAILED"))?
+            .is_some()
             || self
                 .jobs()
                 .iter()
@@ -324,11 +369,17 @@ impl Runner {
         let reference = root.join(format!("tmp/clone-{id}.wav"));
         let out = root.join(format!("tmp/clone-{id}.json"));
         let files = TempFiles(vec![reference.clone(), out.clone()]);
-        let samples = audio::load_mono(&path)?;
-        std::fs::write(
-            &reference,
-            audio::wav_bytes(audio::segment(&samples, start_ms, end_ms), audio::SR),
-        )?;
+        let mut reader = hound::WavReader::open(&path).map_err(|_| err("IO_FAILED"))?;
+        let start = start_ms * u64::from(audio::SR) / 1000;
+        let end = end_ms * u64::from(audio::SR) / 1000;
+        reader.seek(start as u32).map_err(|_| err("IO_FAILED"))?;
+        let samples = reader
+            .samples::<i16>()
+            .take((end - start) as usize)
+            .map(|s| s.map(|v| v as f32 / 32768.0))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| err("IO_FAILED"))?;
+        std::fs::write(&reference, audio::wav_bytes(&samples, audio::SR))?;
         let req = WorkerRequest::Clone {
             model_dir,
             reference_wav: reference,
@@ -340,6 +391,15 @@ impl Runner {
             speaker_model,
         };
         let (tx, rx) = oneshot::channel();
+        let mut slot = self.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
+        if slot.is_some()
+            || self
+                .jobs()
+                .iter()
+                .any(|j| j.kind == "clone" && j.status == "running")
+        {
+            return Err(err("JOB_BUSY"));
+        }
         *slot = Some((id, tx));
         let mut job = JobState {
             id,
@@ -352,17 +412,25 @@ impl Runner {
         };
         self.jobs.lock().expect("jobs lock").insert(id, job.clone());
         drop(slot);
+        let guard = JobGuard {
+            runner: Arc::clone(self),
+            id,
+            clone: true,
+            finished: false,
+            emit: emit.clone(),
+        };
         emit(&job);
         let runner = Arc::clone(self);
         tokio::spawn(async move {
+            let mut guard = guard;
             let result = runner
                 .run_worker(&req, &root.join("tmp"), Some(rx), |e| {
                     job.progress = Some(e);
                     runner.publish(job.clone(), &emit);
                 })
                 .await;
-            let mut slot = runner.clone_slot.lock().expect("clone slot lock");
             let result = (|| {
+                let slot = runner.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
                 if slot.is_none() {
                     return Err(err("JOB_CANCELLED"));
                 }
@@ -399,14 +467,9 @@ impl Runner {
                 }
             }
             drop(files);
-            {
-                let mut jobs = runner.jobs.lock().expect("jobs lock");
-                jobs.retain(|_, v| v.kind != job.kind || v.status == "running");
-                jobs.insert(job.id, job.clone());
-            }
-            *slot = None;
-            drop(slot);
-            emit(&job);
+            guard.finished = true;
+            drop(guard);
+            runner.publish(job, &emit);
         });
         Ok(id)
     }
@@ -418,5 +481,58 @@ impl Runner {
         let (_, tx) = slot.take().unwrap();
         let _ = tx.send(());
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn clone_slot_not_held_during_segment() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let source = store
+            .add_source("test", "wav", "reference", 2000, true, &[])
+            .unwrap();
+        let path = store.source_work_path(source.id);
+        let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let runner = Arc::new(Runner::new(PathBuf::new(), vec![]));
+        let r = runner.clone();
+        let dir = root.path().to_owned();
+        let read = std::thread::spawn(move || {
+            r.start_clone(
+                Arc::new(Mutex::new(store)),
+                dir.clone(),
+                dir,
+                None,
+                source.id,
+                0,
+                1000,
+                "words".into(),
+                "en".into(),
+                "Clone".into(),
+                ClonePreset::Fast,
+                42,
+                Arc::new(|_| {}),
+            )
+        });
+        // Opening the writer synchronizes with WavReader::open. Withhold the header
+        // to stall segment input deterministically, without timing a large WAV read.
+        let mut writer = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let slot_free = runner
+            .clone_slot
+            .try_lock()
+            .is_ok_and(|slot| slot.is_none());
+        writer.write_all(b"invalid wav").unwrap();
+        drop(writer);
+        assert_eq!(read.join().unwrap().unwrap_err().code(), "IO_FAILED");
+        assert!(slot_free, "clone slot held while segment input was blocked");
+        assert_eq!(
+            std::fs::read_dir(root.path().join("tmp")).unwrap().count(),
+            0
+        );
     }
 }

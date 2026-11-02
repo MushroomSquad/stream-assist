@@ -128,7 +128,33 @@ pub fn spawn_stdin_watchdog() {
         }
     });
 }
+fn sanitize(mut e: WorkerEvent) -> WorkerEvent {
+    fn finite(v: &mut f32) {
+        if !v.is_finite() {
+            *v = f32::MAX;
+        }
+    }
+    match &mut e {
+        WorkerEvent::Progress {
+            loss, best_loss, ..
+        } => {
+            finite(loss);
+            finite(best_loss);
+        }
+        WorkerEvent::Done {
+            loss, similarity, ..
+        } => {
+            if let Some(loss) = loss {
+                finite(loss);
+            }
+            *similarity = similarity.filter(|v| v.is_finite());
+        }
+        WorkerEvent::Error { .. } => {}
+    }
+    e
+}
 fn emit(e: WorkerEvent) {
+    let e = sanitize(e);
     let mut out = std::io::stdout().lock();
     let _ = serde_json::to_writer(&mut out, &e);
     let _ = writeln!(out);
@@ -230,6 +256,44 @@ pub fn main(request_path: &Path) -> i32 {
         Err(e) => {
             emit(WorkerEvent::Error { code: e.code() });
             1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn nonfinite_progress_is_parsable() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for event in [
+                WorkerEvent::Progress {
+                    stage: "mix".into(),
+                    iteration: 1,
+                    total: 2,
+                    loss: value,
+                    best_loss: value,
+                },
+                WorkerEvent::Done {
+                    duration_ms: None,
+                    synth_ms: None,
+                    loss: Some(value),
+                    similarity: Some(value),
+                },
+            ] {
+                let clean = sanitize(event);
+                let json = serde_json::to_string(&clean).unwrap();
+                assert_eq!(serde_json::from_str::<WorkerEvent>(&json).unwrap(), clean);
+                match clean {
+                    WorkerEvent::Progress {
+                        loss, best_loss, ..
+                    } => assert_eq!((loss, best_loss), (f32::MAX, f32::MAX)),
+                    WorkerEvent::Done {
+                        loss, similarity, ..
+                    } => assert_eq!((loss, similarity), (Some(f32::MAX), None)),
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 }
