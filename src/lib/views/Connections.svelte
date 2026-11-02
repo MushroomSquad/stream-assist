@@ -8,13 +8,23 @@ let twitchConnected = $state(false);
 let spotify = $state<api.SpotifyStatus | null>(null);
 let obs = $state('');
 const redirect = $derived(`http://127.0.0.1:${runningPort}/callback/spotify`);
-onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }, false); run(async () => { spotify = await api.spotify_status(); }, false); });
+let poll: ReturnType<typeof setInterval> | undefined;
+function stopPoll() { clearInterval(poll); poll = undefined; }
+async function checkTwitch() { twitchConnected = await api.twitch_login_poll(); if (twitchConnected) { device = null; stopPoll(); } }
+async function startTwitch() {
+  stopPoll();
+  device = await api.twitch_login_start();
+  // ponytail: fixed client-side interval; the backend still enforces Twitch's own poll interval
+  poll = setInterval(() => run(async () => { try { await checkTwitch(); } catch (e) { stopPoll(); throw e; } }, false), (Math.max(device.interval, 1) + 1) * 1000);
+  await api.openExternal(device.verification_uri);
+}
+onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }, false); run(async () => { spotify = await api.spotify_status(); }, false); return stopPoll; });
 </script>
 <section><h2>{ru.connections}</h2>
 <div class="card"><h3>{ru.twitch}</h3>
 {#if twitchConnected}<p>{ru.connected}</p>{/if}
-<div class="actions"><button onclick={() => run(async () => { device = await api.twitch_login_start(); })}>{ru.login}</button><button onclick={() => run(async () => { await api.twitch_logout(); twitchConnected = false; device = null; })}>{ru.logout}</button></div>
-{#if device}<p>{ru.code}: <strong>{device.user_code}</strong></p><button onclick={() => run(() => api.openExternal(device!.verification_uri))}>{device.verification_uri}</button><p>{ru.waiting}</p><button onclick={() => run(async () => { twitchConnected = await api.twitch_login_poll(); if (twitchConnected) device = null; })}>{ru.checkLogin}</button>{/if}
+<div class="actions"><button onclick={() => run(startTwitch)}>{ru.login}</button><button onclick={() => run(async () => { stopPoll(); await api.twitch_logout(); twitchConnected = false; device = null; })}>{ru.logout}</button></div>
+{#if device}<p>{ru.code}: <strong>{device.user_code}</strong></p><button onclick={() => run(() => api.openExternal(device!.verification_uri))}>{device.verification_uri}</button><p>{ru.waiting}</p><button onclick={() => run(checkTwitch)}>{ru.checkLogin}</button>{/if}
 </div>
 <div class="card"><h3>{ru.spotify}</h3><button onclick={() => run(() => api.openExternal('https://developer.spotify.com/dashboard'))}>{ru.dashboard}</button><p>{ru.createApp}</p><label>{ru.redirect}<input readonly value={redirect} /></label><button onclick={() => run(() => navigator.clipboard.writeText(redirect))}>{ru.copy}</button>
 <label>{ru.clientId}<input bind:value={settings.spotify_client_id} /></label><div class="actions"><button onclick={() => run(async () => { await api.openExternal(await api.spotify_login(settings.spotify_client_id || '')); })}>{ru.spotifyLogin}</button><button onclick={() => run(async () => { spotify = await api.spotify_status(); })}>{ru.status}</button></div>
