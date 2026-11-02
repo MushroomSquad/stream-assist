@@ -6,6 +6,7 @@ import NowQueue from '$lib/views/NowQueue.svelte';
 import Rewards from '$lib/views/Rewards.svelte';
 import Limits from '$lib/views/Limits.svelte';
 import Widget from '$lib/views/Widget.svelte';
+import VoiceLab from '$lib/views/voice/VoiceLab.svelte';
 import Connections from '$lib/views/Connections.svelte';
 let tab = $state('now');
 let snapshot = $state(api.emptyState);
@@ -14,7 +15,7 @@ let themes = $state<api.ThemeMeta[]>([]);
 let ready = $state(false);
 let message = $state('');
 let runningPort = $state(47821);
-const tabs = ['now', 'rewards', 'limits', 'widget', 'connections'] as const;
+const tabs = ['now', 'rewards', 'limits', 'widget', 'connections', 'voice'] as const;
 async function run(f: () => Promise<unknown>, clear = true) { if (clear) message = ''; try { await f(); } catch (e) { if (clear || !message) message = errorText(e); } }
 async function refreshThemes() { themes = await api.list_themes(); }
 async function load() { await run(async () => { settings = await api.get_settings(); runningPort = (await api.running_port()) ?? settings.port; await refreshThemes(); ready = true; }); }
@@ -34,6 +35,7 @@ onMount(() => {
 {:else if snapshot.warning === 'server_start_failed'}<p class="notice" role="alert">{ru.server_start_failed}</p>{/if}
 {#if message}<p class="notice" role="status">{message}</p>{/if}
 {#if tab === 'now'}<NowQueue {snapshot} {run} />
+{:else if tab === 'voice'}<VoiceLab />
 {:else if !ready}<p>{ru.settingsLoading}</p><button onclick={load}>{ru.reload}</button>
 {:else if tab === 'rewards'}<Rewards {settings} {save} />
 {:else if tab === 'limits'}<Limits {settings} {save} />
