@@ -54,9 +54,30 @@ fn decide_picks_first_passing_candidate() {
 #[test]
 fn normalize_title_strips_noise() {
     assert_eq!(
-        normalize_title("Around The World (Official Video) [HD] lyrics MV audio"),
+        normalize_title("Around The World (Official Video) [HD] lyrics MV"),
         "around the world"
     );
+    for suffix in [
+        "(Official Audio)",
+        "- Official Audio",
+        "[Official Music Video]",
+        "- Lyric Video",
+        "lyrics",
+        "mv",
+        "hd",
+    ] {
+        assert_eq!(
+            normalize_title(&format!("Around The World {suffix}")),
+            "around the world"
+        );
+    }
+    assert_eq!(normalize_title("HD Lover"), "hd lover");
+    assert_eq!(
+        normalize_title("Official Audio Lover"),
+        "official audio lover"
+    );
+    assert_eq!(normalize_title("Love (Live)"), "love (live)");
+    assert_eq!(normalize_title("MyHD"), "myhd");
 }
 #[test]
 fn oauth_state_mismatch_rejected() {

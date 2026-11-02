@@ -543,16 +543,19 @@ impl Player {
             || old_progress != self.last_progress
             || old_warning != self.warning
         {
-            a.push(Action::Widget(WidgetState {
-                visible: self.current.is_some(),
-                now: self.current.clone(),
-                queue: self.queue.clone(),
-                progress_ms: self.progress(now),
-                mode: format!("{:?}", self.mode),
-                warning: self.warning.clone(),
-            }));
+            a.push(Action::Widget(self.widget_state(now)));
         }
         a
+    }
+    pub fn widget_state(&self, now: i64) -> WidgetState {
+        WidgetState {
+            visible: self.current.is_some(),
+            now: self.current.clone(),
+            queue: self.queue.clone(),
+            progress_ms: self.progress(now),
+            mode: format!("{:?}", self.mode),
+            warning: self.warning.clone(),
+        }
     }
 }
 

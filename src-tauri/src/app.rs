@@ -12,13 +12,19 @@ pub struct AppState {
     pub driver: mpsc::Sender<DriverMsg>,
     pub state: watch::Receiver<WidgetState>,
 }
-pub fn save_tokens(key: &str, t: &Tokens) -> anyhow::Result<()> {
-    crate::secrets::store(key, &serde_json::to_string(t)?)
+pub fn save_tokens(key: &'static str, t: &Tokens) {
+    let t = t.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = serde_json::to_string(&t)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| crate::secrets::store(key, &json));
+        if result.is_err() {
+            eprintln!("Хранилище ключей недоступно");
+        }
+    });
 }
-fn rotate(key: &str, t: &Tokens) {
-    if save_tokens(key, t).is_err() {
-        eprintln!("Хранилище ключей недоступно");
-    }
+fn rotate(key: &'static str, t: &Tokens) {
+    save_tokens(key, t);
 }
 pub fn spotify_client(id: String, t: Tokens) -> Arc<Spotify> {
     Arc::new(Spotify::new(
@@ -38,7 +44,14 @@ pub fn twitch_client(t: Tokens) -> Arc<Helix> {
         |t| rotate("twitch", t),
     ))
 }
-fn load(key: &str) -> anyhow::Result<Option<Tokens>> {
+async fn load(key: &'static str) -> anyhow::Result<Option<Tokens>> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || load_blocking(key)),
+    )
+    .await??
+}
+fn load_blocking(key: &str) -> anyhow::Result<Option<Tokens>> {
     crate::secrets::load(key)?
         .map(|s| serde_json::from_str(&s).map_err(Into::into))
         .transpose()
@@ -85,11 +98,11 @@ async fn start(
     )?));
     let settings = db
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get_setting::<Settings>("settings")?
         .unwrap_or_default();
     let mut warning = None;
-    let spotify = match load("spotify") {
+    let spotify = match load("spotify").await {
         Ok(Some(t)) => settings
             .spotify_client_id
             .clone()
@@ -100,7 +113,7 @@ async fn start(
             None
         }
     };
-    let helix = match load("twitch") {
+    let helix = match load("twitch").await {
         Ok(Some(t)) => Some(twitch_client(t)),
         Ok(None) => None,
         Err(_) => {
@@ -144,7 +157,7 @@ pub fn exit(app: &tauri::AppHandle) {
             let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
             let settings = db.get_setting::<Settings>("settings")?.unwrap_or_default();
             drop(db);
-            if let (Some(t), Some(id)) = (load("twitch")?, settings.music_reward_id) {
+            if let (Some(t), Some(id)) = (load("twitch").await?, settings.music_reward_id) {
                 twitch_client(t)
                     .update_reward(&id, &serde_json::json!({"is_paused":true}))
                     .await?;

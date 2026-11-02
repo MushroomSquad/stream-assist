@@ -16,29 +16,64 @@ pub enum Decision {
     Reject(String),
 }
 pub fn normalize_title(s: &str) -> String {
-    let mut depth = 0usize;
-    let clean: String = s
-        .to_lowercase()
-        .chars()
-        .filter(|c| match c {
-            '(' | '[' => {
-                depth += 1;
-                false
+    const NOISE: &[&str] = &[
+        "official music video",
+        "official video",
+        "official audio",
+        "lyric video",
+        "lyrics",
+        "mv",
+        "hd",
+    ];
+    let lower = s.to_lowercase();
+    let mut clean = String::new();
+    let mut chars = lower.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '(' || c == '[' {
+            let close = if c == '(' { ')' } else { ']' };
+            let mut phrase = String::new();
+            for ch in chars.by_ref() {
+                if ch == close {
+                    break;
+                }
+                phrase.push(ch);
             }
-            ')' | ']' => {
-                depth = depth.saturating_sub(1);
-                false
+            if !NOISE.contains(&phrase.trim()) {
+                clean.push(c);
+                clean.push_str(&phrase);
+                clean.push(close);
             }
-            _ => depth == 0,
-        })
-        .collect();
+        } else {
+            clean.push(c);
+        }
+    }
+    let mut clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    loop {
+        let mut stripped = false;
+        for phrase in NOISE {
+            if let Some(prefix) = clean.strip_suffix(phrase) {
+                if prefix.is_empty()
+                    || prefix.ends_with(|c: char| {
+                        c.is_whitespace() || matches!(c, '-' | '–' | '—' | '|')
+                    })
+                {
+                    clean = prefix
+                        .trim_end_matches(|c: char| {
+                            c.is_whitespace() || matches!(c, '-' | '–' | '—' | '|')
+                        })
+                        .to_string();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
     clean
-        .replace("official video", "")
-        .split_whitespace()
-        .filter(|w| !matches!(*w, "audio" | "lyrics" | "mv" | "hd"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
+
 pub async fn resolve(input: RequestInput, sp: &Spotify, yt_base: &str) -> Result<Resolution> {
     let tracks = match input {
         RequestInput::Empty => vec![],

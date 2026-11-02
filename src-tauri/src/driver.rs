@@ -126,18 +126,56 @@ fn chat(c: &DriverCtx, text: String) {
         background(async move { h.chat(&text).await });
     }
 }
-fn actions(c: &DriverCtx, p: &Player, mut aa: Vec<Action>, tx: &mpsc::UnboundedSender<Internal>) {
+#[derive(Default)]
+struct PollGate {
+    in_flight: bool,
+    last_play: Option<std::time::Instant>,
+}
+impl PollGate {
+    fn start(&mut self) -> Option<std::time::Instant> {
+        if self.in_flight {
+            return None;
+        }
+        self.in_flight = true;
+        Some(std::time::Instant::now())
+    }
+    fn finish(&mut self, issued: std::time::Instant) -> bool {
+        self.in_flight = false;
+        self.last_play.is_none_or(|play| issued >= play)
+    }
+}
+fn keep_reward_id(current: &Settings, mut incoming: Settings) -> Settings {
+    incoming.music_reward_id = current.music_reward_id.clone();
+    incoming
+}
+fn actions(
+    c: &DriverCtx,
+    p: &Player,
+    mut aa: Vec<Action>,
+    tx: &mpsc::UnboundedSender<Internal>,
+    polls: &mut PollGate,
+) {
     aa.sort_by_key(|a| !matches!(a, Action::Persist));
     for a in aa {
         match a {
             Action::Persist => {
                 let (cur, q) = p.snapshot();
-                if c.db.lock().unwrap().save_state(cur.as_ref(), &q).is_err() {
+                if c.db
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .save_state(cur.as_ref(), &q)
+                    .is_err()
+                {
                     warn(c, Some("Не удалось сохранить очередь".into()));
                 }
             }
             Action::Started(i) => {
-                if c.db.lock().unwrap().history_push(&i, now()).is_err() {
+                if c.db
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .history_push(&i, now())
+                    .is_err()
+                {
                     warn(c, Some("Не удалось сохранить историю".into()));
                 }
                 if let Some(r) = i.redemption {
@@ -148,7 +186,7 @@ fn actions(c: &DriverCtx, p: &Player, mut aa: Vec<Action>, tx: &mpsc::UnboundedS
                 if let Some(r) = i.redemption {
                     if c.db
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .mark_cancelled(&r.redemption_id)
                         .is_ok()
                     {
@@ -166,6 +204,7 @@ fn actions(c: &DriverCtx, p: &Player, mut aa: Vec<Action>, tx: &mpsc::UnboundedS
                 device_id,
                 position_ms,
             } => {
+                polls.last_play = Some(std::time::Instant::now());
                 let sp = c.spotify.clone();
                 let tx = tx.clone();
                 tokio::spawn(async move {
@@ -264,6 +303,11 @@ fn now() -> i64 {
 }
 enum Internal {
     Input(Input),
+    Poll {
+        issued: std::time::Instant,
+        result: Result<Option<PlaybackSnapshot>, ()>,
+    },
+    WidgetReset(u64),
     Msg(DriverMsg),
     Reconcile(Vec<Redemption>),
     Reward(Result<String>),
@@ -280,7 +324,7 @@ fn redeem(
     }
     if c.db
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .redemption_state(&r.r.redemption_id)
         .ok()
         != Some(RedemptionState::Unknown)
@@ -354,11 +398,17 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
     let (tx, mut internal) = mpsc::unbounded_channel();
     let mut player = Player::new(ctx.settings.limits.max_duration_ms);
     let mut pending = None;
+    let mut polls = PollGate::default();
+    let mut widget_test = 0u64;
     let mut inflight = HashSet::new();
-    let restored = ctx.db.lock().unwrap().load_state();
+    let restored = ctx
+        .db
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .load_state();
     if let Ok((current, queue)) = restored {
         let aa = player.step(Input::Restore { current, queue }, now());
-        actions(&ctx, &player, aa, &tx);
+        actions(&ctx, &player, aa, &tx, &mut polls);
     }
     let mut es = connect_twitch(&ctx, &tx);
     reconcile(&ctx, &tx);
@@ -366,6 +416,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
     loop {
         let event = tokio::select! {
             _ = tick.tick() => {
+                if let Some(issued) = polls.start() {
                 let sp = ctx.spotify.clone();
                 let tx = tx.clone();
                 // Poll even while Idle: successful polls clear the outage/fallback flag.
@@ -376,8 +427,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                             None => Err(anyhow!("Spotify disconnected")),
                         }
                     }).await.map_err(|_| ());
-                    let _ = tx.send(Internal::Input(Input::Spotify(result)));
+                    let _ = tx.send(Internal::Poll { issued, result });
                 });
+                }
                 Internal::Input(Input::Tick)
             },
             message = rx.recv() => match message {
@@ -411,10 +463,25 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             }
 
         };
+        let event = match event {
+            Internal::Poll { issued, result } => {
+                if !polls.finish(issued) {
+                    continue;
+                }
+                Internal::Input(Input::Spotify(result))
+            }
+            other => other,
+        };
         match event {
+            Internal::Poll { .. } => unreachable!(),
+            Internal::WidgetReset(generation) => {
+                if generation == widget_test {
+                    publish(&ctx, player.widget_state(now()));
+                }
+            }
             Internal::Input(i) | Internal::Msg(DriverMsg::Cmd(i)) => {
                 let aa = player.step(i, now());
-                actions(&ctx, &player, aa, &tx);
+                actions(&ctx, &player, aa, &tx, &mut polls);
             }
             Internal::Msg(DriverMsg::Es(EsSignal::Redemption(r))) => {
                 redeem(&ctx, r, &mut inflight, &tx)
@@ -427,7 +494,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                         let s = ctx
                             .db
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .redemption_state(&r.r.redemption_id)?;
                         Ok((r, s))
                     })
@@ -455,7 +522,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 let recent = ctx
                     .db
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .history_recent(ctx.settings.limits.no_repeat_last_n);
                 let decision = match (res, recent) {
                     (Ok(res), Ok(mut recent)) => {
@@ -473,15 +540,15 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 };
                 match decision {
                     Decision::Enqueue(t) => {
-                        let inserted =
-                            ctx.db
-                                .lock()
-                                .unwrap()
-                                .insert_item(&t, &red.user_login, Some(&red.r));
+                        let inserted = ctx
+                            .db
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert_item(&t, &red.user_login, Some(&red.r));
                         match inserted {
                             Ok(item) => {
                                 let aa = player.step(Input::Enqueue(item), now());
-                                actions(&ctx, &player, aa, &tx);
+                                actions(&ctx, &player, aa, &tx, &mut polls);
                                 chat(
                                     &ctx,
                                     i18n::chat_added(&red.user_login, &t.artist, &t.title, {
@@ -491,11 +558,28 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                                 );
                             }
                             Err(crate::db::DbError::Duplicate) => {}
-                            Err(_) => warn(&ctx, Some("Не удалось сохранить заказ".into())),
+                            Err(_) => {
+                                let _ = ctx
+                                    .db
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .mark_cancelled(&id);
+                                status(&ctx, red.r, false);
+                                chat(
+                                    &ctx,
+                                    i18n::chat_rejected(&red.user_login, i18n::TEXT_SERVICE_DOWN),
+                                );
+                            }
                         }
                     }
                     Decision::Reject(why) => {
-                        if ctx.db.lock().unwrap().mark_cancelled(&id).is_ok() {
+                        if ctx
+                            .db
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .mark_cancelled(&id)
+                            .is_ok()
+                        {
                             status(&ctx, red.r, false);
                             chat(&ctx, i18n::chat_rejected(&red.user_login, &why));
                         }
@@ -508,7 +592,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 let _ = ctx
                     .db
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .set_setting("settings", &ctx.settings);
                 if let Some(h) = ctx.helix.clone() {
                     let id = ctx.settings.music_reward_id.clone().unwrap();
@@ -532,9 +616,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             Internal::Reward(Err(e)) => warn(&ctx, Some(e.to_string())),
             Internal::Spotify(result) => match result {
                 Ok(t) => {
-                    if crate::app::save_tokens("spotify", &t).is_err() {
-                        warn(&ctx, Some("Хранилище ключей недоступно".into()));
-                    }
+                    crate::app::save_tokens("spotify", &t);
                     if let Some(id) = ctx.settings.spotify_client_id.clone() {
                         ctx.spotify = Some(crate::app::spotify_client(id, t));
                     }
@@ -549,27 +631,38 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             }
             Internal::Msg(DriverMsg::WidgetTest) => {
                 let mut s = ctx.state_tx.borrow().clone();
+                widget_test += 1;
+                let generation = widget_test;
+                let reset = tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    let _ = reset.send(Internal::WidgetReset(generation));
+                });
                 s.visible = true;
                 publish(&ctx, s);
             }
             Internal::Msg(DriverMsg::SettingsChanged(s)) => {
-                let saved = ctx.db.lock().unwrap().set_setting("settings", &s).is_ok();
+                let s = keep_reward_id(&ctx.settings, s);
+                let saved = ctx
+                    .db
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_setting("settings", &s)
+                    .is_ok();
                 if saved {
                     ctx.settings = s;
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
                         now(),
                     );
-                    actions(&ctx, &player, aa, &tx);
+                    actions(&ctx, &player, aa, &tx, &mut polls);
                 }
             }
             Internal::Msg(DriverMsg::TwitchLogin(t)) => {
                 if let Some(old) = es.take() {
                     old.abort();
                 }
-                if crate::app::save_tokens("twitch", &t).is_err() {
-                    warn(&ctx, Some("Хранилище ключей недоступно".into()));
-                }
+                crate::app::save_tokens("twitch", &t);
                 ctx.helix = Some(crate::app::twitch_client(t));
                 es = connect_twitch(&ctx, &tx);
             }
@@ -577,12 +670,50 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 if let Some(old) = es.take() {
                     old.abort();
                 }
-                ctx.helix = None;
-                let _ = crate::secrets::delete("twitch");
+                if let (Some(h), Some(id)) =
+                    (ctx.helix.take(), ctx.settings.music_reward_id.clone())
+                {
+                    background(async move {
+                        h.update_reward(&id, &serde_json::json!({"is_paused":true}))
+                            .await
+                    });
+                }
+                tokio::task::spawn_blocking(|| {
+                    let _ = crate::secrets::delete("twitch");
+                });
             }
         }
     }
     if let Some(es) = es {
         es.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stale_poll_after_play_is_dropped() {
+        let mut gate = PollGate::default();
+        let issued = gate.start().unwrap();
+        assert!(gate.start().is_none());
+        gate.last_play = Some(issued + Duration::from_millis(1));
+        assert!(!gate.finish(issued));
+        let next = gate.start().unwrap();
+        gate.last_play = Some(next);
+        assert!(gate.finish(next));
+    }
+    #[test]
+    fn settings_change_keeps_music_reward_id() {
+        let mut current = Settings::default();
+        current.music_reward_id = Some("owned".into());
+        for id in [None, Some("stale".into())] {
+            let mut incoming = Settings::default();
+            incoming.music_reward_id = id;
+            incoming.reward_cost = 123;
+            let updated = keep_reward_id(&current, incoming);
+            assert_eq!(updated.music_reward_id.as_deref(), Some("owned"));
+            assert_eq!(updated.reward_cost, 123);
+        }
     }
 }
