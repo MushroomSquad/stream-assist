@@ -11,6 +11,15 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
 };
+#[test]
+fn builtin_themes_listed() {
+    let ids: Vec<_> = list_themes(&PathBuf::from("/nonexistent"))
+        .into_iter()
+        .map(|theme| theme.id)
+        .collect();
+    assert_eq!(ids, ["block", "crt", "glass", "underground"]);
+}
+
 fn state() -> WidgetState {
     WidgetState {
         visible: false,
