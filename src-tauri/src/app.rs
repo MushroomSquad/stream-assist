@@ -133,14 +133,20 @@ async fn start(
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
     let active_theme = Arc::new(RwLock::new(settings.active_theme.clone()));
-    let ws = crate::server::serve(
+    let (ws, server_warning) = crate::server::start_or_disabled(
         settings.port,
         dir.join("themes"),
         active_theme.clone(),
         state,
     )
-    .await?;
-    handle.manage(RunningPort(ws.running_port));
+    .await;
+    handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
+    if let Some(code) = server_warning {
+        let mut s = state_tx.borrow().clone();
+        s.warning = Some(code.into());
+        state_tx.send_replace(s.clone());
+        let _ = tauri::Emitter::emit(&handle, "state", s);
+    }
     crate::driver::run(
         DriverCtx {
             db,
@@ -383,7 +389,7 @@ pub async fn spotify_login(
         &client_id,
         &format!(
             "http://127.0.0.1:{}/callback/spotify",
-            running_port(app.clone())?
+            running_port(app.clone()).ok_or("server_start_failed")?
         ),
         &pkce,
     );
@@ -433,7 +439,7 @@ pub async fn import_theme(app: tauri::AppHandle, path: String) -> Result<String,
 #[tauri::command]
 pub async fn obs_add_widget(app: tauri::AppHandle) -> Result<(), String> {
     let s = get_settings(app.clone())?;
-    let port = running_port(app.clone())?;
+    let port = running_port(app.clone()).ok_or("server_start_failed")?;
     let theme = list_themes(app)?
         .into_iter()
         .find(|t| t.id == s.active_theme)
@@ -467,12 +473,10 @@ fn validate_settings(s: &Settings) -> Result<(), String> {
     }
 }
 
-pub struct RunningPort(pub u16);
+pub struct RunningPort(pub Option<u16>);
 #[tauri::command]
-pub fn running_port(app: tauri::AppHandle) -> Result<u16, String> {
-    app.try_state::<RunningPort>()
-        .map(|p| p.0)
-        .ok_or("starting".into())
+pub fn running_port(app: tauri::AppHandle) -> Option<u16> {
+    app.try_state::<RunningPort>().and_then(|p| p.0)
 }
 #[tauri::command]
 pub async fn twitch_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {

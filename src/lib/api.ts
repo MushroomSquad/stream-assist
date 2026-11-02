@@ -36,7 +36,7 @@ export const onState = (callback: (s: WidgetState) => void) => isTauri() ? liste
 export const openExternal = (url: string) => isTauri() ? openUrl(url) : Promise.reject(new Error('browser'));
 export const chooseTheme = () => isTauri() ? open({ multiple: false, directory: false, filters: [{ name: ru.zip, extensions: ['zip'] }] }) : Promise.reject(new Error('browser'));
 
-export const running_port = () => isTauri() ? call<number>("running_port") : Promise.resolve(defaultSettings.port);
+export const running_port = () => isTauri() ? call<number | null>("running_port") : Promise.resolve(defaultSettings.port);
 export const twitch_status = () => call<boolean>("twitch_status");
 
 export const spotify_volume = () => isTauri() ? call<number | null>("spotify_volume") : Promise.resolve(null);

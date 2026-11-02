@@ -2,13 +2,13 @@
 import { onMount } from 'svelte';
 import * as api from '$lib/api';
 import { ru } from '$lib/i18n/ru';
-let { runningPort, settings, save, run }: { runningPort: number; settings: api.Settings; save: () => void; run: (f: () => Promise<unknown>) => void } = $props();
+let { runningPort, settings, save, run }: { runningPort: number; settings: api.Settings; save: () => void; run: (f: () => Promise<unknown>, clear?: boolean) => void } = $props();
 let device = $state<api.DeviceStart | null>(null);
 let twitchConnected = $state(false);
 let spotify = $state<api.SpotifyStatus | null>(null);
 let obs = $state('');
 const redirect = $derived(`http://127.0.0.1:${runningPort}/callback/spotify`);
-onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }); run(async () => { spotify = await api.spotify_status(); }); });
+onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }, false); run(async () => { spotify = await api.spotify_status(); }, false); });
 </script>
 <section><h2>{ru.connections}</h2>
 <div class="card"><h3>{ru.twitch}</h3>

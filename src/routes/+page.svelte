@@ -15,9 +15,9 @@ let ready = $state(false);
 let message = $state('');
 let runningPort = $state(47821);
 const tabs = ['now', 'rewards', 'limits', 'widget', 'connections'] as const;
-async function run(f: () => Promise<unknown>) { message = ''; try { await f(); } catch (e) { message = errorText(e); } }
+async function run(f: () => Promise<unknown>, clear = true) { if (clear) message = ''; try { await f(); } catch (e) { if (clear || !message) message = errorText(e); } }
 async function refreshThemes() { themes = await api.list_themes(); }
-async function load() { await run(async () => { settings = await api.get_settings(); runningPort = await api.running_port(); await refreshThemes(); ready = true; }); }
+async function load() { await run(async () => { settings = await api.get_settings(); runningPort = (await api.running_port()) ?? settings.port; await refreshThemes(); ready = true; }); }
 function save() { void run(async () => { await api.save_settings($state.snapshot(settings)); message = ru.saved; if (settings.port !== runningPort) { message = ru.portWarning;  } }); }
 onMount(() => {
   let disposed = false;
@@ -30,6 +30,8 @@ onMount(() => {
 <svelte:head><title>{ru.appName}</title></svelte:head>
 <main><header><h1>{ru.appName}</h1><p>{ru.subtitle}</p></header>
 <nav aria-label={ru.appName}>{#each tabs as id}<button class:active={tab === id} aria-current={tab === id ? 'page' : undefined} onclick={() => tab = id}>{ru[id]}</button>{/each}</nav>
+{#if snapshot.warning === 'server_port_busy'}<p class="notice" role="alert">{ru.server_port_busy.replace('N', String(runningPort))}</p>
+{:else if snapshot.warning === 'server_start_failed'}<p class="notice" role="alert">{ru.server_start_failed}</p>{/if}
 {#if message}<p class="notice" role="status">{message}</p>{/if}
 {#if tab === 'now'}<NowQueue {snapshot} {run} />
 {:else if !ready}<p>{ru.settingsLoading}</p><button onclick={load}>{ru.reload}</button>

@@ -11,7 +11,7 @@
 </script>
 <section>
   <h2>{ru.now}</h2>
-  {#if snapshot.warning}<p class="notice" role="alert">{apiWarning(snapshot.warning)}</p>{/if}
+  {#if snapshot.warning && !['server_port_busy', 'server_start_failed'].includes(snapshot.warning)}<p class="notice" role="alert">{apiWarning(snapshot.warning)}</p>{/if}
   {#if snapshot.mode === 'Suspended'}<button class="primary" onclick={() => run(api.resume_queue)}>{ru.resume}</button>{/if}
   <div class="card">
     <h3>{snapshot.now ? snapshot.now.track.title : ru.empty}</h3>

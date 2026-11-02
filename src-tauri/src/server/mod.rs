@@ -93,6 +93,29 @@ fn build(
         },
     )
 }
+/// Keep the driver and settings usable even when the widget listener cannot bind.
+pub async fn start_or_disabled(
+    port: u16,
+    themes: PathBuf,
+    active: Arc<RwLock<String>>,
+    last: watch::Receiver<WidgetState>,
+) -> (ServerChannels, Option<&'static str>) {
+    match serve(port, themes.clone(), active.clone(), last.clone()).await {
+        Ok(channels) => (channels, None),
+        Err(error) => {
+            let code = if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse)
+            {
+                "server_port_busy"
+            } else {
+                "server_start_failed"
+            };
+            let (_, channels) = build(port, themes, active, last);
+            (channels, Some(code))
+        }
+    }
+}
 pub async fn serve(
     port: u16,
     themes_dir: PathBuf,
@@ -167,3 +190,36 @@ async fn callback(State(a): State<App>, Query(q): Query<Callback>) -> Response {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_busy_port_returns_warning_and_disabled_server() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = WidgetState {
+            visible: false,
+            now: None,
+            queue: vec![],
+            progress_ms: 0,
+            mode: "Idle".into(),
+            warning: None,
+        };
+        let (_tx, rx) = watch::channel(state);
+        let (server, warning) = start_or_disabled(
+            port,
+            PathBuf::new(),
+            Arc::new(RwLock::new("underground".into())),
+            rx,
+        )
+        .await;
+        assert_eq!(warning, Some("server_port_busy"));
+        assert!(server.task.is_none());
+        assert_eq!(server.running_port, port);
+        assert_eq!(listener.local_addr().unwrap().port(), port);
+    }
+}
