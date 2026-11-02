@@ -1,0 +1,17 @@
+{
+  "id": "moonlight",
+  "name": "Moonlight",
+  "author": "Stream Assist",
+  "width": 900,
+  "height": 390,
+  "parts": {
+    "now": {
+      "width": 570,
+      "height": 225
+    },
+    "queue": {
+      "width": 310,
+      "height": 380
+    }
+  }
+}

@@ -58,5 +58,5 @@ Rust и SvelteKit.
 После перезапуска обновите URL источника в OBS (или нажмите «Добавить в OBS»)
 и Redirect URI в настройках своего приложения Spotify.
 
-Встроенные темы: `underground`, `glass`, `crt`, `block`.
+Встроенные темы: `underground`, `glass`, `crt`, `block`, `phantom` (Phantom), `moonlight` (Moonlight).
 Создание и импорт своих тем описаны в [docs/themes.md](docs/themes.md).

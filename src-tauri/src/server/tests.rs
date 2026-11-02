@@ -17,13 +17,23 @@ fn builtin_themes_listed() {
         .into_iter()
         .map(|theme| theme.id)
         .collect();
-    assert_eq!(ids, ["block", "crt", "glass", "underground"]);
+    assert_eq!(
+        ids,
+        [
+            "block",
+            "crt",
+            "glass",
+            "moonlight",
+            "phantom",
+            "underground"
+        ]
+    );
 }
 
 #[test]
 fn builtin_theme_parts_and_legacy_fallback() {
     let themes = list_themes(&PathBuf::from("/nonexistent"));
-    assert_eq!(themes.len(), 4);
+    assert_eq!(themes.len(), 6);
     for theme in themes {
         let parts = theme.parts.expect("built-in parts");
         assert!(parts.now.width > 0 && parts.now.height > 0);
