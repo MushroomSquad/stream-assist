@@ -12,7 +12,7 @@ use supertonic3_tts::Style;
 use super::{
     VlError, err,
     mixer::Recipe,
-    style::{canonical_bytes, parse_style, read_style_bytes, sha256_hex},
+    style::{canonical_bytes, load_verified, sha256_hex},
 };
 
 type Result<T> = std::result::Result<T, VlError>;
@@ -245,12 +245,7 @@ impl Store {
 
     pub fn load_style(&self, id: i64) -> Result<Style> {
         let profile = self.profile(id)?;
-        let path = self.profile_path(&profile);
-        let bytes = read_style_bytes(&path)?;
-        if sha256_hex(&bytes) != profile.style_sha256 {
-            return Err(err("PROFILE_HASH_MISMATCH"));
-        }
-        parse_style(&bytes)
+        load_verified(&self.profile_path(&profile), &profile.style_sha256)
     }
 
     pub fn profile_path(&self, profile: &Profile) -> PathBuf {

@@ -369,16 +369,7 @@ impl Runner {
         let reference = root.join(format!("tmp/clone-{id}.wav"));
         let out = root.join(format!("tmp/clone-{id}.json"));
         let files = TempFiles(vec![reference.clone(), out.clone()]);
-        let mut reader = hound::WavReader::open(&path).map_err(|_| err("IO_FAILED"))?;
-        let start = start_ms * u64::from(audio::SR) / 1000;
-        let end = end_ms * u64::from(audio::SR) / 1000;
-        reader.seek(start as u32).map_err(|_| err("IO_FAILED"))?;
-        let samples = reader
-            .samples::<i16>()
-            .take((end - start) as usize)
-            .map(|s| s.map(|v| v as f32 / 32768.0))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| err("IO_FAILED"))?;
+        let samples = audio::read_segment(&path, start_ms, end_ms)?;
         std::fs::write(&reference, audio::wav_bytes(&samples, audio::SR))?;
         let req = WorkerRequest::Clone {
             model_dir,

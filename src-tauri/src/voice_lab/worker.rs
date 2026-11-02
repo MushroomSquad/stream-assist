@@ -93,20 +93,22 @@ pub fn clone_options(
         seed,
         speaker_model,
         device: Device::Cpu,
+        voice_quality: 8,
         ..Default::default()
     };
     match preset {
         ClonePreset::Fast => {
+            opts.mix_iterations = 10;
+            opts.row_iterations = 15;
+            opts.iterations = 25;
+            opts.voice_quality = 5;
+        }
+        ClonePreset::Standard => {
             opts.mix_iterations = 20;
             opts.row_iterations = 30;
             opts.iterations = 50;
         }
-        ClonePreset::Precise => {
-            opts.mix_iterations = 80;
-            opts.row_iterations = 120;
-            opts.iterations = 200;
-        }
-        ClonePreset::Standard => {}
+        ClonePreset::Precise => {}
     }
     if language == "ru" {
         opts.probe_bank = RU_PROBES.iter().map(|s| s.to_string()).collect();

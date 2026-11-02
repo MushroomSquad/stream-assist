@@ -131,15 +131,22 @@ pub struct ModelStatus {
     pub ffmpeg: bool,
 }
 
+pub fn installed(root: &Path) -> bool {
+    MODEL_FILES.iter().all(|f| {
+        model_dir(root)
+            .join(f.path)
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() == f.size)
+    })
+}
+
 pub fn status(root: &Path) -> ModelStatus {
     let matches = |path: PathBuf, size| {
         path.metadata()
             .is_ok_and(|m| m.is_file() && m.len() == size)
     };
     ModelStatus {
-        installed: MODEL_FILES
-            .iter()
-            .all(|f| matches(model_dir(root).join(f.path), f.size)),
+        installed: installed(root),
         encoder_installed: matches(encoder_path(root), SPEAKER_ENCODER.size),
         ffmpeg: ffmpeg_available(),
     }

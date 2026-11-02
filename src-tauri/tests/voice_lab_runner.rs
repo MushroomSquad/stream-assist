@@ -196,12 +196,13 @@ fn transcript_rules() {
 #[test]
 fn clone_options_presets() {
     for (p, e) in [
-        (ClonePreset::Fast, (20, 30, 50)),
-        (ClonePreset::Standard, (40, 60, 100)),
-        (ClonePreset::Precise, (80, 120, 200)),
+        (ClonePreset::Fast, (10, 15, 25)),
+        (ClonePreset::Standard, (20, 30, 50)),
+        (ClonePreset::Precise, (40, 60, 100)),
     ] {
         let o = clone_options("ru", Some(" words "), p, 7, None);
         assert_eq!((o.mix_iterations, o.row_iterations, o.iterations), e);
+        assert_eq!(o.voice_quality, if p == ClonePreset::Fast { 5 } else { 8 });
         assert!(matches!(o.device, supertonic3_tts::Device::Cpu));
         assert_eq!(o.probe_bank, RU_PROBES);
         assert_eq!(o.reference_text.as_deref(), Some("words"));

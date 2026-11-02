@@ -187,6 +187,23 @@ pub fn load_mono(wav: &Path) -> Result<Vec<f32>, VlError> {
         .map_err(|_| err("AUDIO_UNSUPPORTED"))
 }
 
+/// Reads only the requested fragment of the normalized mono PCM16 work WAV.
+pub fn read_segment(path: &Path, start_ms: u64, end_ms: u64) -> Result<Vec<f32>, VlError> {
+    let mut reader = hound::WavReader::open(path).map_err(|_| err("IO_FAILED"))?;
+    let index = |ms: u64| {
+        (u128::from(ms) * u128::from(SR) / 1000).min(u128::from(reader.duration())) as u32
+    };
+    let start = index(start_ms);
+    let end = index(end_ms).max(start);
+    reader.seek(start).map_err(|_| err("IO_FAILED"))?;
+    reader
+        .samples::<i16>()
+        .take((end - start) as usize)
+        .map(|s| s.map(|v| v as f32 / 32768.0))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| err("IO_FAILED"))
+}
+
 pub fn peaks(samples: &[f32], n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
@@ -358,6 +375,21 @@ mod tests {
         let bytes = wav_bytes(&s, SR);
         let r = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
         assert_eq!(r.duration(), SR * 2);
+    }
+    #[test]
+    fn read_segment_seeks_and_bounds_the_read() {
+        let d = tempdir().unwrap();
+        let path = d.path().join("work.wav");
+        let samples = [vec![0.25; SR as usize], vec![-0.5; SR as usize]].concat();
+        fs::write(&path, wav_bytes(&samples, SR)).unwrap();
+        let fragment = read_segment(&path, 1000, 1500).unwrap();
+        assert_eq!(fragment.len(), SR as usize / 2);
+        assert!(fragment.iter().all(|s| (*s + 0.5).abs() < 0.0001));
+        assert_eq!(
+            read_segment(&path, 1500, u64::MAX).unwrap().len(),
+            SR as usize / 2
+        );
+        assert!(read_segment(&path, u64::MAX, u64::MAX).unwrap().is_empty());
     }
     #[test]
     fn import_is_idempotent() {

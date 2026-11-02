@@ -68,8 +68,8 @@ pub fn init(app: &tauri::App) {
             .map_err(anyhow::Error::from)?
             .join("voice-lab");
         let store = Store::open(&root)?;
-        if models::status(&root).installed {
-            models::register_builtins(&store, &root)?;
+        if models::installed(&root) {
+            let _ = models::register_builtins(&store, &root);
         }
         Ok(VoiceLab {
             root,

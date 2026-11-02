@@ -4,7 +4,7 @@ use super::{
     models,
     runner::{Emit, JobState},
     store::{Profile, Render, RenderParams, Source},
-    style::{canonical_bytes, read_style_file},
+    style::{canonical_bytes, load_verified, read_style_file},
     worker::ClonePreset,
 };
 use std::{
@@ -31,7 +31,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 fn require_model(root: &Path) -> Result<(), VlError> {
-    if models::status(root).installed {
+    if models::installed(root) {
         Ok(())
     } else {
         Err(err("MODEL_MISSING"))
@@ -59,18 +59,19 @@ fn build_mix(
     select_id: Option<i64>,
 ) -> Result<(Style, Recipe), VlError> {
     let mut ids = HashSet::new();
-    if inputs.iter().any(|(id, _)| !ids.insert(*id))
+    if !(1..=8).contains(&inputs.len())
+        || inputs.iter().any(|(id, _)| !ids.insert(*id))
         || select_id.is_some_and(|id| !ids.contains(&id))
     {
         return Err(err("MIX_INVALID"));
     }
     let select_index = select_id.and_then(|id| inputs.iter().position(|(i, _)| *i == id));
     let s = lab.store.lock().map_err(|_| err("IO_FAILED"))?;
-    let mut styles = Vec::new();
+    let mut paths = Vec::new();
     let mut recipe_inputs = Vec::new();
     for (id, weight) in &inputs {
         let profile = s.profile(*id)?;
-        styles.push(s.load_style(*id)?);
+        paths.push((s.profile_path(&profile), profile.style_sha256.clone()));
         recipe_inputs.push(RecipeInput {
             profile_sha256: profile.style_sha256,
             name: profile.name,
@@ -78,6 +79,10 @@ fn build_mix(
         });
     }
     drop(s);
+    let styles = paths
+        .iter()
+        .map(|(path, sha)| load_verified(path, sha))
+        .collect::<Result<Vec<_>, _>>()?;
     let refs: Vec<_> = styles
         .iter()
         .zip(&inputs)
@@ -215,7 +220,7 @@ pub async fn vl_install(
         let mut last = last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if done < total && last.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
+        if done == total || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
             let _ = app.emit("vl-install", serde_json::json!({"done":done,"total":total}));
             *last = Some(Instant::now());
         }
@@ -223,16 +228,6 @@ pub async fn vl_install(
     models::install(&l.root, with_encoder, &progress)
         .await
         .map_err(|e| e.code())?;
-    let total = models::MODEL_FILES.iter().map(|f| f.size).sum::<u64>()
-        + if with_encoder {
-            models::SPEAKER_ENCODER.size
-        } else {
-            0
-        };
-    let _ = app.emit(
-        "vl-install",
-        serde_json::json!({"done":total,"total":total}),
-    );
     blocking(l.clone(), |l| {
         let store = l.store.lock().map_err(|_| err("IO_FAILED"))?;
         models::register_builtins(&store, &l.root)
@@ -305,11 +300,8 @@ pub(crate) fn source_audio(
         (s.source(source_id)?, s.source_work_path(source_id))
     };
     audio::validate_range(source.duration_ms as u64, start_ms, end_ms, 1, 60000)?;
-    let samples = audio::load_mono(&path)?;
-    Ok(audio::wav_bytes(
-        audio::segment(&samples, start_ms, end_ms),
-        audio::SR,
-    ))
+    let samples = audio::read_segment(&path, start_ms, end_ms)?;
+    Ok(audio::wav_bytes(&samples, audio::SR))
 }
 
 #[tauri::command]
@@ -332,7 +324,7 @@ pub(crate) fn cancel_job(lab: &VoiceLab, id: u64) -> Result<(), VlError> {
 
 #[tauri::command]
 pub async fn vl_cancel_job(state: State<'_, VlState>, id: u64) -> Result<(), String> {
-    blocking(lab(&state)?, move |l| cancel_job(l, id)).await
+    cancel_job(lab(&state)?.as_ref(), id).map_err(|e| e.code())
 }
 
 pub(crate) fn jobs(lab: &VoiceLab) -> Result<Vec<JobState>, VlError> {
@@ -341,7 +333,7 @@ pub(crate) fn jobs(lab: &VoiceLab) -> Result<Vec<JobState>, VlError> {
 
 #[tauri::command]
 pub async fn vl_jobs(state: State<'_, VlState>) -> Result<Vec<JobState>, String> {
-    blocking(lab(&state)?, jobs).await
+    jobs(lab(&state)?.as_ref()).map_err(|e| e.code())
 }
 
 pub(crate) fn import_profile(
@@ -686,6 +678,8 @@ mod tests {
     fn build_mix_rejects_duplicates_and_foreign_select() {
         let (_d, lab, p) = setup();
         for (inputs, select) in [
+            (vec![], None),
+            ((1..=9).map(|id| (id, 1.0)).collect(), None),
             (vec![(p.id, 50.0), (p.id, 50.0)], None),
             (vec![(p.id, 100.0)], Some(p.id + 1)),
         ] {

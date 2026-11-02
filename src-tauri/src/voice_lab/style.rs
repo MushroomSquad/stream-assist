@@ -49,6 +49,14 @@ pub fn read_style_file(path: &Path) -> Result<Style, VlError> {
     parse_style(&read_style_bytes(path)?)
 }
 
+pub fn load_verified(path: &Path, sha: &str) -> Result<Style, VlError> {
+    let bytes = read_style_bytes(path)?;
+    if sha256_hex(&bytes) != sha {
+        return Err(err("PROFILE_HASH_MISMATCH"));
+    }
+    parse_style(&bytes)
+}
+
 /// Reads at most `MAX_STYLE_BYTES + 1` bytes of a style file.
 pub fn read_style_bytes(path: &Path) -> Result<Vec<u8>, VlError> {
     let mut file = std::fs::File::open(path)?;
