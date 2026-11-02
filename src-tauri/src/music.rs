@@ -74,18 +74,36 @@ pub fn normalize_title(s: &str) -> String {
     clean
 }
 
-pub async fn resolve(input: RequestInput, sp: &Spotify, yt_base: &str) -> Result<Resolution> {
+pub async fn resolve(
+    input: RequestInput,
+    sp: Option<&Spotify>,
+    yt_base: &str,
+) -> Result<Resolution> {
     let tracks = match input {
         RequestInput::Empty => vec![],
-        RequestInput::Query(q) => sp.search_track(&q).await?.into_iter().take(5).collect(),
-        RequestInput::SpotifyTrack(id) => vec![sp.track(&id).await?],
+        RequestInput::Query(q) => sp
+            .ok_or_else(|| anyhow::anyhow!("Spotify disconnected"))?
+            .search_track(&q)
+            .await?
+            .into_iter()
+            .take(5)
+            .collect(),
+        RequestInput::SpotifyTrack(id) => vec![
+            sp.ok_or_else(|| anyhow::anyhow!("Spotify disconnected"))?
+                .track(&id)
+                .await?,
+        ],
         RequestInput::YouTube(id) => {
             let Some(t) = youtube::oembed(&id, yt_base).await? else {
                 return Ok(Resolution::NotFound);
             };
-            let matches = sp
-                .search_track(&format!("{} {}", t.artist, normalize_title(&t.title)))
-                .await?;
+            let matches = if let Some(sp) = sp {
+                sp.search_track(&format!("{} {}", t.artist, normalize_title(&t.title)))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
             let found = matches.into_iter().find(|m| {
                 normalize_title(&m.title) == normalize_title(&t.title)
                     && normalize_title(&m.artist) == normalize_title(&t.artist)

@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use reqwest::{Client, Method, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 const REWARDS: &str = "/helix/channel_points/custom_rewards";
@@ -22,8 +23,8 @@ pub struct Helix {
     client_id: String,
     api: String,
     id_base: String,
-    tokens: Mutex<Tokens>,
-    on_rotate: Box<dyn Fn(&Tokens) + Send + Sync>,
+    tokens: Arc<Mutex<Tokens>>,
+    on_rotate: Arc<dyn Fn(&Tokens) + Send + Sync>,
 }
 #[derive(Deserialize)]
 pub(super) struct ApiRedemption {
@@ -61,19 +62,27 @@ impl Helix {
             client_id,
             api: api.trim_end_matches('/').into(),
             id_base: id_base.trim_end_matches('/').into(),
-            tokens: Mutex::new(tokens),
-            on_rotate: Box::new(on_rotate),
+            tokens: Arc::new(Mutex::new(tokens)),
+            on_rotate: Arc::new(on_rotate),
         }
     }
     async fn auth(&self, rejected: Option<&str>) -> Result<String> {
-        let mut t = self.tokens.lock().await;
-        if (rejected.is_none() && t.expires_at - auth::now() < 300)
-            || rejected.is_some_and(|old| old == t.access_token)
-        {
-            *t = auth::refresh(&self.client_id, &t.refresh_token, &self.id_base).await?;
-            (self.on_rotate)(&t);
-        }
-        Ok(t.access_token.clone())
+        let tokens = self.tokens.clone();
+        let on_rotate = self.on_rotate.clone();
+        let client_id = self.client_id.clone();
+        let rejected = rejected.map(str::to_owned);
+        let id_base = self.id_base.clone();
+        tokio::spawn(async move {
+            let mut t = tokens.lock().await;
+            if (rejected.is_none() && t.expires_at - auth::now() < 300)
+                || rejected.as_deref().is_some_and(|old| old == t.access_token)
+            {
+                *t = auth::refresh(&client_id, &t.refresh_token, &id_base).await?;
+                (on_rotate)(&t);
+            }
+            Ok(t.access_token.clone())
+        })
+        .await?
     }
     async fn request(
         &self,

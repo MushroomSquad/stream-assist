@@ -154,54 +154,82 @@ fn keep_reward_id(current: &Settings, mut incoming: Settings) -> Settings {
     incoming.music_reward_id = current.music_reward_id.clone();
     incoming
 }
+fn prepare_actions(
+    mut aa: Vec<Action>,
+    mut mark: impl FnMut(&Action) -> bool,
+    mut persist: impl FnMut(),
+) -> Vec<Action> {
+    aa.retain(|a| !matches!(a, Action::Started(_) | Action::Cancel(_, _)) || mark(a));
+    aa.retain(|a| {
+        if matches!(a, Action::Persist) {
+            persist();
+            false
+        } else {
+            true
+        }
+    });
+    aa
+}
 fn actions(
     c: &DriverCtx,
     p: &Player,
-    mut aa: Vec<Action>,
+    aa: Vec<Action>,
     tx: &mpsc::UnboundedSender<Internal>,
     polls: &mut PollGate,
 ) {
-    aa.sort_by_key(|a| !matches!(a, Action::Persist));
+    // Commit local redemption decisions before replacing the queue snapshot.
+    let aa = prepare_actions(
+        aa,
+        |a| {
+            let result = match a {
+                Action::Started(i) => {
+                    c.db.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .history_push(i, now())
+                }
+                Action::Cancel(i, _) => {
+                    if let Some(r) = &i.redemption {
+                        c.db.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .mark_cancelled(&r.redemption_id)
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => return true,
+            };
+            if result.is_err() {
+                warn(c, Some("Не удалось сохранить решение по заказу".into()));
+            }
+            result.is_ok()
+        },
+        || {
+            let (cur, q) = p.snapshot();
+            if c.db
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .save_state(cur.as_ref(), &q)
+                .is_err()
+            {
+                warn(c, Some("Не удалось сохранить очередь".into()));
+            }
+        },
+    );
     for a in aa {
         match a {
-            Action::Persist => {
-                let (cur, q) = p.snapshot();
-                if c.db
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .save_state(cur.as_ref(), &q)
-                    .is_err()
-                {
-                    warn(c, Some("Не удалось сохранить очередь".into()));
-                }
-            }
+            Action::Persist => unreachable!("persistence already completed"),
             Action::Started(i) => {
-                if c.db
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .history_push(&i, now())
-                    .is_err()
-                {
-                    warn(c, Some("Не удалось сохранить историю".into()));
-                }
                 if let Some(r) = i.redemption {
                     status(c, r, true)
                 }
             }
             Action::Cancel(i, why) => {
                 if let Some(r) = i.redemption {
-                    if c.db
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .mark_cancelled(&r.redemption_id)
-                        .is_ok()
-                    {
-                        status(c, r, false);
-                        chat(
-                            c,
-                            i18n::chat_rejected(&i.requester, i18n::cancel_text(&why)),
-                        );
-                    }
+                    status(c, r, false);
+                    chat(
+                        c,
+                        i18n::chat_rejected(&i.requester, i18n::cancel_text(&why)),
+                    );
                 }
             }
             Action::SpotifyPlay {
@@ -257,11 +285,11 @@ fn actions(
                                 )
                                 .await
                             }
-                            None => Ok(None),
+                            None => Err(anyhow!("YouTube key unavailable")),
                         }
                     })
                     .await
-                    .unwrap_or(None);
+                    .map_err(|_| ());
                     let _ = tx.send(Internal::Input(Input::FallbackResolved {
                         item_id: i.id,
                         video_id,
@@ -346,10 +374,9 @@ fn redeem(
     let tx = tx.clone();
     tokio::spawn(async move {
         let res = bounded(async {
-            let sp = sp.ok_or_else(|| anyhow!("Spotify disconnected"))?;
             music::resolve(
                 request::parse_request(&r.user_input),
-                &sp,
+                sp.as_deref(),
                 "https://www.youtube.com",
             )
             .await
@@ -452,8 +479,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             Some((code, state)) = ctx.ws.oauth_rx.recv() => {
                 match code {
                     Err(_) => {
-                        pending = None;
-                        warn(&ctx, Some("Вход Spotify отменён".into()));
+                        if spotify::take_pending_if_state_matches(&mut pending, &state).is_some() {
+                            warn(&ctx, Some("Вход Spotify отменён".into()));
+                        }
                     },
                     Ok(code) => {
                         if let Some(pkce) = spotify::take_pending_if_state_matches(&mut pending, &state) {
@@ -740,9 +768,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                             .await
                     });
                 }
-                tokio::task::spawn_blocking(|| {
-                    let _ = crate::secrets::delete("twitch");
-                });
+                let _ = crate::secrets::write("twitch", None);
             }
         }
     }
@@ -982,5 +1008,51 @@ mod tests {
             assert_eq!(updated.music_reward_id.as_deref(), Some("owned"));
             assert_eq!(updated.reward_cost, 123);
         }
+    }
+}
+
+#[cfg(test)]
+mod action_order_tests {
+    use super::*;
+    #[test]
+    fn local_marks_then_persist_then_network() {
+        let trace = std::cell::RefCell::new(Vec::new());
+        // A mixed batch deliberately places network work before persistence.
+        let item = QueueItem {
+            id: 1,
+            track: crate::model::Track {
+                source: crate::model::Source::Spotify {
+                    uri: "spotify:track:1".into(),
+                },
+                title: "song".into(),
+                artist: "artist".into(),
+                duration_ms: None,
+                explicit: None,
+                cover_url: None,
+            },
+            requester: "viewer".into(),
+            redemption: None,
+            started: false,
+        };
+        let aa = prepare_actions(
+            vec![
+                Action::SpotifyPause,
+                Action::Persist,
+                Action::Cancel(item.clone(), crate::player::CancelReason::YtUnavailable),
+                Action::Started(item),
+            ],
+            |_| {
+                trace.borrow_mut().push("mark");
+                true
+            },
+            || trace.borrow_mut().push("persist"),
+        );
+        for _ in aa {
+            trace.borrow_mut().push("network");
+        }
+        assert_eq!(
+            *trace.borrow(),
+            ["mark", "mark", "persist", "network", "network", "network"]
+        );
     }
 }

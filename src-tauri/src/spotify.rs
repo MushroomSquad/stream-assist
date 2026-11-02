@@ -5,6 +5,7 @@ use rand::Rng;
 use reqwest::{Client, Method, Response};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct Pkce {
@@ -59,8 +60,8 @@ pub struct Spotify {
     api: String,
     accounts: String,
     client_id: String,
-    tokens: Mutex<Tokens>,
-    on_rotate: Box<dyn Fn(&Tokens) + Send + Sync>,
+    tokens: Arc<Mutex<Tokens>>,
+    on_rotate: Arc<dyn Fn(&Tokens) + Send + Sync>,
 }
 impl Spotify {
     pub fn new(
@@ -75,8 +76,8 @@ impl Spotify {
             api: api.trim_end_matches('/').into(),
             accounts: accounts.trim_end_matches('/').into(),
             client_id,
-            tokens: Mutex::new(tokens),
-            on_rotate: Box::new(on_rotate),
+            tokens: Arc::new(Mutex::new(tokens)),
+            on_rotate: Arc::new(on_rotate),
         }
     }
     pub async fn exchange_code(
@@ -109,31 +110,39 @@ impl Spotify {
         })
     }
     async fn auth(&self, rejected: Option<&str>) -> Result<String> {
-        let mut t = self.tokens.lock().await;
-        if (rejected.is_none() && t.expires_at - now() < 300)
-            || rejected.is_some_and(|old| old == t.access_token)
-        {
-            let next: TokenResponse = self
-                .client
-                .post(format!("{}/api/token", self.accounts))
-                .form(&[
-                    ("grant_type", "refresh_token"),
-                    ("client_id", &self.client_id),
-                    ("refresh_token", &t.refresh_token),
-                ])
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            t.access_token = next.access_token;
-            if let Some(refresh) = next.refresh_token {
-                t.refresh_token = refresh;
+        let tokens = self.tokens.clone();
+        let on_rotate = self.on_rotate.clone();
+        let client_id = self.client_id.clone();
+        let rejected = rejected.map(str::to_owned);
+        let client = self.client.clone();
+        let accounts = self.accounts.clone();
+        tokio::spawn(async move {
+            let mut t = tokens.lock().await;
+            if (rejected.is_none() && t.expires_at - now() < 300)
+                || rejected.as_deref().is_some_and(|old| old == t.access_token)
+            {
+                let next: TokenResponse = client
+                    .post(format!("{}/api/token", accounts))
+                    .form(&[
+                        ("grant_type", "refresh_token"),
+                        ("client_id", &client_id),
+                        ("refresh_token", &t.refresh_token),
+                    ])
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                t.access_token = next.access_token;
+                if let Some(refresh) = next.refresh_token {
+                    t.refresh_token = refresh;
+                }
+                t.expires_at = now() + next.expires_in;
+                (on_rotate)(&t);
             }
-            t.expires_at = now() + next.expires_in;
-            (self.on_rotate)(&t);
-        }
-        Ok(t.access_token.clone())
+            Ok(t.access_token.clone())
+        })
+        .await?
     }
     async fn request(
         &self,

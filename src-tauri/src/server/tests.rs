@@ -306,3 +306,30 @@ fn custom_theme_overrides_builtin() {
     );
     std::fs::remove_dir_all(p).unwrap();
 }
+
+#[tokio::test]
+async fn widget_survives_poisoned_theme_lock() {
+    let active = Arc::new(RwLock::new("underground".into()));
+    let poisoned = active.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = poisoned.write().unwrap();
+        panic!("simulate interrupted theme update");
+    })
+    .join();
+    let (_, last) = watch::channel(state());
+    let (out, _) = broadcast::channel(1);
+    let (yt, _) = mpsc::channel(1);
+    let (oauth, _) = mpsc::channel(1);
+    let response = music(State(App {
+        port: 0,
+        themes: PathBuf::new(),
+        active,
+        last,
+        out,
+        yt,
+        oauth,
+        player: Arc::default(),
+    }))
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}

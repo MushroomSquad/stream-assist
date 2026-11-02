@@ -375,3 +375,37 @@ async fn eventsub_disconnect_subscribes_and_resyncs() {
         .unwrap();
     server.abort();
 }
+
+#[tokio::test]
+async fn refresh_completes_even_if_caller_dropped() {
+    let s = MockServer::start().await;
+    Mock::given(path("/oauth2/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(150))
+                .set_body_json(
+                    json!({"access_token":"new","refresh_token":"rotated","expires_in":3600}),
+                ),
+        )
+        .expect(1)
+        .mount(&s)
+        .await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut t = tokens();
+    t.expires_at = 0;
+    let h = Helix::new("client".into(), t, &s.uri(), &s.uri(), move |t| {
+        tx.send(t.refresh_token.clone()).unwrap();
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), h.me())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        "rotated"
+    );
+}

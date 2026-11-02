@@ -13,15 +13,18 @@ pub struct AppState {
     pub state: watch::Receiver<WidgetState>,
 }
 pub fn save_tokens(key: &'static str, t: &Tokens, app: tauri::AppHandle) {
-    let t = t.clone();
+    save_tokens_for_generation(key, t, app, crate::secrets::generation(key));
+}
+fn save_tokens_for_generation(key: &'static str, t: &Tokens, app: tauri::AppHandle, epoch: u64) {
+    let value = match serde_json::to_string(t) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let Some(pending) = crate::secrets::write_if_current(key, epoch, value) else {
+        return;
+    };
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            let result = serde_json::to_string(&t)
-                .map_err(anyhow::Error::from)
-                .and_then(|json| crate::secrets::store(key, &json));
-            result
-        })
-        .await;
+        let result = pending.await;
         if !matches!(result, Ok(Ok(()))) {
             if let Some(state) = app.try_state::<AppState>() {
                 let _ = send(&state, DriverMsg::Warning("keyring_unavailable".into())).await;
@@ -30,21 +33,23 @@ pub fn save_tokens(key: &'static str, t: &Tokens, app: tauri::AppHandle) {
     });
 }
 pub fn spotify_client(id: String, t: Tokens, app: tauri::AppHandle) -> Arc<Spotify> {
+    let epoch = crate::secrets::generation("spotify");
     Arc::new(Spotify::new(
         id,
         t,
         "https://api.spotify.com",
         "https://accounts.spotify.com",
-        move |t| save_tokens("spotify", t, app.clone()),
+        move |t| save_tokens_for_generation("spotify", t, app.clone(), epoch),
     ))
 }
 pub fn twitch_client(t: Tokens, app: tauri::AppHandle) -> Arc<Helix> {
+    let epoch = crate::secrets::generation("twitch");
     Arc::new(Helix::new(
         option_env!("TWITCH_CLIENT_ID").unwrap_or_default().into(),
         t,
         "https://api.twitch.tv",
         "https://id.twitch.tv",
-        move |t| save_tokens("twitch", t, app.clone()),
+        move |t| save_tokens_for_generation("twitch", t, app.clone(), epoch),
     ))
 }
 async fn load(key: &'static str) -> anyhow::Result<Option<Tokens>> {
@@ -360,10 +365,13 @@ pub async fn twitch_login_poll(
     }
 }
 async fn persist_login(key: &'static str, t: Tokens) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || crate::secrets::store(key, &serde_json::to_string(&t)?))
-        .await
-        .map_err(|_| "keyring_unavailable")?
-        .map_err(|_| "keyring_unavailable".into())
+    crate::secrets::write(
+        key,
+        Some(serde_json::to_string(&t).map_err(|_| "keyring_unavailable")?),
+    )
+    .await
+    .map_err(|_| "keyring_unavailable")?
+    .map_err(|_| "keyring_unavailable".into())
 }
 #[tauri::command]
 pub async fn twitch_logout(

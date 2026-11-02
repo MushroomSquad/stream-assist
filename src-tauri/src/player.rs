@@ -37,7 +37,7 @@ pub enum Input {
     YtPlayerConnected,
     FallbackResolved {
         item_id: i64,
-        video_id: Option<String>,
+        video_id: Result<Option<String>, ()>,
     },
     Restore {
         current: Option<QueueItem>,
@@ -385,13 +385,15 @@ impl Player {
             }
             Input::FallbackResolved { item_id, video_id } => {
                 if self.resolving && self.current.as_ref().is_some_and(|i| i.id == item_id) {
+                    self.resolving = false;
                     match video_id {
-                        Some(video_id) => {
+                        Err(()) => self.schedule(now),
+                        Ok(Some(video_id)) => {
                             self.current.as_mut().unwrap().track.source =
                                 Source::YouTube { video_id };
                             self.start(now, &mut a);
                         }
-                        None => {
+                        Ok(None) => {
                             Self::cancel(
                                 self.current.take().unwrap(),
                                 CancelReason::YtUnavailable,
@@ -436,6 +438,7 @@ impl Player {
                     match result {
                         Err(()) => {
                             if !self.resolving
+                                && (!self.fallback || self.retry_at.is_none())
                                 && now.saturating_sub(self.last_ok.unwrap_or(now)) >= OUTAGE_MS
                                 && (self.mode == Mode::Starting
                                     || (self.mode == Mode::Playing
@@ -530,6 +533,12 @@ impl Player {
                     && matches!(self.mode, Mode::Starting | Mode::Playing)
                 {
                     self.play_spotify(&mut a);
+                    if self.fallback && !self.resolving {
+                        self.resolving = true;
+                        a.push(Action::ResolveFallback(
+                            self.current.as_ref().unwrap().clone(),
+                        ));
+                    }
                     self.schedule(now);
                 }
             }
@@ -790,6 +799,60 @@ mod tests {
         ));
         assert!(has(&a, |a| matches!(a, Action::Warn(Some(_)))));
     }
+    #[test]
+    fn fallback_unavailable_keeps_queue_and_retries() {
+        let mut p = Player::new(None);
+        for id in 1..=3 {
+            p.step(Input::Enqueue(item(id, false)), 0);
+        }
+        no_cancel(&p.step(Input::Spotify(Err(())), 30000));
+        no_cancel(&p.step(
+            Input::FallbackResolved {
+                item_id: 1,
+                video_id: Err(()),
+            },
+            30001,
+        ));
+        assert!(p.widget_state(30001).warning.is_some());
+        assert!(!p.snapshot().0.unwrap().started);
+        assert_eq!(p.snapshot().1.len(), 2);
+        p.step(Input::Spotify(Ok(None)), 31000);
+        let a = p.step(Input::Tick, 32001);
+        no_cancel(&a);
+        assert!(has(&a, |a| matches!(
+            a,
+            Action::SpotifyPlay { item_id: 1, .. }
+        )));
+        assert!(!has(&a, |a| matches!(a, Action::ResolveFallback(_))));
+        p.step(
+            Input::PlayResult {
+                item_id: 1,
+                result: Ok(()),
+            },
+            32002,
+        );
+        assert!(p.snapshot().0.unwrap().started);
+    }
+    #[test]
+    fn fallback_err_does_not_reresolve_every_poll() {
+        let mut p = fallback();
+        p.step(
+            Input::FallbackResolved {
+                item_id: 2,
+                video_id: Err(()),
+            },
+            60001,
+        );
+        for now in [60002, 61000, 62000] {
+            let a = p.step(Input::Spotify(Err(())), now);
+            no_cancel(&a);
+            assert!(!has(&a, |a| matches!(a, Action::ResolveFallback(_))));
+        }
+        assert!(has(&p.step(Input::Tick, 62001), |a| matches!(
+            a,
+            Action::ResolveFallback(_)
+        )));
+    }
     fn fallback() -> Player {
         let mut p = playing(false);
         p.step(Input::Enqueue(item(2, false)), 0);
@@ -803,7 +866,7 @@ mod tests {
             &p.step(
                 Input::FallbackResolved {
                     item_id: 2,
-                    video_id: None
+                    video_id: Ok(None)
                 },
                 60001
             ),
@@ -1168,7 +1231,7 @@ mod tests {
         no_cancel(&p.step(
             Input::FallbackResolved {
                 item_id: 2,
-                video_id: None,
+                video_id: Ok(None),
             },
             60001,
         ));
@@ -1266,7 +1329,7 @@ mod tests {
         let a = p.step(
             Input::FallbackResolved {
                 item_id: 2,
-                video_id: Some("video".into()),
+                video_id: Ok(Some("video".into())),
             },
             60001,
         );

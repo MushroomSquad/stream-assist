@@ -219,3 +219,45 @@ fn pick_device_prefers_active_then_computer() {
     assert_eq!(pick_device(&ds), Some("phone".into()));
     assert_eq!(pick_device(&[]), None);
 }
+
+#[tokio::test]
+async fn refresh_completes_even_if_caller_dropped() {
+    let s = MockServer::start().await;
+    Mock::given(path("/api/token"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(150))
+            .set_body_json(serde_json::json!({"access_token":"new","refresh_token":"rotated","expires_in":3600})))
+        .expect(1).mount(&s).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let sp = Spotify::new(
+        "client".into(),
+        tokens(true),
+        &s.uri(),
+        &s.uri(),
+        move |t| {
+            tx.send(t.refresh_token.clone()).unwrap();
+        },
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), sp.auth(None))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        "rotated"
+    );
+    assert_eq!(sp.auth(None).await.unwrap(), "new");
+}
+
+#[test]
+fn oauth_error_with_wrong_state_keeps_pending() {
+    let mut pending = Some(new_pkce());
+    let state = pending.as_ref().unwrap().state.clone();
+    assert!(take_pending_if_state_matches(&mut pending, "wrong").is_none());
+    assert_eq!(pending.as_ref().unwrap().state, state);
+    assert!(take_pending_if_state_matches(&mut pending, &state).is_some());
+    assert!(pending.is_none());
+}

@@ -137,7 +137,7 @@ pub async fn serve(
     Ok(ch)
 }
 async fn music(State(a): State<App>) -> Response {
-    let id = a.active.read().unwrap().clone();
+    let id = a.active.read().unwrap_or_else(|e| e.into_inner()).clone();
     file(&a, &id, "index.html")
 }
 async fn asset(State(a): State<App>, Path((id, path)): Path<(String, String)>) -> Response {

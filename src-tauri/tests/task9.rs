@@ -168,7 +168,7 @@ async fn youtube_case(matched: bool) {
     );
     let Resolution::Candidates(ts) = resolve(
         stream_assist_lib::request::RequestInput::YouTube("vid".into()),
-        &sp,
+        Some(&sp),
         &s.uri(),
     )
     .await
@@ -184,4 +184,44 @@ async fn resolve_youtube_matches_spotify() {
 #[tokio::test]
 async fn resolve_youtube_no_match_stays_youtube() {
     youtube_case(false).await;
+}
+
+async fn youtube_outage_case(connected: bool) {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+    let s = MockServer::start().await;
+    Mock::given(path("/oembed")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"title":"Artist - Song","author_name":"Artist","thumbnail_url":"cover"}))).mount(&s).await;
+    Mock::given(path("/v1/search"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(if connected { 1 } else { 0 })
+        .mount(&s)
+        .await;
+    let sp = Spotify::new(
+        "c".into(),
+        Tokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_at: i64::MAX,
+        },
+        &s.uri(),
+        &s.uri(),
+        |_| {},
+    );
+    let Resolution::Candidates(ts) = resolve(
+        stream_assist_lib::request::RequestInput::YouTube("vid".into()),
+        if connected { Some(&sp) } else { None },
+        &s.uri(),
+    )
+    .await
+    .unwrap() else {
+        panic!()
+    };
+    assert!(matches!(&ts[0].source, Source::YouTube {video_id} if video_id == "vid"));
+}
+#[tokio::test]
+async fn resolve_youtube_without_spotify_stays_youtube() {
+    youtube_outage_case(false).await;
+}
+#[tokio::test]
+async fn resolve_youtube_spotify_500_stays_youtube() {
+    youtube_outage_case(true).await;
 }
