@@ -1,0 +1,588 @@
+use crate::{
+    db::{Db, RedemptionState},
+    i18n,
+    limits::Limits,
+    model::*,
+    music::{self, Decision, Resolution},
+    obs::ObsCfg,
+    player::{self, Action, Input, Player, WidgetState},
+    request, router,
+    server::{ServerChannels, WsOut},
+    spotify::{self, Pkce, Spotify},
+    twitch::{
+        eventsub::{self, EsSignal},
+        helix::{Helix, RewardError},
+    },
+    youtube,
+};
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tauri::Emitter;
+use tokio::sync::{mpsc, watch};
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Settings {
+    pub limits: Limits,
+    pub reward_title: String,
+    pub reward_cost: u32,
+    pub reward_cooldown_s: u32,
+    pub music_reward_id: Option<String>,
+    pub port: u16,
+    pub active_theme: String,
+    pub youtube_api_key: Option<String>,
+    pub obs: ObsCfg,
+    pub spotify_client_id: Option<String>,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            limits: Limits::default(),
+            reward_title: "Заказать трек".into(),
+            reward_cost: 500,
+            reward_cooldown_s: 0,
+            music_reward_id: None,
+            port: 47821,
+            active_theme: "underground".into(),
+            youtube_api_key: None,
+            obs: ObsCfg::default(),
+            spotify_client_id: None,
+        }
+    }
+}
+pub enum DriverMsg {
+    Cmd(Input),
+    Es(EsSignal),
+    ResolveDone {
+        red: Redemption,
+        res: Result<Resolution>,
+    },
+    TwitchLogin(Tokens),
+    TwitchLogout,
+    SpotifyLoginStart(Pkce),
+    SetVolume(u8),
+    WidgetTest,
+    SettingsChanged(Settings),
+}
+pub struct DriverCtx {
+    pub db: Arc<Mutex<Db>>,
+    pub state_tx: watch::Sender<WidgetState>,
+    pub ws: ServerChannels,
+    pub app: tauri::AppHandle,
+    pub settings: Settings,
+    pub spotify: Option<Arc<Spotify>>,
+    pub helix: Option<Arc<Helix>>,
+}
+pub enum ReconcileStep {
+    Skip,
+    Fulfill(RedemptionRef),
+    Recancel(RedemptionRef),
+    Process(Redemption),
+}
+pub fn plan_reconcile(states: &[(Redemption, RedemptionState)]) -> Vec<ReconcileStep> {
+    states
+        .iter()
+        .map(|(r, s)| match s {
+            RedemptionState::Queued => ReconcileStep::Skip,
+            RedemptionState::Started => ReconcileStep::Fulfill(r.r.clone()),
+            RedemptionState::Cancelled => ReconcileStep::Recancel(r.r.clone()),
+            RedemptionState::Unknown => ReconcileStep::Process(r.clone()),
+        })
+        .collect()
+}
+const WAIT: Duration = Duration::from_secs(10);
+async fn bounded<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(WAIT, f)
+        .await
+        .map_err(|_| anyhow!("service timeout"))?
+}
+fn background(f: impl std::future::Future<Output = Result<()>> + Send + 'static) {
+    tokio::spawn(async move {
+        if bounded(f).await.is_err() {
+            eprintln!("External service operation failed");
+        }
+    });
+}
+fn publish(c: &DriverCtx, s: WidgetState) {
+    c.state_tx.send_replace(s.clone());
+    let _ = c.ws.out_tx.send(WsOut::State(s.clone()));
+    let _ = c.app.emit("state", s);
+}
+fn warn(c: &DriverCtx, text: Option<String>) {
+    let mut s = c.state_tx.borrow().clone();
+    s.warning = text;
+    publish(c, s);
+}
+fn status(c: &DriverCtx, r: RedemptionRef, ok: bool) {
+    if let Some(h) = c.helix.clone() {
+        background(async move { h.set_redemption_status(&r, ok).await });
+    }
+}
+fn chat(c: &DriverCtx, text: String) {
+    if let Some(h) = c.helix.clone() {
+        background(async move { h.chat(&text).await });
+    }
+}
+fn actions(c: &DriverCtx, p: &Player, mut aa: Vec<Action>, tx: &mpsc::UnboundedSender<Internal>) {
+    aa.sort_by_key(|a| !matches!(a, Action::Persist));
+    for a in aa {
+        match a {
+            Action::Persist => {
+                let (cur, q) = p.snapshot();
+                if c.db.lock().unwrap().save_state(cur.as_ref(), &q).is_err() {
+                    warn(c, Some("Не удалось сохранить очередь".into()));
+                }
+            }
+            Action::Started(i) => {
+                if c.db.lock().unwrap().history_push(&i, now()).is_err() {
+                    warn(c, Some("Не удалось сохранить историю".into()));
+                }
+                if let Some(r) = i.redemption {
+                    status(c, r, true)
+                }
+            }
+            Action::Cancel(i, why) => {
+                if let Some(r) = i.redemption {
+                    if c.db
+                        .lock()
+                        .unwrap()
+                        .mark_cancelled(&r.redemption_id)
+                        .is_ok()
+                    {
+                        status(c, r, false);
+                        chat(
+                            c,
+                            i18n::chat_rejected(&i.requester, i18n::cancel_text(&why)),
+                        );
+                    }
+                }
+            }
+            Action::SpotifyPlay {
+                item_id,
+                uri,
+                device_id,
+                position_ms,
+            } => {
+                let sp = c.spotify.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let result = tokio::time::timeout(WAIT, async {
+                        let sp = sp.ok_or(PlayError::Unauthorized)?;
+                        let device = match device_id {
+                            Some(d) => Some(d),
+                            None => spotify::pick_device(
+                                &sp.devices().await.map_err(|_| PlayError::Net)?,
+                            ),
+                        };
+                        if device.is_none() {
+                            return Err(PlayError::NoDevice);
+                        }
+                        sp.play(&uri, device.as_deref(), position_ms).await
+                    })
+                    .await
+                    .unwrap_or(Err(PlayError::Net));
+                    let _ = tx.send(Internal::Input(Input::PlayResult { item_id, result }));
+                });
+            }
+            Action::SpotifyPause | Action::SpotifyResume => {
+                if let Some(sp) = c.spotify.clone() {
+                    background(async move {
+                        if matches!(a, Action::SpotifyPause) {
+                            sp.pause().await
+                        } else {
+                            sp.resume().await
+                        }
+                    });
+                }
+            }
+            Action::ResolveFallback(i) => {
+                let key = c.settings.youtube_api_key.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let video_id = bounded(async {
+                        match key {
+                            Some(k) => {
+                                youtube::search(
+                                    &k,
+                                    &format!("{} {}", i.track.artist, i.track.title),
+                                    "https://www.googleapis.com",
+                                )
+                                .await
+                            }
+                            None => Ok(None),
+                        }
+                    })
+                    .await
+                    .unwrap_or(None);
+                    let _ = tx.send(Internal::Input(Input::FallbackResolved {
+                        item_id: i.id,
+                        video_id,
+                    }));
+                });
+            }
+            Action::Widget(mut s) => {
+                if s.warning.is_none() {
+                    s.warning = c.state_tx.borrow().warning.clone();
+                }
+                publish(c, s);
+            }
+            Action::Warn(w) => warn(c, w),
+            Action::YtPlay {
+                item_id,
+                video_id,
+                start_ms,
+            } => {
+                let _ = c.ws.out_tx.send(WsOut::YtPlay {
+                    item_id,
+                    video_id,
+                    start_ms,
+                });
+            }
+            Action::YtUnmute => {
+                let _ = c.ws.out_tx.send(WsOut::YtUnmute);
+            }
+            Action::YtStop => {
+                let _ = c.ws.out_tx.send(WsOut::YtStop);
+            }
+            Action::YtPause => {
+                let _ = c.ws.out_tx.send(WsOut::YtPause);
+            }
+            Action::YtResume => {
+                let _ = c.ws.out_tx.send(WsOut::YtResume);
+            }
+        }
+    }
+}
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+enum Internal {
+    Input(Input),
+    Msg(DriverMsg),
+    Reconcile(Vec<Redemption>),
+    Reward(Result<String>),
+    Spotify(Result<Tokens>),
+}
+fn redeem(
+    c: &DriverCtx,
+    r: Redemption,
+    inflight: &mut HashSet<String>,
+    tx: &mpsc::UnboundedSender<Internal>,
+) {
+    if router::route(&r.r.reward_id, c.settings.music_reward_id.as_deref()).is_none() {
+        return;
+    }
+    if c.db
+        .lock()
+        .unwrap()
+        .redemption_state(&r.r.redemption_id)
+        .ok()
+        != Some(RedemptionState::Unknown)
+        || !inflight.insert(r.r.redemption_id.clone())
+    {
+        return;
+    }
+    let sp = c.spotify.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let res = bounded(async {
+            let sp = sp.ok_or_else(|| anyhow!("Spotify disconnected"))?;
+            music::resolve(
+                request::parse_request(&r.user_input),
+                &sp,
+                "https://www.youtube.com",
+            )
+            .await
+        })
+        .await;
+        let _ = tx.send(Internal::Msg(DriverMsg::ResolveDone { red: r, res }));
+    });
+}
+fn reconcile(c: &DriverCtx, tx: &mpsc::UnboundedSender<Internal>) {
+    if let (Some(h), Some(id)) = (c.helix.clone(), c.settings.music_reward_id.clone()) {
+        let tx = tx.clone();
+        background(async move {
+            let rows = h.unfulfilled(&id).await?;
+            let _ = tx.send(Internal::Reconcile(rows));
+            Ok(())
+        });
+    }
+}
+fn connect_twitch(
+    c: &DriverCtx,
+    tx: &mpsc::UnboundedSender<Internal>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let h = c.helix.clone()?;
+    let (out, mut rx) = mpsc::channel(64);
+    let forward = tx.clone();
+    let eventsub_helix = h.clone();
+    let task = tokio::spawn(async move {
+        tokio::select! {
+            _ = eventsub::run(eventsub_helix, "wss://eventsub.wss.twitch.tv/ws".into(), out) => {},
+            _ = async {
+                while let Some(signal) = rx.recv().await {
+                    if forward.send(Internal::Msg(DriverMsg::Es(signal))).is_err() { break; }
+                }
+            } => {},
+        }
+    });
+    let s = c.settings.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let res = bounded(async {
+            match h.find_manageable_reward(s.music_reward_id.as_deref(), &s.reward_title).await? {
+                Some(id) => Ok(id),
+                None => h.create_reward(&s.reward_title, s.reward_cost, "Название или ссылка на трек")
+                    .await.map_err(|error| anyhow!(match error {
+                        RewardError::NotAffiliate => "нужен статус компаньона/партнёра",
+                        RewardError::DuplicateTitle => "награда с таким названием уже есть, но создана не этой программой — переименуйте её или удалите",
+                        RewardError::Other(_) => "Не удалось создать награду",
+                    })),
+            }
+        }).await;
+        let _ = tx.send(Internal::Reward(res));
+    });
+    Some(task)
+}
+pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
+    let (tx, mut internal) = mpsc::unbounded_channel();
+    let mut player = Player::new(ctx.settings.limits.max_duration_ms);
+    let mut pending = None;
+    let mut inflight = HashSet::new();
+    let restored = ctx.db.lock().unwrap().load_state();
+    if let Ok((current, queue)) = restored {
+        let aa = player.step(Input::Restore { current, queue }, now());
+        actions(&ctx, &player, aa, &tx);
+    }
+    let mut es = connect_twitch(&ctx, &tx);
+    reconcile(&ctx, &tx);
+    let mut tick = tokio::time::interval(Duration::from_millis(player::POLL_MS));
+    loop {
+        let event = tokio::select! {
+            _ = tick.tick() => {
+                let sp = ctx.spotify.clone();
+                let tx = tx.clone();
+                // Poll even while Idle: successful polls clear the outage/fallback flag.
+                tokio::spawn(async move {
+                    let result = bounded(async {
+                        match sp {
+                            Some(s) => s.player().await,
+                            None => Err(anyhow!("Spotify disconnected")),
+                        }
+                    }).await.map_err(|_| ());
+                    let _ = tx.send(Internal::Input(Input::Spotify(result)));
+                });
+                Internal::Input(Input::Tick)
+            },
+            message = rx.recv() => match message {
+                Some(message) => Internal::Msg(message),
+                None => break,
+            },
+            Some(message) = internal.recv() => message,
+            Some(input) = ctx.ws.yt_rx.recv() => Internal::Input(input),
+            Some((code, state)) = ctx.ws.oauth_rx.recv() => {
+                match code {
+                    Err(_) => {
+                        pending = None;
+                        warn(&ctx, Some("Вход Spotify отменён".into()));
+                    },
+                    Ok(code) => {
+                        if let Some(pkce) = spotify::take_pending_if_state_matches(&mut pending, &state) {
+                            if let Some(id) = ctx.settings.spotify_client_id.clone() {
+                                let tx = tx.clone();
+                                let redirect = format!("http://127.0.0.1:{}/callback/spotify", ctx.settings.port);
+                                tokio::spawn(async move {
+                                    let result = bounded(Spotify::exchange_code(
+                                        &id, &code, &redirect, &pkce.verifier, "https://accounts.spotify.com"
+                                    )).await;
+                                    let _ = tx.send(Internal::Spotify(result));
+                                });
+                            }
+                        }
+                    },
+                }
+                continue
+            }
+
+        };
+        match event {
+            Internal::Input(i) | Internal::Msg(DriverMsg::Cmd(i)) => {
+                let aa = player.step(i, now());
+                actions(&ctx, &player, aa, &tx);
+            }
+            Internal::Msg(DriverMsg::Es(EsSignal::Redemption(r))) => {
+                redeem(&ctx, r, &mut inflight, &tx)
+            }
+            Internal::Msg(DriverMsg::Es(EsSignal::Resync)) => reconcile(&ctx, &tx),
+            Internal::Reconcile(rows) => {
+                let states: Result<Vec<_>> = rows
+                    .into_iter()
+                    .map(|r| {
+                        let s = ctx
+                            .db
+                            .lock()
+                            .unwrap()
+                            .redemption_state(&r.r.redemption_id)?;
+                        Ok((r, s))
+                    })
+                    .collect();
+                match states {
+                    Ok(states) => {
+                        for step in plan_reconcile(&states) {
+                            match step {
+                                ReconcileStep::Skip => {}
+                                ReconcileStep::Fulfill(r) => status(&ctx, r, true),
+                                ReconcileStep::Recancel(r) => status(&ctx, r, false),
+                                ReconcileStep::Process(r) => redeem(&ctx, r, &mut inflight, &tx),
+                            }
+                        }
+                    }
+                    Err(_) => warn(&ctx, Some("Не удалось сверить заказы".into())),
+                }
+            }
+            Internal::Msg(DriverMsg::ResolveDone { red, res }) => {
+                let id = red.r.redemption_id.clone();
+                if !inflight.contains(&id) {
+                    continue;
+                }
+                let (cur, q) = player.snapshot();
+                let recent = ctx
+                    .db
+                    .lock()
+                    .unwrap()
+                    .history_recent(ctx.settings.limits.no_repeat_last_n);
+                let decision = match (res, recent) {
+                    (Ok(res), Ok(mut recent)) => {
+                        recent.reverse();
+                        music::decide(
+                            res,
+                            &ctx.settings.limits,
+                            &red.user_login,
+                            &q,
+                            cur.as_ref(),
+                            &recent,
+                        )
+                    }
+                    _ => Decision::Reject(i18n::TEXT_SERVICE_DOWN.into()),
+                };
+                match decision {
+                    Decision::Enqueue(t) => {
+                        let inserted =
+                            ctx.db
+                                .lock()
+                                .unwrap()
+                                .insert_item(&t, &red.user_login, Some(&red.r));
+                        match inserted {
+                            Ok(item) => {
+                                let aa = player.step(Input::Enqueue(item), now());
+                                actions(&ctx, &player, aa, &tx);
+                                chat(
+                                    &ctx,
+                                    i18n::chat_added(&red.user_login, &t.artist, &t.title, {
+                                        let (current, queue) = player.snapshot();
+                                        queue.len() + usize::from(current.is_some())
+                                    }),
+                                );
+                            }
+                            Err(crate::db::DbError::Duplicate) => {}
+                            Err(_) => warn(&ctx, Some("Не удалось сохранить заказ".into())),
+                        }
+                    }
+                    Decision::Reject(why) => {
+                        if ctx.db.lock().unwrap().mark_cancelled(&id).is_ok() {
+                            status(&ctx, red.r, false);
+                            chat(&ctx, i18n::chat_rejected(&red.user_login, &why));
+                        }
+                    }
+                }
+                inflight.remove(&id);
+            }
+            Internal::Reward(Ok(id)) => {
+                ctx.settings.music_reward_id = Some(id);
+                let _ = ctx
+                    .db
+                    .lock()
+                    .unwrap()
+                    .set_setting("settings", &ctx.settings);
+                if let Some(h) = ctx.helix.clone() {
+                    let id = ctx.settings.music_reward_id.clone().unwrap();
+                    let cooldown = ctx.settings.reward_cooldown_s;
+                    background(async move {
+                        h.update_reward(
+                            &id,
+                            &serde_json::json!({
+                                "is_paused": false,
+                                "global_cooldown_setting": {
+                                    "is_enabled": cooldown > 0,
+                                    "global_cooldown_seconds": cooldown
+                                }
+                            }),
+                        )
+                        .await
+                    });
+                }
+                reconcile(&ctx, &tx);
+            }
+            Internal::Reward(Err(e)) => warn(&ctx, Some(e.to_string())),
+            Internal::Spotify(result) => match result {
+                Ok(t) => {
+                    if crate::app::save_tokens("spotify", &t).is_err() {
+                        warn(&ctx, Some("Хранилище ключей недоступно".into()));
+                    }
+                    if let Some(id) = ctx.settings.spotify_client_id.clone() {
+                        ctx.spotify = Some(crate::app::spotify_client(id, t));
+                    }
+                }
+                Err(_) => warn(&ctx, Some("Не удалось войти в Spotify".into())),
+            },
+            Internal::Msg(DriverMsg::SpotifyLoginStart(p)) => pending = Some(p),
+            Internal::Msg(DriverMsg::SetVolume(v)) => {
+                if let Some(s) = ctx.spotify.clone() {
+                    background(async move { s.set_volume(v).await });
+                }
+            }
+            Internal::Msg(DriverMsg::WidgetTest) => {
+                let mut s = ctx.state_tx.borrow().clone();
+                s.visible = true;
+                publish(&ctx, s);
+            }
+            Internal::Msg(DriverMsg::SettingsChanged(s)) => {
+                let saved = ctx.db.lock().unwrap().set_setting("settings", &s).is_ok();
+                if saved {
+                    ctx.settings = s;
+                    let aa = player.step(
+                        Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
+                        now(),
+                    );
+                    actions(&ctx, &player, aa, &tx);
+                }
+            }
+            Internal::Msg(DriverMsg::TwitchLogin(t)) => {
+                if let Some(old) = es.take() {
+                    old.abort();
+                }
+                if crate::app::save_tokens("twitch", &t).is_err() {
+                    warn(&ctx, Some("Хранилище ключей недоступно".into()));
+                }
+                ctx.helix = Some(crate::app::twitch_client(t));
+                es = connect_twitch(&ctx, &tx);
+            }
+            Internal::Msg(DriverMsg::TwitchLogout) => {
+                if let Some(old) = es.take() {
+                    old.abort();
+                }
+                ctx.helix = None;
+                let _ = crate::secrets::delete("twitch");
+            }
+        }
+    }
+    if let Some(es) = es {
+        es.abort();
+    }
+}

@@ -27,13 +27,21 @@ impl Default for ObsCfg {
 }
 
 pub async fn check(cfg: &ObsCfg) -> Result<String> {
-    let client = Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()).await?;
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
+    )
+    .await??;
     Ok(client.general().version().await?.obs_version.to_string())
 }
 
 pub async fn add_widget_to_current_scene(cfg: &ObsCfg, url: &str, w: u32, h: u32) -> Result<()> {
     const NAME: &str = "Stream Assist — Music";
-    let client = Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()).await?;
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
+    )
+    .await??;
     let scene = client.scenes().current_program_scene().await?;
     let settings = serde_json::json!({"url": url, "width": w, "height": h, "reroute_audio": true});
     let exists = client

@@ -1,7 +1,10 @@
+pub mod app;
 pub mod db;
+pub mod driver;
 pub mod i18n;
 pub mod limits;
 pub mod model;
+pub mod music;
 pub mod obs;
 pub mod player;
 pub mod request;
@@ -17,6 +20,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .setup(|app| crate::app::setup(app).map_err(Into::into))
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+                crate::app::exit(app);
+            }
+        });
 }

@@ -1,5 +1,6 @@
 use crate::model::{QueueItem, Source, Track};
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Limits {
     pub max_duration_ms: Option<u64>,
     pub no_repeat_last_n: usize,

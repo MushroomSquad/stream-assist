@@ -73,7 +73,7 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
         }
         let connected = tokio::select! {
             _=out.closed()=>return,
-            result=timeout(Duration::from_secs(30),connect_async(&ws_url))=>result,
+            result=timeout(Duration::from_secs(10),connect_async(&ws_url))=>result,
         };
         if let Ok(Ok((mut socket, _))) = connected {
             let mut deadline = Instant::now() + Duration::from_secs(15);
@@ -101,7 +101,14 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                             break;
                         }
                         interval = keepalive(&text);
-                        if helix.subscribe_redemptions(&session_id).await.is_err() {
+                        if !matches!(
+                            timeout(
+                                Duration::from_secs(10),
+                                helix.subscribe_redemptions(&session_id)
+                            )
+                            .await,
+                            Ok(Ok(()))
+                        ) {
                             break;
                         }
                         welcomed = true;
@@ -123,7 +130,7 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                     EsMsg::Revocation => break,
                     EsMsg::Reconnect { url } => {
                         // Retain the old socket until the replacement has welcomed us.
-                        let replacement = timeout(Duration::from_secs(30), async {
+                        let replacement = timeout(Duration::from_secs(10), async {
                             let (mut next, _) = connect_async(&url).await?;
                             loop {
                                 match next.next().await {

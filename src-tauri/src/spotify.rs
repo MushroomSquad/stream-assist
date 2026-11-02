@@ -49,7 +49,7 @@ struct TokenResponse {
 }
 #[derive(Debug, Deserialize)]
 pub struct Device {
-    pub id: String,
+    pub id: Option<String>,
     pub is_active: bool,
     #[serde(rename = "type")]
     pub kind: String,
@@ -371,10 +371,19 @@ impl From<ApiTrack> for Track {
 }
 pub fn pick_device(devs: &[Device]) -> Option<String> {
     devs.iter()
+        .filter(|d| d.id.is_some())
         .find(|d| d.is_active)
-        .or_else(|| devs.iter().find(|d| d.kind == "Computer"))
-        .or_else(|| devs.first())
-        .map(|d| d.id.clone())
+        .or_else(|| devs.iter().find(|d| d.id.is_some() && d.kind == "Computer"))
+        .or_else(|| devs.iter().find(|d| d.id.is_some()))
+        .and_then(|d| d.id.clone())
 }
 #[cfg(test)]
 mod tests;
+
+pub fn take_pending_if_state_matches(pending: &mut Option<Pkce>, state: &str) -> Option<Pkce> {
+    if pending.as_ref().is_some_and(|p| p.state == state) {
+        pending.take()
+    } else {
+        None
+    }
+}

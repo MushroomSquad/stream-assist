@@ -197,17 +197,17 @@ async fn search_maps_track_fields() {
 fn pick_device_prefers_active_then_computer() {
     let mut ds = vec![
         Device {
-            id: "phone".into(),
+            id: Some("phone".into()),
             is_active: false,
             kind: "Smartphone".into(),
         },
         Device {
-            id: "pc".into(),
+            id: Some("pc".into()),
             is_active: false,
             kind: "Computer".into(),
         },
         Device {
-            id: "active".into(),
+            id: Some("active".into()),
             is_active: true,
             kind: "Speaker".into(),
         },
