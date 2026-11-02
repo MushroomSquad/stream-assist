@@ -1,6 +1,7 @@
 pub mod db;
 pub mod limits;
 pub mod model;
+pub mod player;
 pub mod request;
 pub mod router;
 pub mod secrets;
