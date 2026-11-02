@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod commands;
 pub mod mixer;
 pub mod models;
 pub mod runner;
@@ -43,6 +44,41 @@ impl From<serde_json::Error> for VlError {
 
 pub fn err(code: &'static str) -> VlError {
     VlError::Code(code)
+}
+
+use runner::Runner;
+use std::{path::PathBuf, sync::Arc};
+use store::Store;
+use tauri::Manager;
+
+pub struct VoiceLab {
+    pub root: PathBuf,
+    pub store: Arc<std::sync::Mutex<Store>>,
+    pub runner: Arc<Runner>,
+    pub installing: tokio::sync::Mutex<()>,
+}
+
+pub struct VlState(pub Option<Arc<VoiceLab>>);
+
+pub fn init(app: &tauri::App) {
+    let result = (|| -> Result<VoiceLab, VlError> {
+        let root = app
+            .path()
+            .app_data_dir()
+            .map_err(anyhow::Error::from)?
+            .join("voice-lab");
+        let store = Store::open(&root)?;
+        if models::status(&root).installed {
+            models::register_builtins(&store, &root)?;
+        }
+        Ok(VoiceLab {
+            root,
+            store: Arc::new(std::sync::Mutex::new(store)),
+            runner: Arc::new(Runner::new(std::env::current_exe()?, vec![])),
+            installing: tokio::sync::Mutex::new(()),
+        })
+    })();
+    app.manage(VlState(result.ok().map(Arc::new)));
 }
 
 #[cfg(test)]
