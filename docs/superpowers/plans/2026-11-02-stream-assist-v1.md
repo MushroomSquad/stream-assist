@@ -90,6 +90,8 @@ pub struct QueueItem { pub id: i64, pub track: Track, pub requester: String,
 pub struct Redemption { pub r: RedemptionRef, pub user_login: String, pub user_input: String }
 pub struct PlaybackSnapshot { pub device_id: Option<String>, pub is_playing: bool,
   pub track_uri: Option<String>, pub progress_ms: u64, pub duration_ms: u64 }
+pub struct Tokens { pub access_token: String, pub refresh_token: String, pub expires_at: i64 /*unix c*/ } // общий для Spotify и Twitch
+pub enum PlayError { NoDevice, Unauthorized, Api(u16), Net }
 ```
 Все типы с derive `Clone, Debug, PartialEq, Serialize, Deserialize`. `router.rs`: `pub enum FeatureKind { Music }`, `pub fn route(reward_id: &str, music_reward_id: Option<&str>) -> Option<FeatureKind>`.
 
@@ -119,8 +121,9 @@ impl Db {
   pub fn history_push(&self, item: &QueueItem, now: i64) -> Result<()>;
   pub fn history_recent(&self, n: usize) -> Result<Vec<Source>>;
   pub fn redemption_state(&self, redemption_id: &str) -> Result<RedemptionState>;
+  pub fn mark_cancelled(&self, redemption_id: &str) -> Result<()>;  // пишется в той же транзакции save_state, что и удаление
 }
-pub enum RedemptionState { Unknown, Queued, Started /* current со started=true или history */ }
+pub enum RedemptionState { Unknown, Queued, Started /* current со started=true или history */, Cancelled }
 pub enum DbError { Duplicate, Sql(rusqlite::Error), Json(serde_json::Error) }
 ```
 Единственный источник правды об очереди — `Player`. `Db` её только сохраняет через `save_state`. Исключение — `insert_item`: он выдаёт id и ловит дубли.
@@ -130,7 +133,7 @@ pub enum DbError { Duplicate, Sql(rusqlite::Error), Json(serde_json::Error) }
   - `duplicate_redemption_rejected` (второй `insert_item` с тем же redemption_id → `Duplicate`);
   - `save_state_reorders_and_deletes`;
   - `state_survives_reopen` (файл: save_state с `started=true` → reopen → `load_state` равен исходному);
-  - `redemption_state_tracks_lifecycle` (Unknown → Queued → Started после history_push);
+  - `redemption_state_tracks_lifecycle` (Unknown → Queued → Started после history_push; mark_cancelled → Cancelled);
   - `settings_roundtrip`.
 - [ ] **Step 2:** `cargo test db::` → FAIL → реализовать → PASS.
 - [ ] **Step 3:** commit `feat(db): sqlite storage`.
@@ -185,8 +188,7 @@ pub fn store(key: &str, value: &str) -> Result<()>;  pub fn load(key: &str) -> R
 pub struct Pkce { pub verifier: String, pub challenge: String, pub state: String }
 pub fn new_pkce() -> Pkce;   // verifier 64 симв. [A-Za-z0-9-._~], challenge = base64url_nopad(sha256(verifier)), state 32 симв.
 pub fn authorize_url(client_id: &str, redirect: &str, p: &Pkce) -> String;
-pub struct Tokens { pub access_token: String, pub refresh_token: String, pub expires_at: i64 }
-pub enum PlayError { NoDevice, Unauthorized, Api(u16), Net }
+// Tokens и PlayError — из model.rs
 pub struct Device { pub id: String, pub is_active: bool, pub kind: String }
 pub struct Spotify { /* client, api, accounts, client_id, tokens: tokio::Mutex<Tokens>, on_rotate: Box<dyn Fn(&Tokens)+Send+Sync> */ }
 impl Spotify {
@@ -231,6 +233,7 @@ pub enum Input {
   PlayResult { item_id: i64, result: Result<(), PlayError> },   // результат SpotifyPlay
   Spotify(Result<Option<PlaybackSnapshot>, ()>),
   Yt { item_id: i64, ev: YtEvent },                              // события от единственного player-соединения
+  YtPlayerConnected,                                             // новое player-соединение (OBS перезагрузил источник и т.п.)
   FallbackResolved { item_id: i64, video_id: Option<String> },
   Restore { current: Option<QueueItem>, queue: Vec<QueueItem> },
   Tick,                                                          // для таймаутов и бэкоффа
@@ -240,7 +243,7 @@ pub enum Action {
   Persist,                                    // драйвер исполняет его первым в пачке
   SpotifyPlay { item_id: i64, uri: String, device_id: Option<String>, position_ms: u64 },
   SpotifyPause, SpotifyResume,
-  YtPlay { item_id: i64, video_id: String }, YtStop, YtPause, YtResume,
+  YtPlay { item_id: i64, video_id: String, start_ms: u64 }, YtUnmute, YtStop, YtPause, YtResume,
   ResolveFallback(QueueItem),
   Started(QueueItem),                         // драйвер: Fulfill + history_push
   Cancel(QueueItem, CancelReason),            // драйвер: Cancel в Twitch + сообщение в чат
@@ -257,23 +260,29 @@ pub const END_TOLERANCE_MS: u64 = 3000;
 pub const POLL_MS: u64 = 2500;
 pub const OUTAGE_MS: i64 = 30_000;
 pub const YT_START_TIMEOUT_MS: i64 = 20_000;
+pub const YT_END_SLACK_MS: i64 = 10_000;     // нет Ended к started_at + duration (без пауз) + slack → считаем концом
 pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // дальше 30000
 ```
-Каждое изменение очереди или текущего трека даёт `Persist` и `Widget`.
+Каждое изменение очереди или текущего трека даёт `Persist` и `Widget`. `PlayError` и `Tokens` объявлены в `model.rs`, чтобы `player.rs` не зависел от HTTP-клиентов.
+
+**Главный инвариант:** `Cancel(item, _)` выдаётся **только если `!item.started`**. Во всех ветках ниже, где написано «Cancel + следующий», для `started=true` выдаётся просто «следующий», без Cancel и без сообщения в чат.
 
 **Правила:**
-- **Старт элемента.** Spotify: `SpotifyPlay` (device = last_device), режим `Starting`. `PlayResult Ok` → `Started(item)`, `started=true`, режим `Playing`. `PlayResult Err` → `Warn(Some("Spotify: нет активного устройства / ошибка"))`, повтор по `RETRY_BACKOFF_MS` на `Tick`, без отмены, элемент остаётся текущим. YouTube: `YtPlay`, режим `Starting`. `Yt Started{d}`: если `d > max` → `YtStop` + `Cancel(TooLong)` + следующий; иначе `Started(item)` + `Playing`. `Yt Error` до старта → `Cancel(YtUnavailable)` + следующий. Нет `Started` за `YT_START_TIMEOUT_MS` → `YtStop` + `Cancel(YtUnavailable)` + следующий.
-- **Yt-события с чужим `item_id`** игнорируются.
+- **Старт элемента, Spotify.** `SpotifyPlay` (device = last_device), режим `Starting`. `PlayResult Ok` → `Started(item)`, `started=true`, режим `Playing`. `PlayResult Err` → `Warn(Some("Spotify: нет активного устройства / ошибка"))` и повтор по `RETRY_BACKOFF_MS` на `Tick`, без отмены, элемент остаётся текущим. При `NoDevice` ещё и `last_device = None`, чтобы драйвер выбрал устройство заново.
+- **Старт элемента, YouTube.** `YtPlay{start_ms:0}` (плеер стартует без звука), режим `Starting`. `Yt Started{d}`: если `d > max` → `YtStop` + `Cancel(TooLong)` + следующий; иначе `YtUnmute` + `Started(item)` (если ещё не started) + `Playing`. `Yt Error` до старта → `Cancel(YtUnavailable)` + следующий. Нет `Started` за `YT_START_TIMEOUT_MS` → `YtStop` + `Cancel(YtUnavailable)` + следующий.
+- **`PlayResult` и Yt-события с чужим `item_id`** игнорируются.
+- **YouTube-сторож.** В `Playing` для YouTube: если `Ended` не пришёл к `started_at + duration + YT_END_SLACK_MS` (время на паузе не считается), то это конец трека. Проверяется на `Tick`.
+- **`YtPlayerConnected`.** Если текущий трек из YouTube, то `YtPlay{start_ms: прогресс по часам}` повторно, а для `Paused` — ещё и `YtPause`. Иначе ничего.
 - **Правила по снимку Spotify работают только если текущий трек из Spotify и режим `Playing`, `Paused` или `Suspended`.** Пока играет YouTube, снимки игнорируются, кроме учёта `last_ok`.
 - **Конец трека.** Снимок на нашем URI, `!is_playing`, `progress >= duration - END_TOLERANCE_MS`. Либо снимок на чужом URI или `None` при `last_progress >= duration - (END_TOLERANCE_MS + POLL_MS)`: это автоплей или конец. Действие: следующий трек, либо `Idle` + `Widget{visible:false}`.
 - **Ручная пауза.** Наш URI, `!is_playing`, прогресс далеко от конца → `Paused`. `is_playing` снова true → `Playing`.
 - **Чужой URI** вне `PLAY_GRACE_MS` после `PlayResult Ok` и не у конца трека → `Suspended`. Дальше снимки игнорируются. `ResumeQueue` → следующий элемент очереди.
 - **Устройство пропало** (`Ok(None)` или `device_id None`) в `Playing` вне grace → `SpotifyPlay{position_ms: last_progress}` с бэкоффом `RETRY_BACKOFF_MS`.
-- **Outage.** `Err(())`: если `now - last_ok >= OUTAGE_MS` и `now >= expected_end`, то `fallback=true`, `Warn(Some(..))`; следующий Spotify-элемент → `ResolveFallback`. `FallbackResolved{None}` → `Cancel(YtUnavailable)` + следующий. `FallbackResolved{Some}` → старт как YouTube. Первый `Ok` → `fallback=false`, `Warn(None)`.
+- **Outage.** `Err(())`: если `now - last_ok >= OUTAGE_MS` и `now >= expected_end`, то `fallback=true`, `Warn(Some(..))`; текущий Spotify-элемент считается доигранным (без Cancel); следующий Spotify-элемент → `ResolveFallback`. `FallbackResolved{None}` → `Cancel(YtUnavailable)` + следующий. `FallbackResolved{Some}` → старт как YouTube. Первый `Ok` → `fallback=false`, `Warn(None)`.
 - **`TogglePause`.** Spotify → `SpotifyPause`/`SpotifyResume`, YouTube → `YtPause`/`YtResume`. Режим `Paused` ставится сразу, поэтому собственная пауза не считается чужой.
-- **`Skip` текущего** → `SpotifyPause`/`YtStop` + следующий, без Cancel. Если текущий ещё не стартовал (`Starting`), то `Cancel(RemovedByStreamer)`.
+- **`Skip` текущего** → `SpotifyPause`/`YtStop` + следующий, без Cancel. Если текущий ещё не стартовал (`!started`), то `Cancel(RemovedByStreamer)`.
 - **`Remove`** элемента из очереди → `Cancel(RemovedByStreamer)`.
-- **`Restore`.** Текущий `started=true` из Spotify → `Playing`, без `Started` и без play, дальше разбирается сторож. Из YouTube → `YtPlay`, а последующий `Yt Started` не даёт повторного `Started`. `started=false` → обычный старт.
+- **`Restore`.** Текущий `started=true` из Spotify → `Playing`, без `Started` и без play, дальше разбирается сторож. Из YouTube → `YtPlay{start_ms:0}`, а последующий `Yt Started` не даёт повторного `Started`. Ошибка или таймаут такого элемента ведёт просто к следующему, без Cancel (инвариант). `started=false` → обычный старт.
 
 - [ ] **Step 1: тесты:**
   - `enqueue_idle_starts_without_fulfill`, `play_ok_emits_started`, `play_failure_does_not_fulfill_and_retries`, `enqueue_busy_appends`;
@@ -282,7 +291,10 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
   - `device_lost_replays_with_backoff`, `short_outage_no_fallback`, `outage_before_expected_end_no_fallback`, `outage_after_end_triggers_fallback`, `fallback_unresolved_cancels`, `recovery_clears_warning`;
   - `youtube_playing_ignores_spotify_snapshot`, `yt_error_before_start_cancels`, `yt_too_long_cancels`, `yt_start_timeout_cancels`, `yt_stale_item_ignored`;
   - `toggle_pause_youtube_uses_yt_actions`, `remove_queued_cancels`, `skip_started_no_refund`, `skip_starting_cancels`;
-  - `restore_spotify_no_refulfill`, `restore_youtube_replays`, `persist_first_in_batch`.
+  - `restore_spotify_no_refulfill`, `restore_youtube_replays`, `persist_first_in_batch`;
+  - `play_result_stale_ignored`, `no_device_clears_last_device`, `yt_unmute_only_after_length_ok`;
+  - `restored_started_yt_error_no_cancel`, `skip_restored_started_no_cancel`;
+  - `yt_missing_end_times_out`, `yt_missing_end_ignores_paused_time`, `player_reconnect_replays_current_yt`, `fallback_finishes_current_without_cancel`.
 - [ ] **Step 2:** `cargo test player::` → FAIL → реализовать → PASS.
 - [ ] **Step 3:** commit `feat(player): queue and watchdog state machine`.
 
@@ -294,7 +306,7 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
 
 **Interfaces — Produces:**
 ```rust
-pub enum WsOut { State(WidgetState), YtPlay { item_id: i64, video_id: String }, YtStop, YtPause, YtResume, Reload }
+pub enum WsOut { State(WidgetState), YtPlay { item_id: i64, video_id: String, start_ms: u64 }, YtUnmute, YtStop, YtPause, YtResume, Reload }
 pub struct ServerChannels {
   pub out_tx: tokio::sync::broadcast::Sender<WsOut>,   // State/Reload — всем; Yt* сервер шлёт только player-соединению
   pub yt_rx: tokio::sync::mpsc::Receiver<player::Input>,             // Input::Yt{..}
@@ -312,7 +324,7 @@ pub struct ThemeMeta { pub id: String, pub name: String, pub author: String, pub
 - `GET /widget/music` → `index.html` активной темы.
 - `GET /widget/theme/{id}/{*file}`: путь нормализуется, компоненты `..` и абсолютные пути → 404.
 - `GET /widget/sdk.js`.
-- `GET /ws?role=player|view`. Проверка Origin и Host — см. Global Constraints. Player-соединение одно, новое вытесняет старое. Остальные соединения получают только `State` и `Reload`.
+- `GET /ws?role=player|view`. Проверка Origin и Host — см. Global Constraints. Player-соединение одно, новое вытесняет старое: старое закрывается с кодом `4001` и после этого переподключается только как `view`, поэтому взаимного выбивания нет. Каждое новое player-соединение шлёт в `yt_rx` `Input::YtPlayerConnected`. Остальные соединения получают только `State` и `Reload`.
 - `GET /callback/spotify?code&state` → передаёт в `oauth_rx`, отвечает страницей «Готово, вернитесь в программу».
 
 Встроенные темы подключаются через `include_dir!`. Кастомная тема с тем же id перекрывает встроенную.
@@ -322,7 +334,7 @@ pub struct ThemeMeta { pub id: String, pub name: String, pub author: String, pub
 - Переподключается к WS каждые 2 с.
 - Виджет, открытый в OBS через `/widget/music`, подключается как `role=player`. Превью с `?preview=1` подключается как `role=view`.
 - YouTube IFrame Player размещается в `#sa-youtube`. Если тема его не дала, sdk создаёт контейнер 200×200 за краем экрана.
-- На `YtPlay`: `loadVideoById` с `mute()`, на первом PLAYING считывается `getDuration()`, затем `unMute()` и отправка `{"type":"yt","item_id":..,"event":"started","duration_ms":..}`. Плеер не глушит сам себя по длине: решение принимает автомат и, если надо, шлёт `YtStop`.
+- На `YtPlay{start_ms}`: `mute()` + `loadVideoById({videoId, startSeconds})`. На первом PLAYING отправляется `{"type":"yt","item_id":..,"event":"started","duration_ms":getDuration()*1000}`, **звук остаётся выключенным**. `YtUnmute` → `unMute()`, `YtStop` → `stopVideo()`. Решение о длине принимает автомат.
 - `ENDED` → `ended`, `onError` → `error`, всегда с `item_id`.
 - `Reload` → `location.reload()`.
 
@@ -332,6 +344,7 @@ pub struct ThemeMeta { pub id: String, pub name: String, pub author: String, pub
   - `widget_serves_active_theme`, `sdk_served`;
   - `ws_rejects_foreign_origin` (Origin `https://evil.example` → 403), `ws_sends_state_on_connect`;
   - `yt_commands_only_to_player` (два соединения, `YtPlay` получает только player);
+  - `new_player_evicts_old_with_4001_and_signals_connected`;
   - `callback_forwards_code_and_state`;
   - `theme_route_traversal_404` (`/widget/theme/underground/..%2F..%2Fsecret`);
   - `zip_slip_rejected`, `zip_without_theme_json_rejected`, `custom_theme_overrides_builtin`.
@@ -452,7 +465,7 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
 
 **Исполнение `Action`.** Пачка сортируется так, что `Persist` идёт первым: `db.save_state(player.snapshot())`. Остальные действия:
 - `Started(item)` → `set_redemption_status(true)` + `history_push`;
-- `Cancel(item, why)` → `set_redemption_status(false)` + чат `chat_rejected(user, cancel_text(why))`;
+- `Cancel(item, why)` → `db.mark_cancelled` (до сетевого вызова) → `set_redemption_status(false)` + чат `chat_rejected(user, cancel_text(why))`;
 - `SpotifyPlay` → если `device_id` None, то `pick_device(devices())`, затем `play`; результат → `Input::PlayResult`;
 - `Yt*` → `ws.out_tx`;
 - `Widget` → `state_tx` + `ws.out_tx(State)` + `app.emit("state")`;
@@ -464,6 +477,7 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
 **Reconcile**, при старте и на `EsSignal::Resync`. Для каждого `unfulfilled(reward_id)`:
 - `Queued` → ничего;
 - `Started` → Fulfill;
+- `Cancelled` → Cancel повторно, без чата;
 - `Unknown` → обычный путь выкупа.
 
 **Запуск** (в `setup` через `tauri::async_runtime::spawn`):
@@ -476,10 +490,10 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
   - не найдена → `create_reward`. Ошибки `NotAffiliate` и `DuplicateTitle` идут в `Warn` с текстом: «нужен статус компаньона/партнёра» или «награда с таким названием уже есть, но создана не этой программой — переименуйте её или удалите».
 - Reconcile.
 
-**Выход:** `RunEvent::ExitRequested` → `api.prevent_exit()` → `update_reward{is_paused:true}` (таймаут 2 с) → `app.exit(0)`.
+**Выход:** `RunEvent::ExitRequested { code: None, api }` → `api.prevent_exit()` → `update_reward{is_paused:true}` (таймаут 2 с) → `app.exit(0)`. `ExitRequested` с `code: Some(_)` пропускается, иначе выход зациклится.
 
 - [ ] **Step 1: тесты music:** `decide_rejects_on_violation`, `decide_not_found_rejects`, `normalize_title_strips_noise`, `resolve_youtube_matches_spotify` (wiremock: oEmbed «Daft Punk - Around The World (Official Video)», поиск вернул Daft Punk / Around the World → `Source::Spotify`), `resolve_youtube_no_match_stays_youtube`.
-- [ ] **Step 2: тесты driver** (функция `fn plan_reconcile(states: &[(Redemption, RedemptionState)]) -> Vec<ReconcileStep>` вынесена отдельно, чтобы тестировать без сети): `reconcile_queued_skipped`, `reconcile_started_fulfilled`, `reconcile_unknown_processed`.
+- [ ] **Step 2: тесты driver** (функция `fn plan_reconcile(states: &[(Redemption, RedemptionState)]) -> Vec<ReconcileStep>` вынесена отдельно, чтобы тестировать без сети): `reconcile_queued_skipped`, `reconcile_started_fulfilled`, `reconcile_cancelled_recancelled`, `reconcile_unknown_processed`.
 - [ ] **Step 3:** FAIL → реализовать → `cargo test` (весь крейт) PASS.
 - [ ] **Step 4:** commit `feat(music): redemption pipeline and driver`.
 
@@ -497,7 +511,7 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
 
 ### Task 11: Панель управления и Tauri-команды
 
-**Files:** Create `src/lib/api.ts`, `src/lib/i18n/ru.ts`, `src/lib/views/*.svelte`; Modify `src/routes/+page.svelte`, `src-tauri/src/app.rs`.
+**Files:** Create `src/lib/api.ts`, `src/lib/i18n/ru.ts`, `src/lib/views/*.svelte`; Modify `src/routes/+page.svelte`, `src-tauri/src/app.rs`, `src-tauri/tauri.conf.json` (CSP: `frame-src http://127.0.0.1:*` для превью виджета).
 
 **Команды** (`#[tauri::command]`, имена совпадают с функциями в `api.ts`). Все шлют `DriverMsg` в mpsc или читают `watch`/`Db`, без мьютекса `Player`:
 - очередь: `get_state() -> WidgetState`, `skip()`, `remove_item(id: i64)`, `move_item(id: i64, to: usize)`, `toggle_pause()`, `resume_queue()`, `set_volume(pct: u8)`;
@@ -527,7 +541,8 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
   3. «Тест» показывает плашку.
   4. Выкуп с тестового аккаунта → трек играет, выкуп FULFILLED. Второй выкуп → в очередь.
   5. Удаление из очереди → баллы вернулись.
-  6. Закрыть Spotify и сделать выкуп → предупреждение «нет устройства», баллы не списаны. Открыть Spotify → трек стартует.
+  6. Закрыть Spotify и сделать выкуп → предупреждение «нет устройства», выкуп остаётся UNFULFILLED, возврата пока нет. Открыть Spotify → трек стартует, выкуп FULFILLED.
+  7a. Во время YouTube-трека обновить источник в OBS → трек продолжается с той же позиции.
   7. Сменить трек вручную в Spotify → «Вернуть очередь».
   8. Выключить сеть на 40 с во время трека → предупреждение; после конца трека YouTube-фолбэк (если есть ключ).
   9. Закрыть программу → награда на паузе.
