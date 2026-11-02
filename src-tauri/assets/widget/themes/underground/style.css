@@ -9,6 +9,6 @@
 .qp{position:absolute;right:18px;top:18px;width:290px;border:2px solid var(--lime);border-radius:6px;overflow:hidden;background:var(--panel)}.h{background:linear-gradient(#b9e57a,#8fc24e);color:#1a2a0a;font-weight:700;font-size:20px;padding:2px 10px;display:flex;justify-content:space-between}.r{display:grid;grid-template-columns:24px 1fr;gap:6px;padding:3px 10px;color:#fff;font-size:18px;font-weight:600}.r:nth-child(odd){background:var(--row)}.n{color:var(--lime)}.r small{display:block;color:#cfd8c4;font-size:14px;font-weight:500}
 
 html[data-part="now"] .qp,html[data-part="queue"] .np{display:none}
-html[data-part="now"] .np{left:0;top:0;bottom:auto;max-width:100%;width:560px}
+html[data-part="now"] .np{left:6px;top:6px;bottom:auto;max-width:calc(100% - 12px);width:560px}
 html[data-part="now"] .box{min-width:0;flex:1}html[data-part="now"] .box .t{overflow-wrap:anywhere}
 html[data-part="queue"] .qp{left:0;top:0;right:auto}

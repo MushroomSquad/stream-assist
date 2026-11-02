@@ -13,3 +13,4 @@ html[data-part="now"] .q{display:none}
 html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
 html[data-part="queue"] .q{margin-top:0}
 html[data-part="queue"] #widget{display:block}
+html[data-part="queue"] #widget:not(:has(.q:not(:empty))){display:none}
