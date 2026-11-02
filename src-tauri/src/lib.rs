@@ -1,4 +1,5 @@
 pub mod db;
+pub mod i18n;
 pub mod limits;
 pub mod model;
 pub mod player;
@@ -7,6 +8,7 @@ pub mod router;
 pub mod secrets;
 pub mod server;
 pub mod spotify;
+pub mod twitch;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
