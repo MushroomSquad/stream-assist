@@ -121,7 +121,7 @@ impl Db {
   pub fn history_push(&self, item: &QueueItem, now: i64) -> Result<()>;
   pub fn history_recent(&self, n: usize) -> Result<Vec<Source>>;
   pub fn redemption_state(&self, redemption_id: &str) -> Result<RedemptionState>;
-  pub fn mark_cancelled(&self, redemption_id: &str) -> Result<()>;  // пишется в той же транзакции save_state, что и удаление
+  pub fn mark_cancelled(&self, redemption_id: &str) -> Result<()>;  // драйвер зовёт перед любым Cancel в Twitch
 }
 pub enum RedemptionState { Unknown, Queued, Started /* current со started=true или history */, Cancelled }
 pub enum DbError { Duplicate, Sql(rusqlite::Error), Json(serde_json::Error) }
@@ -272,7 +272,7 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
 - **Старт элемента, YouTube.** `YtPlay{start_ms:0}` (плеер стартует без звука), режим `Starting`. `Yt Started{d}`: если `d > max` → `YtStop` + `Cancel(TooLong)` + следующий; иначе `YtUnmute` + `Started(item)` (если ещё не started) + `Playing`. `Yt Error` до старта → `Cancel(YtUnavailable)` + следующий. Нет `Started` за `YT_START_TIMEOUT_MS` → `YtStop` + `Cancel(YtUnavailable)` + следующий.
 - **`PlayResult` и Yt-события с чужим `item_id`** игнорируются.
 - **YouTube-сторож.** В `Playing` для YouTube: если `Ended` не пришёл к `started_at + duration + YT_END_SLACK_MS` (время на паузе не считается), то это конец трека. Проверяется на `Tick`.
-- **`YtPlayerConnected`.** Если текущий трек из YouTube, то `YtPlay{start_ms: прогресс по часам}` повторно, а для `Paused` — ещё и `YtPause`. Иначе ничего.
+- **`YtPlayerConnected`.** Если текущий трек из YouTube, то `YtPlay{start_ms: прогресс по часам}` повторно, а для `Paused` — ещё и `YtPause`. Иначе ничего. `Yt Started` в режиме `Paused` → только `YtPause`, режим не меняется, звук не включается.
 - **Правила по снимку Spotify работают только если текущий трек из Spotify и режим `Playing`, `Paused` или `Suspended`.** Пока играет YouTube, снимки игнорируются, кроме учёта `last_ok`.
 - **Конец трека.** Снимок на нашем URI, `!is_playing`, `progress >= duration - END_TOLERANCE_MS`. Либо снимок на чужом URI или `None` при `last_progress >= duration - (END_TOLERANCE_MS + POLL_MS)`: это автоплей или конец. Действие: следующий трек, либо `Idle` + `Widget{visible:false}`.
 - **Ручная пауза.** Наш URI, `!is_playing`, прогресс далеко от конца → `Paused`. `is_playing` снова true → `Playing`.
@@ -294,7 +294,7 @@ pub const RETRY_BACKOFF_MS: [i64; 5] = [2000, 4000, 8000, 16000, 30000]; // да
   - `restore_spotify_no_refulfill`, `restore_youtube_replays`, `persist_first_in_batch`;
   - `play_result_stale_ignored`, `no_device_clears_last_device`, `yt_unmute_only_after_length_ok`;
   - `restored_started_yt_error_no_cancel`, `skip_restored_started_no_cancel`;
-  - `yt_missing_end_times_out`, `yt_missing_end_ignores_paused_time`, `player_reconnect_replays_current_yt`, `fallback_finishes_current_without_cancel`.
+  - `yt_missing_end_times_out`, `yt_missing_end_ignores_paused_time`, `player_reconnect_replays_current_yt`, `player_reconnect_while_paused` (`Yt Started` в `Paused` → только `YtPause`, без `YtUnmute`), `fallback_finishes_current_without_cancel`.
 - [ ] **Step 2:** `cargo test player::` → FAIL → реализовать → PASS.
 - [ ] **Step 3:** commit `feat(player): queue and watchdog state machine`.
 
@@ -332,7 +332,7 @@ pub struct ThemeMeta { pub id: String, pub name: String, pub author: String, pub
 **`sdk.js`:**
 - API для тем: `StreamAssist.on(name, fn)`, где name ∈ `state|nowPlaying|queue|progress|hidden`.
 - Переподключается к WS каждые 2 с.
-- Виджет, открытый в OBS через `/widget/music`, подключается как `role=player`. Превью с `?preview=1` подключается как `role=view`.
+- `role=player` запрашивается, только если `window.obsstudio` определён (так бывает только в браузере OBS). Любая другая страница, включая превью в панели, подключается как `role=view`, поэтому случайная вкладка звук не перехватит.
 - YouTube IFrame Player размещается в `#sa-youtube`. Если тема его не дала, sdk создаёт контейнер 200×200 за краем экрана.
 - На `YtPlay{start_ms}`: `mute()` + `loadVideoById({videoId, startSeconds})`. На первом PLAYING отправляется `{"type":"yt","item_id":..,"event":"started","duration_ms":getDuration()*1000}`, **звук остаётся выключенным**. `YtUnmute` → `unMute()`, `YtStop` → `stopVideo()`. Решение о длине принимает автомат.
 - `ENDED` → `ended`, `onError` → `error`, всегда с `item_id`.
@@ -459,8 +459,8 @@ pub struct DriverCtx { pub db: Arc<std::sync::Mutex<Db>>, pub state_tx: watch::S
 - Иначе id добавляется в `inflight` и запускается `tokio::spawn(resolve)`; результат приходит как `DriverMsg::Resolved`.
 - На `Resolved`: `decide` по **текущему** снимку `Player` (без гонок квоты), затем:
   - `Enqueue` → `db.insert_item` (`Duplicate` → игнор) → `player.step(Enqueue)` → чат `chat_added`;
-  - `Reject` → Cancel в Twitch + `chat_rejected`;
-  - `Err` (сеть, Spotify не подключён) → Cancel + `TEXT_SERVICE_DOWN`.
+  - `Reject` → `db.mark_cancelled` → Cancel в Twitch + `chat_rejected`;
+  - `Err` (сеть, Spotify не подключён) → `db.mark_cancelled` → Cancel + `TEXT_SERVICE_DOWN`.
   - В конце id убирается из `inflight`.
 
 **Исполнение `Action`.** Пачка сортируется так, что `Persist` идёт первым: `db.save_state(player.snapshot())`. Остальные действия:
