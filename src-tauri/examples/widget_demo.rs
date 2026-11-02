@@ -39,20 +39,30 @@ async fn main() -> anyhow::Result<()> {
             item(2, "Lil Jon", "Get Low", "shadow_drift"),
             item(3, "Chingy", "I Do", "nitro_kid"),
             item(4, "Xzibit", "Hey Now", "bayview99"),
+            item(5, "The Doors", "Riders on the Storm", "driver"),
+            item(6, "Snoop Dogg", "Who Am I", "racer"),
         ],
         progress_ms: 0,
         mode: "Playing".into(),
         warning: None,
     };
     let (tx, rx) = tokio::sync::watch::channel(state.clone());
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(47821);
     let mut channels = server::serve(
-        47821,
+        port,
         PathBuf::from("themes"),
         Arc::new(RwLock::new(theme)),
         rx,
     )
     .await?;
-    println!("http://127.0.0.1:47821/widget/music");
+    println!(
+        "http://127.0.0.1:{port}/widget/music?part={}&scale={}",
+        std::env::var("PART").unwrap_or_else(|_| "all".into()),
+        std::env::var("SCALE").unwrap_or_else(|_| "1".into())
+    );
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {_=tokio::signal::ctrl_c()=>break,_=channels.yt_rx.recv()=>{},_=channels.oauth_rx.recv()=>{},_=interval.tick()=>{state.progress_ms=(state.progress_ms+1000)%180_000;tx.send_replace(state.clone());let _=channels.out_tx.send(WsOut::State(state.clone()));}}

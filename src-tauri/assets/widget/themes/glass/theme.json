@@ -1,1 +1,1 @@
-{"id": "glass", "name": "Glass", "author": "Stream Assist", "width": 800, "height": 420}
+{"id": "glass", "name": "Glass", "author": "Stream Assist", "width": 800, "height": 420, "parts": {"now": {"width": 320, "height": 150}, "queue": {"width": 320, "height": 90}}}

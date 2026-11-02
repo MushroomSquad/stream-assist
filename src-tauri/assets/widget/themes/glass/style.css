@@ -7,3 +7,9 @@
 .cov{width:64px;height:64px;border-radius:10px;background:linear-gradient(135deg,#ff6ec7,#7873f5)}.t{font-weight:800;font-size:16px}.a{opacity:.7;font-size:13px}.by{font-size:11px;opacity:.55;margin-top:2px}.prog{height:3px;background:#ffffff22;border-radius:2px;margin-top:6px}.prog i{background:#fff;border-radius:2px}.q{grid-column:1/-1;opacity:.75;border-top:1px solid #ffffff22;padding-top:6px;font-size:12px}
 
 .q:empty{display:none}
+
+html[data-part="now"] #widget,html[data-part="queue"] #widget{left:0;top:0;bottom:auto;max-width:100%}
+html[data-part="now"] .q{display:none}
+html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
+html[data-part="queue"] .q{margin-top:0}
+html[data-part="queue"] #widget{display:block}

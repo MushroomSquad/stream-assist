@@ -20,6 +20,33 @@ fn builtin_themes_listed() {
     assert_eq!(ids, ["block", "crt", "glass", "underground"]);
 }
 
+#[test]
+fn builtin_theme_parts_and_legacy_fallback() {
+    let themes = list_themes(&PathBuf::from("/nonexistent"));
+    assert_eq!(themes.len(), 4);
+    for theme in themes {
+        let parts = theme.parts.expect("built-in parts");
+        assert!(parts.now.width > 0 && parts.now.height > 0);
+        assert!(parts.queue.width > 0 && parts.queue.height > 0);
+    }
+    let dir = std::env::temp_dir().join(format!("sa-parts-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir(dir.as_path().join("legacy")).unwrap();
+    std::fs::write(
+        dir.as_path().join("legacy/theme.json"),
+        r#"{"id":"legacy","name":"Legacy","author":"Test","width":640,"height":360}"#,
+    )
+    .unwrap();
+    let theme = list_themes(dir.as_path())
+        .into_iter()
+        .find(|t| t.id == "legacy")
+        .unwrap();
+    let parts = theme.parts.unwrap();
+    assert_eq!((parts.now.width, parts.now.height), (640, 360));
+    assert_eq!((parts.queue.width, parts.queue.height), (640, 360));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn state() -> WidgetState {
     WidgetState {
         visible: false,

@@ -7,7 +7,7 @@ export interface Track { title: string; artist: string; duration_ms: number | nu
 export interface QueueItem { id: number; track: Track; requester: string }
 export interface WidgetState { visible: boolean; now: QueueItem | null; queue: QueueItem[]; progress_ms: number; mode: string; warning: string | null }
 export interface Settings { limits: { max_duration_ms: number | null; no_repeat_last_n: number; max_per_user_in_queue: number | null; block_explicit: boolean; blocklist: string[] }; reward_title: string; reward_cost: number; reward_cooldown_s: number; port: number; active_theme: string; youtube_api_key: string | null; obs: { host: string; port: number; password: string | null }; music_reward_id: string | null; spotify_client_id: string | null }
-export interface ThemeMeta { id: string; name: string; author: string; width: number; height: number }
+export interface ThemeMeta { id: string; name: string; author: string; width: number; height: number; parts?: { now: { width: number; height: number }; queue: { width: number; height: number } } }
 export interface DeviceStart { user_code: string; verification_uri: string; interval: number; expires_in: number }
 export interface SpotifyStatus { connected: boolean; premium: boolean | null }
 export const emptyState: WidgetState = { visible: false, now: null, queue: [], progress_ms: 0, mode: 'Idle', warning: null };
@@ -28,7 +28,7 @@ export const twitch_logout = () => call<void>('twitch_logout');
 export const spotify_login = (client_id: string) => call<string>('spotify_login', { clientId: client_id });
 export const spotify_status = () => call<SpotifyStatus>('spotify_status');
 export const obs_check = () => call<string>('obs_check');
-export const obs_add_widget = () => call<void>('obs_add_widget');
+export const obs_add_widget = (scale = 1) => call<void>('obs_add_widget', { scale });
 export const list_themes = () => isTauri() ? call<ThemeMeta[]>('list_themes') : Promise.resolve<ThemeMeta[]>(['underground', 'glass', 'crt', 'block'].map(id => ({ id, name: id, author: '', width: 800, height: 200 })));
 export const import_theme = (path: string) => call<string>('import_theme', { path });
 export const widget_test = () => call<void>('widget_test');

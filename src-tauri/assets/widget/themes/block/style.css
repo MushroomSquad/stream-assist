@@ -7,3 +7,9 @@
 
 .q:empty{display:none}
  .by{margin-left:6px}.credits{clear:left}
+
+html[data-part="now"] #widget,html[data-part="queue"] #widget{left:0;top:0;bottom:auto;max-width:100%}
+html[data-part="now"] .q{display:none}
+html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
+html[data-part="queue"] .q{margin-top:0}
+html[data-part="now"] .t{transform:none}

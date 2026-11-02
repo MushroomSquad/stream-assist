@@ -1,4 +1,10 @@
 (() => {
+  const params = new URLSearchParams(location.search);
+  const part = ['now', 'queue'].includes(params.get('part')) ? params.get('part') : 'all';
+  const value = Number.parseFloat(params.get('scale'));
+  const scale = Number.isFinite(value) ? Math.min(4, Math.max(0.5, value)) : 1;
+  document.documentElement.dataset.part = part;
+  document.documentElement.style.zoom = String(scale);
   const listeners = new Map();
   window.StreamAssist = { on(name, fn) {
     if (!['state', 'nowPlaying', 'queue', 'progress', 'hidden'].includes(name)) return;
@@ -6,7 +12,7 @@
     listeners.get(name).push(fn);
   }};
   function emit(name, value) { for (const fn of listeners.get(name) || []) fn(value); }
-  let role = typeof window.obsstudio !== 'undefined' ? 'player' : 'view';
+  let role = part !== 'queue' && typeof window.obsstudio !== 'undefined' ? 'player' : 'view';
   let socket, player, itemId, started = false, pending = [];
   function report(event, extra = {}) {
     if (itemId != null && socket?.readyState === WebSocket.OPEN)

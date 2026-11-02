@@ -445,7 +445,7 @@ pub async fn import_theme(app: tauri::AppHandle, path: String) -> Result<String,
     .map_err(|_| "theme_import_failed".into())
 }
 #[tauri::command]
-pub async fn obs_add_widget(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn obs_add_widget(app: tauri::AppHandle, scale: Option<f64>) -> Result<(), String> {
     let s = get_settings(app.clone())?;
     let port = running_port(app.clone()).ok_or("server_start_failed")?;
     let theme = list_themes(app)?
@@ -455,8 +455,11 @@ pub async fn obs_add_widget(app: tauri::AppHandle) -> Result<(), String> {
     crate::obs::add_widget_to_current_scene(
         &s.obs,
         &format!("http://127.0.0.1:{}/widget/music", port),
-        theme.width,
-        theme.height,
+        &theme.parts.expect("list_themes supplies fallback parts"),
+        scale
+            .filter(|s| s.is_finite())
+            .unwrap_or(1.0)
+            .clamp(0.5, 4.0),
     )
     .await
     .map_err(|_| "obs_add_failed".into())

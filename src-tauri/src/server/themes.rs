@@ -8,12 +8,24 @@ use std::{
 };
 static BUILTIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/widget/themes");
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PartSize {
+    pub width: u32,
+    pub height: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThemeParts {
+    pub now: PartSize,
+    pub queue: PartSize,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThemeMeta {
     pub id: String,
     pub name: String,
     pub author: String,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub parts: Option<ThemeParts>,
 }
 fn safe(path: &str) -> bool {
     !path.is_empty()
@@ -65,7 +77,21 @@ pub fn list_themes(dir: &Path) -> Vec<ThemeMeta> {
             }
         }
     }
-    all.into_values().collect()
+    all.into_values()
+        .map(|mut theme| {
+            if theme.parts.is_none() {
+                let size = PartSize {
+                    width: theme.width,
+                    height: theme.height,
+                };
+                theme.parts = Some(ThemeParts {
+                    now: size.clone(),
+                    queue: size,
+                });
+            }
+            theme
+        })
+        .collect()
 }
 pub fn import_theme_zip(zip: &Path, themes_dir: &Path) -> Result<String> {
     let mut archive = zip::ZipArchive::new(fs::File::open(zip)?)?;
