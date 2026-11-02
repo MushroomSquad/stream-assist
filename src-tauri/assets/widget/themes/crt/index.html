@@ -12,7 +12,7 @@ StreamAssist.on('state', state => {
   const now = state.now;
   el('title').textContent = now?.track.title || '';
   el('artist').textContent = now?.track.artist || '';
-  el('requester').textContent = now ? 'заказал: @' + now.requester : '';
+  el('requester').textContent = now ? 'by @' + now.requester : '';
   const cover = el('cover'), url = now?.track.cover_url;
   cover.hidden = !url; el('note').hidden = !!url;
   cover.onerror = () => { cover.hidden = true; el('note').hidden = false; };

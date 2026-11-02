@@ -5,3 +5,5 @@
 #sa-youtube{position:fixed;left:-300px;top:0;width:200px;height:200px}
 #widget{font-family:'Courier New',monospace;color:#7dff9b;background:#031a0b;border:2px solid #7dff9b55;padding:10px 14px;width:330px;text-shadow:0 0 6px #7dff9b;font-size:18px;background-image:repeating-linear-gradient(0deg,#ffffff07 0 1px,transparent 1px 3px)}
 .cov{width:48px;height:48px;float:right;margin:0 0 6px 8px;border:1px solid #7dff9b55}.t{font-size:24px;text-transform:uppercase}.a{text-transform:uppercase}.by{font-size:14px}.q{font-size:16px;color:#5fcf7a;clear:both}.prog{height:2px;background:#7dff9b22;margin-top:6px}.prog i{background:#7dff9b}#time{font-size:14px;margin-bottom:8px}
+
+.q:empty{display:none}

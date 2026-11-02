@@ -25,6 +25,8 @@ async fn main() -> anyhow::Result<()> {
         redemption: None,
         started: id == 1,
     };
+    // Select a built-in theme for browser previews with THEME=glass (etc.).
+    let theme = std::env::var("THEME").unwrap_or_else(|_| "underground".into());
     let mut state = WidgetState {
         visible: true,
         now: Some(item(
@@ -46,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let mut channels = server::serve(
         47821,
         PathBuf::from("themes"),
-        Arc::new(RwLock::new("underground".into())),
+        Arc::new(RwLock::new(theme)),
         rx,
     )
     .await?;
