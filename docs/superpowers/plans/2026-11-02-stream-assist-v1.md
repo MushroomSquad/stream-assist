@@ -68,7 +68,7 @@ src-tauri/
     music.rs            # resolve + decide
 ```
 
-**Расширяемость** — это требование спеки. Её даёт `router.rs`: `enum FeatureKind { Music }` и `fn route(reward_id, &Settings) -> Option<FeatureKind>`. Новая награда добавляется так: вариант enum, модуль, ветка `match` в драйвере. Шина событий и трейт плагина в v1 не нужны (YAGNI; broadcast к тому же теряет события при `Lagged`).
+**Расширяемость** — это требование спеки. Её даёт `router.rs`: `enum FeatureKind { Music }` и `fn route(reward_id: &str, music_reward_id: Option<&str>) -> Option<FeatureKind>`. Новая награда добавляется так: вариант enum, модуль, ветка `match` в драйвере. Шина событий и трейт плагина в v1 не нужны (YAGNI; broadcast к тому же теряет события при `Lagged`).
 
 ---
 
