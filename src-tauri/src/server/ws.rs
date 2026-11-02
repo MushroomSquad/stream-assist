@@ -27,7 +27,8 @@ pub(super) async fn upgrade(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.on_upgrade(move |socket| session(socket, a, q.role.as_deref() == Some("player")))
+    ws.max_message_size(64 * 1024)
+        .on_upgrade(move |socket| session(socket, a, q.role.as_deref() == Some("player")))
 }
 #[derive(Deserialize)]
 struct YtMessage {
@@ -45,8 +46,8 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool) {
         if let Some(old) = guard.replace(tx) {
             let _ = old.send(true);
         }
-        if a.yt.send(Input::YtPlayerConnected).await.is_err() {
-            return;
+        if let Err(error) = a.yt.try_send(Input::YtPlayerConnected) {
+            eprintln!("Could not signal YouTube player connection: {error}");
         }
         Some(rx)
     } else {

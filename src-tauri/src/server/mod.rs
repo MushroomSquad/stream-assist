@@ -33,7 +33,7 @@ pub enum WsOut {
 pub struct ServerChannels {
     pub out_tx: broadcast::Sender<WsOut>,
     pub yt_rx: mpsc::Receiver<player::Input>,
-    pub oauth_rx: mpsc::Receiver<(String, String)>,
+    pub oauth_rx: mpsc::Receiver<(Result<String, String>, String)>,
 }
 #[derive(Clone)]
 struct App {
@@ -43,7 +43,7 @@ struct App {
     last: watch::Receiver<WidgetState>,
     out: broadcast::Sender<WsOut>,
     yt: mpsc::Sender<player::Input>,
-    oauth: mpsc::Sender<(String, String)>,
+    oauth: mpsc::Sender<(Result<String, String>, String)>,
     player: Arc<tokio::sync::Mutex<Option<watch::Sender<bool>>>>,
 }
 fn build(
@@ -139,16 +139,26 @@ fn file(a: &App, id: &str, path: &str) -> Response {
 }
 #[derive(Deserialize)]
 struct Callback {
-    code: String,
+    code: Option<String>,
+    error: Option<String>,
     state: String,
 }
 async fn callback(State(a): State<App>, Query(q): Query<Callback>) -> Response {
-    if a.oauth.send((q.code, q.state)).await.is_err() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    let (result, message) = match (q.code, q.error) {
+        (_, Some(error)) => (Err(error), "Вход отменён, вернитесь в программу"),
+        (Some(code), None) => (Ok(code), "Готово, вернитесь в программу"),
+        (None, None) => return (StatusCode::BAD_REQUEST, "Missing code or error").into_response(),
+    };
+    if a.oauth.try_send((result, q.state)).is_err() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OAuth callback unavailable",
+        )
+            .into_response();
     }
-    axum::response::Html(
-        "<!doctype html><meta charset='utf-8'><p>Готово, вернитесь в программу</p>",
-    )
+    axum::response::Html(format!(
+        "<!doctype html><meta charset='utf-8'><p>{message}</p>"
+    ))
     .into_response()
 }
 #[cfg(test)]

@@ -174,8 +174,65 @@ async fn callback_forwards_code_and_state() {
     assert_eq!(r.status(), 200);
     assert_eq!(
         c.oauth_rx.recv().await.unwrap(),
-        ("abc".into(), "xyz".into())
+        (Ok("abc".into()), "xyz".into())
     );
+}
+#[tokio::test]
+async fn callback_forwards_error() {
+    let (p, mut c) = setup().await;
+    let r = reqwest::get(format!(
+        "http://127.0.0.1:{p}/callback/spotify?error=access_denied&state=xyz"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains("Вход отменён, вернитесь в программу")
+    );
+    assert_eq!(
+        c.oauth_rx.recv().await.unwrap(),
+        (Err("access_denied".into()), "xyz".into())
+    );
+}
+#[tokio::test]
+async fn callback_full_channel_returns_503() {
+    let (p, c) = setup().await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{p}/callback/spotify?code=abc&state=xyz");
+    for _ in 0..c.oauth_rx.max_capacity() {
+        assert_eq!(client.get(&url).send().await.unwrap().status(), 200);
+    }
+    let r = timeout(Duration::from_secs(1), client.get(&url).send())
+        .await
+        .expect("full OAuth channel must respond promptly")
+        .unwrap();
+    assert_eq!(r.status(), 503);
+    assert!(
+        r.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain")
+    );
+    assert!(!r.text().await.unwrap().is_empty());
+}
+#[tokio::test]
+async fn callback_closed_channel_returns_503() {
+    let (p, c) = setup().await;
+    drop(c.oauth_rx);
+    let r = timeout(
+        Duration::from_secs(1),
+        reqwest::get(format!(
+            "http://127.0.0.1:{p}/callback/spotify?code=abc&state=xyz"
+        )),
+    )
+    .await
+    .expect("closed OAuth channel must respond promptly")
+    .unwrap();
+    assert_eq!(r.status(), 503);
+    assert!(!r.text().await.unwrap().is_empty());
 }
 #[tokio::test]
 async fn theme_route_traversal_404() {
