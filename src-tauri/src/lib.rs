@@ -15,6 +15,7 @@ pub mod server;
 pub mod spotify;
 pub mod twitch;
 pub mod youtube;
+pub mod voice_lab;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
