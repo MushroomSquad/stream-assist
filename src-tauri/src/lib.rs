@@ -20,6 +20,27 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            app::get_state,
+            app::skip,
+            app::remove_item,
+            app::move_item,
+            app::toggle_pause,
+            app::resume_queue,
+            app::set_volume,
+            app::get_settings,
+            app::save_settings,
+            app::twitch_login_start,
+            app::twitch_login_poll,
+            app::twitch_logout,
+            app::spotify_login,
+            app::spotify_status,
+            app::obs_check,
+            app::obs_add_widget,
+            app::list_themes,
+            app::import_theme,
+            app::widget_test
+        ])
         .setup(|app| crate::app::setup(app).map_err(Into::into))
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

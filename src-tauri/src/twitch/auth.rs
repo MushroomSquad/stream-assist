@@ -2,8 +2,9 @@ use crate::model::Tokens;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Serialize, Deserialize)]
 pub struct DeviceStart {
+    #[serde(skip_serializing)]
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,

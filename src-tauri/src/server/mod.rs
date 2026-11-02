@@ -31,6 +31,7 @@ pub enum WsOut {
     Reload,
 }
 pub struct ServerChannels {
+    pub task: Option<tokio::task::JoinHandle<()>>,
     pub out_tx: broadcast::Sender<WsOut>,
     pub yt_rx: mpsc::Receiver<player::Input>,
     pub oauth_rx: mpsc::Receiver<(Result<String, String>, String)>,
@@ -83,6 +84,7 @@ fn build(
             .route("/callback/spotify", get(callback))
             .with_state(app),
         ServerChannels {
+            task: None,
             out_tx: out,
             yt_rx,
             oauth_rx,
@@ -96,17 +98,17 @@ pub async fn serve(
     last_state: watch::Receiver<WidgetState>,
 ) -> Result<ServerChannels> {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
-    let (app, ch) = build(
+    let (app, mut ch) = build(
         listener.local_addr()?.port(),
         themes_dir,
         active_theme,
         last_state,
     );
-    tokio::spawn(async move {
+    ch.task = Some(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             eprintln!("Widget server stopped: {e}");
         }
-    });
+    }));
     Ok(ch)
 }
 async fn music(State(a): State<App>) -> Response {

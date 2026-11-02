@@ -65,10 +65,15 @@ pub enum DriverMsg {
     SpotifyLoginStart(Pkce),
     SetVolume(u8),
     WidgetTest,
+    Warning(String),
     SettingsChanged(Settings),
+    SaveSettings(Settings, tokio::sync::oneshot::Sender<Result<(), String>>),
+    SpotifyStatus(tokio::sync::oneshot::Sender<crate::app::SpotifyStatus>),
 }
 pub struct DriverCtx {
     pub db: Arc<Mutex<Db>>,
+    pub active_theme: Arc<std::sync::RwLock<String>>,
+    pub themes_dir: std::path::PathBuf,
     pub state_tx: watch::Sender<WidgetState>,
     pub ws: ServerChannels,
     pub app: tauri::AppHandle,
@@ -263,6 +268,10 @@ fn actions(
                 });
             }
             Action::Widget(mut s) => {
+                // Keep the ten-second visual test on screen while playback continues.
+                if c.state_tx.borrow().now.as_ref().is_some_and(|i| i.id == -1) {
+                    continue;
+                }
                 if s.warning.is_none() {
                     s.warning = c.state_tx.borrow().warning.clone();
                 }
@@ -616,9 +625,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             Internal::Reward(Err(e)) => warn(&ctx, Some(e.to_string())),
             Internal::Spotify(result) => match result {
                 Ok(t) => {
-                    crate::app::save_tokens("spotify", &t);
+                    crate::app::save_tokens("spotify", &t, ctx.app.clone());
                     if let Some(id) = ctx.settings.spotify_client_id.clone() {
-                        ctx.spotify = Some(crate::app::spotify_client(id, t));
+                        ctx.spotify = Some(crate::app::spotify_client(id, t, ctx.app.clone()));
                     }
                 }
                 Err(_) => warn(&ctx, Some("Не удалось войти в Spotify".into())),
@@ -629,6 +638,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     background(async move { s.set_volume(v).await });
                 }
             }
+            Internal::Msg(DriverMsg::Warning(message)) => warn(&ctx, Some(message)),
             Internal::Msg(DriverMsg::WidgetTest) => {
                 let mut s = ctx.state_tx.borrow().clone();
                 widget_test += 1;
@@ -639,31 +649,50 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     let _ = reset.send(Internal::WidgetReset(generation));
                 });
                 s.visible = true;
+                s.now = Some(widget_test_item());
                 publish(&ctx, s);
             }
-            Internal::Msg(DriverMsg::SettingsChanged(s)) => {
-                let s = keep_reward_id(&ctx.settings, s);
-                let saved = ctx
-                    .db
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_setting("settings", &s)
-                    .is_ok();
-                if saved {
-                    ctx.settings = s;
+            Internal::Msg(DriverMsg::SpotifyStatus(reply)) => {
+                let sp = ctx.spotify.clone();
+                tokio::spawn(async move {
+                    let connected = sp.is_some();
+                    let premium = if let Some(sp) = sp {
+                        bounded(sp.me_product()).await.is_ok_and(|p| p == "premium")
+                    } else {
+                        false
+                    };
+                    let _ = reply.send(crate::app::SpotifyStatus { connected, premium });
+                });
+            }
+            Internal::Msg(DriverMsg::SaveSettings(s, reply)) => {
+                let result = apply_settings(&mut ctx, s).await;
+                if result.is_ok() {
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
                         now(),
                     );
                     actions(&ctx, &player, aa, &tx, &mut polls);
                 }
+                let _ = reply.send(result.map_err(|_| "Не удалось сохранить настройки".into()));
             }
+            Internal::Msg(DriverMsg::SettingsChanged(s)) => {
+                if apply_settings(&mut ctx, s).await.is_ok() {
+                    let aa = player.step(
+                        Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
+                        now(),
+                    );
+                    actions(&ctx, &player, aa, &tx, &mut polls);
+                } else {
+                    warn(&ctx, Some("Не удалось сохранить настройки".into()));
+                }
+            }
+
             Internal::Msg(DriverMsg::TwitchLogin(t)) => {
                 if let Some(old) = es.take() {
                     old.abort();
                 }
-                crate::app::save_tokens("twitch", &t);
-                ctx.helix = Some(crate::app::twitch_client(t));
+                crate::app::save_tokens("twitch", &t, ctx.app.clone());
+                ctx.helix = Some(crate::app::twitch_client(t, ctx.app.clone()));
                 es = connect_twitch(&ctx, &tx);
             }
             Internal::Msg(DriverMsg::TwitchLogout) => {
@@ -689,9 +718,75 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
     }
 }
 
+fn widget_test_item() -> QueueItem {
+    QueueItem {
+        id: -1,
+        track: Track {
+            source: Source::YouTube {
+                video_id: String::new(),
+            },
+            title: "Тест виджета".into(),
+            artist: "Stream Assist".into(),
+            duration_ms: Some(10_000),
+            explicit: None,
+            cover_url: None,
+        },
+        requester: "Stream Assist".into(),
+        redemption: None,
+        started: true,
+    }
+}
+
+async fn apply_settings(ctx: &mut DriverCtx, incoming: Settings) -> Result<()> {
+    let s = keep_reward_id(&ctx.settings, incoming);
+    if s.port != ctx.settings.port {
+        let ws = crate::server::serve(
+            s.port,
+            ctx.themes_dir.clone(),
+            ctx.active_theme.clone(),
+            ctx.state_tx.subscribe(),
+        )
+        .await?;
+        if let Some(task) = ctx.ws.task.take() {
+            task.abort();
+        }
+        ctx.ws = ws;
+    }
+    ctx.db
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_setting("settings", &s)?;
+    if s.active_theme != ctx.settings.active_theme {
+        *ctx.active_theme.write().unwrap_or_else(|e| e.into_inner()) = s.active_theme.clone();
+        let _ = ctx.ws.out_tx.send(WsOut::Reload);
+    }
+    if let (Some(h), Some(id)) = (ctx.helix.clone(), s.music_reward_id.clone()) {
+        if (s.reward_title.as_str(), s.reward_cost, s.reward_cooldown_s)
+            != (
+                ctx.settings.reward_title.as_str(),
+                ctx.settings.reward_cost,
+                ctx.settings.reward_cooldown_s,
+            )
+        {
+            let body = serde_json::json!({"title":s.reward_title,"cost":s.reward_cost,"global_cooldown_setting":{"is_enabled":s.reward_cooldown_s > 0,"global_cooldown_seconds":s.reward_cooldown_s}});
+            background(async move { h.update_reward(&id, &body).await });
+        }
+    }
+    ctx.settings = s;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn widget_test_uses_fake_track_without_redemption() {
+        let sample = widget_test_item();
+        assert_eq!(sample.id, -1);
+        assert_eq!(sample.track.duration_ms, Some(10_000));
+        assert!(!sample.track.title.is_empty());
+        assert!(sample.redemption.is_none());
+    }
     #[test]
     fn stale_poll_after_play_is_dropped() {
         let mut gate = PollGate::default();
