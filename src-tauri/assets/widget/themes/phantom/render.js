@@ -6,8 +6,11 @@ function ransom(target, title) {
   for (const char of title) seed = Math.imul(seed ^ char.codePointAt(0), 16777619) >>> 0;
   const chars = Array.from(title);
   const short = chars.length > 40 ? chars.slice(0, 39).concat('…') : chars;
+  // letters are grouped per word so lines only break between words
+  let word = null;
   short.forEach((char, index) => {
-    if (/\s/.test(char)) { target.append(document.createTextNode(' ')); return; }
+    if (/\s/.test(char)) { word = null; target.append(document.createTextNode(' ')); return; }
+    if (!word) { word = document.createElement('span'); word.style.display = 'inline-block'; word.style.whiteSpace = 'nowrap'; word.style.marginRight = '0.35em'; target.append(word); }
     const span = document.createElement('span');
     const hash = Math.imul(seed ^ index, 2654435761) >>> 0;
     span.textContent = char;
@@ -15,7 +18,7 @@ function ransom(target, title) {
     span.style.fontFamily = ['Anton', 'Bangers', 'Barlow'][hash % 3];
     span.style.transform = `translateY(${hash % 5 - 2}px) rotate(${hash % 17 - 8}deg)`;
     span.style.fontSize = (85 + hash % 31) + '%';
-    target.append(span);
+    word.append(span);
   });
 }
 if (document.body.dataset.theme === 'phantom') ransom(el('heading'), 'ОЧЕРЕДЬ');
