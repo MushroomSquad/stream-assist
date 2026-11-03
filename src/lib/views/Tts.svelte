@@ -23,6 +23,17 @@ onMount(() => {
   void run(async () => { const loaded = await vl_profiles(); if (!disposed) profiles = loaded; });
   return () => { disposed = true; unlisten(); };
 });
+let formError = $state('');
+function submit() {
+  const t = settings.tts;
+  t.stop_words = t.stop_words.map(w => w.trim()).filter(Boolean);
+  const title = t.reward_title.trim().toLowerCase();
+  formError = !title ? ru.ttsTitleEmpty
+    : title === settings.reward_title.trim().toLowerCase() ? ru.ttsTitleConflict
+    : t.stop_words.length > 200 || t.stop_words.some(w => [...w].length > 50) ? ru.ttsStopWordsInvalid
+    : '';
+  if (!formError) save();
+}
 async function test() {
   testing = true;
   try { await run(() => api.tts_test(text.trim())); } finally { testing = false; }
@@ -32,10 +43,11 @@ async function test() {
 <h2>{ru.tts}</h2>
 {#if view.warning}<p class="notice" role="alert">{ru.ttsWarnings[view.warning] ?? view.warning}</p>{/if}
 {#if !view.widget && (view.current || view.queue.length > 0)}<p class="notice" role="alert">{ru.ttsWidgetMissing}</p>{/if}
-<form onsubmit={e => { e.preventDefault(); save(); }}>
+{#if formError}<p class="notice" role="alert">{formError}</p>{/if}
+<form onsubmit={e => { e.preventDefault(); submit(); }}>
 <label>{ru.ttsVoice}<select bind:value={settings.tts.profile_id}>
 <option value={null}>{ru.ttsSelectVoice}</option>
-{#if settings.tts.profile_id !== null && !profiles.some(p => p.id === settings.tts.profile_id)}<option value={settings.tts.profile_id}>{ru.ttsWarnings.tts_voice_missing}</option>{/if}
+{#if settings.tts.profile_id !== null && !profiles.some(p => p.id === settings.tts.profile_id)}<option value={settings.tts.profile_id}>{ru.ttsVoiceDeleted}</option>{/if}
 {#each profiles as profile (profile.id)}<option value={profile.id}>{profile.name}</option>{/each}
 </select></label>
 <label>{ru.vlLanguage}<select bind:value={settings.tts.lang}>{#each languages as lang}<option value={lang}>{lang}</option>{/each}</select></label>
@@ -69,16 +81,17 @@ async function test() {
 <p class="muted">{ru.ttsBusyNote}</p>
 <div class="card">
 <label>{ru.url}<input readonly value={`http://127.0.0.1:${runningPort}/widget/tts`} /></label>
-<button onclick={() => void run(api.obs_add_tts)}>{ru.addObs}</button>
+<div class="actions"><button onclick={() => void run(() => navigator.clipboard.writeText(`http://127.0.0.1:${runningPort}/widget/tts`))}>{ru.copy}</button>
+<button onclick={() => void run(api.obs_add_tts)}>{ru.addObs}</button></div>
 </div>
 <h3>{ru.queue}</h3>
 <p class="muted">{ru.ttsLimits}</p>
 {#if view.current}
-<div class="card"><strong>{ru.now}</strong> · {view.current.user} · {view.current.reward ? ru.ttsReward : ru.ttsChat}
+<div class="card"><strong>{ru.now}</strong> · {view.current.user || ru.ttsTest} · {view.current.reward ? ru.ttsReward : ru.ttsChat}
 {#if view.current.synthesizing}<span role="status"> · {ru.ttsSynthesizing}</span>{/if}
 <p>{view.current.text}</p></div>
 {/if}
-{#if view.queue.length}<ol>{#each view.queue as item (item.id)}<li><div><strong>{item.user}</strong> · {item.reward ? ru.ttsReward : ru.ttsChat}<p>{item.text}</p></div></li>{/each}</ol>
+{#if view.queue.length}<ol>{#each view.queue as item (item.id)}<li><div><strong>{item.user || ru.ttsTest}</strong> · {item.reward ? ru.ttsReward : ru.ttsChat}<p>{item.text}</p></div></li>{/each}</ol>
 {:else if !view.current}<p class="muted">{ru.ttsEmpty}</p>{/if}
 <div class="actions">
 <button disabled={!view.current} onclick={() => void run(api.tts_skip)}>{ru.skip}</button>
