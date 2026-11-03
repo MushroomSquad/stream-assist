@@ -64,10 +64,12 @@ pub fn clean(text: &str, strip_links: bool, stop_words: &[String]) -> Result<Str
     if cleaned.is_empty() {
         return Err(Reject::Empty);
     }
-    if let Some((end, _)) = cleaned.char_indices().nth(300) {
+    if let Some((end, next)) = cleaned.char_indices().nth(300) {
         cleaned.truncate(end);
-        if let Some(space) = cleaned.rfind(' ') {
-            cleaned.truncate(space);
+        if next != ' ' {
+            if let Some(space) = cleaned.rfind(' ') {
+                cleaned.truncate(space);
+            }
         }
     }
     Ok(cleaned)
@@ -77,6 +79,8 @@ fn is_link(token: &str) -> bool {
     if token.contains("://") || token.to_lowercase().starts_with("www.") {
         return true;
     }
+    // ponytail: "привет.как" / "file.txt" also count as links; a TLD allow-list is the upgrade.
+    let token = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '/');
     let host = token.split('/').next().unwrap_or(token);
     let labels: Vec<_> = host.split('.').collect();
     labels.len() >= 2
@@ -210,6 +214,7 @@ mod tests {
     fn links_removed() {
         let text = "https://x.y/z www.Site.com twitch.tv/abc пример.рф т.е. 3.14 ok.";
         assert_eq!(clean(text, true, &[]), Ok("т.е. 3.14 ok.".into()));
+        assert_eq!(clean("смотри site.com! (x.ru)", true, &[]), Ok("смотри".into()));
         assert_eq!(
             clean("WWW.site.com ПРИМЕР.РФ a-b.example/path", true, &[]),
             Err(Reject::Empty)
@@ -266,6 +271,11 @@ mod tests {
         let exact = format!("{} слово", "аб".repeat(147));
         assert_eq!(exact.chars().count(), 300);
         assert_eq!(clean(&exact, false, &[]), Ok(exact));
+        let boundary = format!("а {}", "бв".repeat(149));
+        assert_eq!(
+            clean(&format!("{boundary} хвост"), false, &[]),
+            Ok(boundary)
+        );
     }
 
     #[test]
