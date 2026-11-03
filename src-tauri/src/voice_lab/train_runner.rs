@@ -203,10 +203,10 @@ impl TrainRunner {
             if !matches!(j.status.as_str(), "stopped" | "interrupted" | "failed") {
                 return Err(err("JOB_BUSY"));
             }
-            if let Some(source_id) = j.source_id {
-                if !s.source(source_id)?.consent {
-                    return Err(err("NO_CONSENT"));
-                }
+            if let Some(source_id) = j.source_id
+                && !s.source(source_id)?.consent
+            {
+                return Err(err("NO_CONSENT"));
             }
             let resume = s.run_dir(run_id).join("state.pt").is_file();
             s.set_run_status(run_id, "running", None)?;
