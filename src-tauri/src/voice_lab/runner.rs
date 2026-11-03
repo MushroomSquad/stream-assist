@@ -241,6 +241,68 @@ impl Runner {
         params: RenderParams,
         emit: Emit,
     ) -> Result<Render, VlError> {
+        let out = root.join(format!("tmp/render-{}.wav", self.id()));
+        let _files = TempFiles(vec![out.clone()]);
+        // Keep the last progress state so registration supplies the final render id.
+        let state = Arc::new(Mutex::new(None::<JobState>));
+        let last = state.clone();
+        let progress_emit = emit.clone();
+        let progress: Emit = Arc::new(move |job| {
+            *last.lock().unwrap_or_else(PoisonError::into_inner) = Some(job.clone());
+            progress_emit(job);
+        });
+        let result: Result<Render, VlError> = async {
+            let (duration_ms, synth_ms) = self
+                .synth_raw(root, style_path, &params, &out, Some(&progress))
+                .await?;
+            let s = store.lock().map_err(|_| err("IO_FAILED"))?;
+            let r = s.add_render(profile_id, recipe.as_ref(), &params, duration_ms, synth_ms)?;
+            if let Err(e) = std::fs::rename(&out, s.render_path(r.id)) {
+                s.rollback_render(r.id)?;
+                return Err(e.into());
+            }
+            s.prune_renders(200)?;
+            Ok(r)
+        }
+        .await;
+        let job = state.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(mut job) = job {
+            match &result {
+                Ok(r) => {
+                    job.status = "completed".into();
+                    job.render_id = Some(r.id);
+                }
+                Err(e) => {
+                    job.status = "failed".into();
+                    job.error = Some(e.code());
+                }
+            }
+            self.publish(job, &emit);
+        }
+        result
+    }
+
+    pub async fn synth_file(
+        &self,
+        root: &Path,
+        style_path: PathBuf,
+        params: RenderParams,
+        out: &Path,
+    ) -> Result<i64, VlError> {
+        let mut files = TempFiles(vec![out.to_owned()]);
+        let (duration_ms, _) = self.synth_raw(root, style_path, &params, out, None).await?;
+        files.0.clear();
+        Ok(duration_ms)
+    }
+
+    async fn synth_raw(
+        &self,
+        root: &Path,
+        style_path: PathBuf,
+        params: &RenderParams,
+        out: &Path,
+        emit: Option<&Emit>,
+    ) -> Result<(i64, i64), VlError> {
         if self
             .synth_busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -249,15 +311,13 @@ impl Runner {
             return Err(err("JOB_BUSY"));
         }
         let id = self.id();
-        let _guard = JobGuard {
+        let mut guard = JobGuard {
             runner: self,
             id,
             slot: Slot::Synth,
             finished: false,
-            emit: emit.clone(),
+            emit: emit.cloned().unwrap_or_else(|| Arc::new(|_| {})),
         };
-        let out = root.join(format!("tmp/render-{id}.wav"));
-        let files = TempFiles(vec![out.clone()]);
         let mut job = JobState {
             id,
             kind: "synth".into(),
@@ -267,20 +327,24 @@ impl Runner {
             profile_id: None,
             render_id: None,
         };
-        self.publish(job.clone(), &emit);
+        if let Some(emit) = emit {
+            self.publish(job.clone(), emit);
+        }
         let t = Instant::now();
         let req = WorkerRequest::Synth {
             model_dir: model_dir(root),
             style: style_path,
-            out_wav: out.clone(),
+            out_wav: out.to_owned(),
             params: params.clone(),
         };
         let result = async {
             let event = tokio::time::timeout(
                 Duration::from_secs(300),
                 self.run_worker(&req, &root.join("tmp"), None, |e| {
-                    job.progress = Some(e);
-                    self.publish(job.clone(), &emit);
+                    if let Some(emit) = emit {
+                        job.progress = Some(e);
+                        self.publish(job.clone(), emit);
+                    }
                 }),
             )
             .await
@@ -293,34 +357,13 @@ impl Runner {
             else {
                 return Err(err("WORKER_CRASHED"));
             };
-            let s = store.lock().map_err(|_| err("IO_FAILED"))?;
-            let r = s.add_render(
-                profile_id,
-                recipe.as_ref(),
-                &params,
+            Ok((
                 duration_ms.unwrap_or(0),
                 synth_ms.unwrap_or(t.elapsed().as_millis() as i64),
-            )?;
-            if let Err(e) = std::fs::rename(&out, s.render_path(r.id)) {
-                s.rollback_render(r.id)?;
-                return Err(e.into());
-            }
-            s.prune_renders(200)?;
-            Ok(r)
+            ))
         }
         .await;
-        drop(files);
-        match &result {
-            Ok(r) => {
-                job.status = "completed".into();
-                job.render_id = Some(r.id);
-            }
-            Err(e) => {
-                job.status = "failed".into();
-                job.error = Some(e.code());
-            }
-        }
-        self.publish(job, &emit);
+        guard.finished = true;
         result
     }
     #[allow(clippy::too_many_arguments)]

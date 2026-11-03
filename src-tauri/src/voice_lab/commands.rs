@@ -117,6 +117,24 @@ pub(crate) fn save_snapshot(
     )
 }
 
+// Used by the TTS engine once it is wired in.
+#[allow(dead_code)]
+pub(crate) async fn tts_synth(
+    lab: Arc<VoiceLab>,
+    profile_id: i64,
+    params: RenderParams,
+    out: PathBuf,
+) -> Result<i64, VlError> {
+    validate_params(&params)?;
+    require_model(&lab.root)?;
+    let path = {
+        let s = lab.store.lock().map_err(|_| err("IO_FAILED"))?;
+        s.load_style(profile_id)?;
+        s.profile_path(&s.profile(profile_id)?)
+    };
+    lab.runner.synth_file(&lab.root, path, params, &out).await
+}
+
 pub(crate) async fn render(
     lab: &VoiceLab,
     profile_id: i64,
@@ -811,6 +829,118 @@ mod tests {
         };
         (d, lab, p)
     }
+    #[test]
+    fn tts_synth_is_send() {
+        fn assert_send<T: Send>(_: &T) {}
+        let (_d, lab, p) = setup();
+        assert_send(&tts_synth(
+            Arc::new(lab),
+            p.id,
+            params(),
+            PathBuf::from("tts.wav"),
+        ));
+    }
+    #[tokio::test]
+    async fn synth_file_writes_without_render() {
+        let (_d, lab, p) = setup();
+        let path = lab.store.lock().unwrap().profile_path(&p);
+        let out = lab.root.join("tmp/tts.wav");
+        assert_eq!(
+            lab.runner
+                .synth_file(&lab.root, path, params(), &out)
+                .await
+                .unwrap(),
+            1000
+        );
+        assert_eq!(hound::WavReader::open(&out).unwrap().duration(), audio::SR);
+        assert!(lab.store.lock().unwrap().renders(200).unwrap().is_empty());
+        assert!(lab.runner.jobs().is_empty());
+    }
+    #[tokio::test]
+    async fn synth_file_busy() {
+        let (_d, lab, p) = setup();
+        let mode = lab.root.join("mode");
+        std::fs::write(&mode, "sleep").unwrap();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples")
+            .join(format!("vl_fake_worker{}", std::env::consts::EXE_SUFFIX));
+        let runner = Runner::new(
+            exe,
+            vec![(
+                "VL_FAKE_MODE_FILE".into(),
+                mode.to_string_lossy().into_owned(),
+            )],
+        );
+        let path = lab.store.lock().unwrap().profile_path(&p);
+        let out = lab.root.join("tmp/tts.wav");
+        let first = runner.synth_file(&lab.root, path.clone(), params(), &out);
+        tokio::pin!(first);
+        tokio::select! {
+            biased;
+            result = &mut first => panic!("synth ended early: {result:?}"),
+            _ = std::future::ready(()) => {}
+        }
+        assert_eq!(
+            runner
+                .synth_file(
+                    &lab.root,
+                    path.clone(),
+                    params(),
+                    &lab.root.join("tmp/other.wav")
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            "JOB_BUSY"
+        );
+        assert_eq!(
+            runner
+                .synth(
+                    &lab.store,
+                    &lab.root,
+                    path,
+                    Some(p.id),
+                    None,
+                    params(),
+                    Arc::new(|_| {})
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            "JOB_BUSY"
+        );
+        assert!(runner.jobs().is_empty());
+    }
+    #[tokio::test]
+    async fn synth_file_failure_leaves_no_file() {
+        let (_d, lab, p) = setup();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples")
+            .join(format!("vl_fake_worker{}", std::env::consts::EXE_SUFFIX));
+        let runner = Runner::new(exe, vec![("VL_FAKE_MODE".into(), "crash".into())]);
+        let path = lab.store.lock().unwrap().profile_path(&p);
+        let out = lab.root.join("tmp/tts.wav");
+        std::fs::write(&out, b"partial wav").unwrap();
+        assert!(
+            runner
+                .synth_file(&lab.root, path, params(), &out)
+                .await
+                .is_err()
+        );
+        assert!(!out.exists());
+        assert!(runner.jobs().is_empty());
+    }
+
     fn explore_setup() -> (tempfile::TempDir, VoiceLab, i64, i64) {
         let (d, lab, a) = setup();
         for file in models::MODEL_FILES {
