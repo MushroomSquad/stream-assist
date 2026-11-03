@@ -71,7 +71,7 @@ onMount(() => {
 <div class="card">
 <h3>{ru.vlTrainPack}</h3>
 <dl>
-<dt>{ru.vlTrainUv}</dt><dd>{status.uv ?? ru.vlUnknown}{#if !status.uvOk} · {ru.vlTrainUvOld}{/if}</dd>
+<dt>{ru.vlTrainUv}</dt><dd>{status.uv ?? ru.vlUnknown}{#if !status.uvOk}{' · '}{ru.vlTrainUvOld}{/if}</dd>
 <dt>{ru.vlTrainPack}</dt><dd>{ru.vlTrainPackState[status.pack]}</dd>
 <dt>{ru.vlTrainGpu}</dt><dd>{status.gpu?.name ?? ru.vlUnknown}</dd>
 <dt>{ru.vlTrainDriver}</dt><dd>{status.gpu?.driver ?? ru.vlUnknown}</dd>

@@ -57,8 +57,9 @@ $effect(() => {
   const c = canvas, p = peaks, start = startMs, end = endMs, duration = selected?.durationMs ?? 1;
   const ctx = c?.getContext('2d'); if (!c || !ctx) return;
   ctx.clearRect(0, 0, c.width, c.height);
-  ctx.fillStyle = getComputedStyle(c).getPropertyValue('--accent').trim(); p.forEach((v, i) => ctx.fillRect(i * c.width / p.length, c.height * (1 - v) / 2, Math.max(1, c.width / p.length), Math.max(1, v * c.height)));
-  ctx.fillStyle = getComputedStyle(c).getPropertyValue('--warn-bg').trim(); ctx.fillRect(start / duration * c.width, 0, (end - start) / duration * c.width, c.height);
+  const styles = getComputedStyle(c);
+  ctx.fillStyle = styles.getPropertyValue('--accent').trim(); p.forEach((v, i) => ctx.fillRect(i * c.width / p.length, c.height * (1 - v) / 2, Math.max(1, c.width / p.length), Math.max(1, v * c.height)));
+  ctx.fillStyle = styles.getPropertyValue('--accent-region').trim(); ctx.fillRect(start / duration * c.width, 0, (end - start) / duration * c.width, c.height);
 });
 function position(e: PointerEvent) { const rect = e.currentTarget instanceof HTMLCanvasElement ? e.currentTarget.getBoundingClientRect() : null; return rect ? Math.round(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (selected?.durationMs ?? 0)) : 0; }
 async function importAudio() { const path = await open({ multiple: false, filters: [{ name: ru.vlAudio, extensions: ['wav','mp3','flac','ogg','m4a'] }] }); if (typeof path === 'string') { const s = await api.vl_import_audio(path, consent); await load(); await choose(s); } }
@@ -68,17 +69,17 @@ async function clone() {
 }
 </script>
 <div class="voice-screen">
-<label class="check"><input type="checkbox" bind:checked={consent} />{ru.vlConsent}</label>
-<button onclick={() => run(importAudio)}>{ru.vlImportAudio}</button>
+<div class="import-row"><label class="check"><input type="checkbox" bind:checked={consent} />{ru.vlConsent}</label>
+<button onclick={() => run(importAudio)}>{ru.vlImportAudio}</button></div>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
-<div class="actions">{#each sources as source}<button aria-pressed={selected?.id === source.id} onclick={() => run(() => choose(source))}>{source.name}</button>{/each}</div>
+<div class="source-list">{#each sources as source}<button aria-pressed={selected?.id === source.id} onclick={() => run(() => choose(source))}><span>{source.name}</span><span class="source-duration">{(source.durationMs / 1000).toFixed(1)} с</span></button>{/each}</div>
 {#if selected}<div class="card"><h3>{selected.name}</h3>
 <label class="check"><input type="checkbox" checked={selected.consent} onchange={e => { const s = selected!; const checkbox = e.currentTarget, previous = s.consent, checked = checkbox.checked; void run(async () => { try { await api.vl_set_consent(s.id, checked); } catch (e) { checkbox.checked = previous; throw e; } s.consent = checked; await load(); }); }} />{ru.vlConsent}</label>
 <p class="muted">{ru.vlRegion}</p>
 <canvas bind:this={canvas} width="800" height="120" aria-label={ru.vlRegion} onpointerdown={e => { anchor = position(e); startMs = anchor; endMs = anchor; e.currentTarget.setPointerCapture(e.pointerId); }} onpointermove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) { const end = position(e); startMs = Math.min(anchor, end); endMs = Math.max(anchor, end); } }}></canvas>
-<label>{ru.vlStart}<input type="number" min="0" max={selected.durationMs} step="1" bind:value={startMs} /></label>
+<div class="region-actions"><label>{ru.vlStart}<input type="number" min="0" max={selected.durationMs} step="1" bind:value={startMs} /></label>
 <label>{ru.vlEnd}<input type="number" min="0" max={selected.durationMs} step="1" bind:value={endMs} /></label>
-<button disabled={!regionValid || endMs - startMs > 60000} onclick={() => run(async () => { const version = selectionVersion; const audio = await api.vl_source_audio(selected!.id, startMs, endMs); if (version === selectionVersion) replaceAudio(api.blobUrl(audio)); })}>{ru.vlListenRegion}</button>
+<button disabled={!regionValid || endMs - startMs > 60000} onclick={() => run(async () => { const version = selectionVersion; const audio = await api.vl_source_audio(selected!.id, startMs, endMs); if (version === selectionVersion) replaceAudio(api.blobUrl(audio)); })}>{ru.vlListenRegion}</button></div>
 {#if url}<audio controls src={url}></audio>{/if}
 <form onsubmit={e => { e.preventDefault(); void run(clone); }}>
 <label>{ru.vlTranscript}<textarea bind:value={transcript}></textarea></label>
@@ -94,4 +95,13 @@ async function clone() {
 {#if job.status === 'running'}<p>{ru.vlElapsed}: {duration(elapsed)} · {ru.vlEta}: {eta === null ? ru.vlEtaPending : `≈ ${duration(eta)}`}</p><button onclick={() => run(() => api.vl_cancel_job(job!.id))}>{ru.vlCancel}</button>{/if}</div>{/if}
 
 </div>
-<style>canvas{width:100%;touch-action:none;border:1px solid var(--line);border-radius:var(--r-control);background:var(--card);margin-block:var(--s4)}audio{display:block;margin:var(--s4) 0;max-width:100%}</style>
+<style>
+.region-actions{display:flex;align-items:end;flex-wrap:wrap;gap:var(--s2)}
+.region-actions input{width:14ch}
+.import-row{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s4)}
+.source-list{background:var(--card);border:1px solid var(--line);border-radius:var(--r-control);overflow:hidden}
+.source-list button{display:flex;align-items:center;justify-content:space-between;gap:var(--s2);width:100%;height:auto;min-height:var(--control-height);border:0;border-radius:0;background:transparent;text-align:left;padding:var(--s3)}
+.source-list button + button{border-top:1px solid var(--line)}
+.source-list button[aria-pressed=true],.source-list button:hover{background:var(--raised)}
+.source-duration{flex-shrink:0;font-family:var(--font-mono);font-size:var(--type-meta);color:var(--t3);font-variant-numeric:tabular-nums}
+canvas{width:100%;touch-action:none;border:1px solid var(--line);border-radius:var(--r-control);background:var(--card);margin-block:var(--s4)}audio{display:block;margin:var(--s4) 0;max-width:100%}</style>

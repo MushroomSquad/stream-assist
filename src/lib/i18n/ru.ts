@@ -33,7 +33,7 @@ export const ru = {
   vlMode: 'Режим', vlProfiles: 'Профили', vlSaved: 'Сохранено',
   vlRefRegion: 'Фрагмент для сравнения: 1–60 с', vlBatchProgress: 'Прогресс генерации пачки',
   vlResultsInRenders: 'Готовые результаты — в «Рендерах»',
-  vlExplore: 'Исследование · экспериментально', vlInterp: 'Интерполяция', vlRandom: 'Случайные смеси',
+  vlExplore: 'Исследование', vlExperimental: 'эксп.', vlSynthesis: 'Синтез', vlAddVoice: 'Добавить голос', vlAddVoiceHint: 'добавьте голос', vlFavoriteAdd: 'В избранное', vlFavoriteAdded: 'В избранном', vlInterp: 'Интерполяция', vlRandom: 'Случайные смеси',
   vlPoints: 'Точек', vlCount: 'Смесей', vlNewSeed: 'Новый', vlSeedNote: 'Одинаковый seed повторяет веса, но не звук',
   vlTNote: 't — вес смеси, а не доля пути', vlReference: 'Сравнить с записью', vlSimilarity: 'Сходство',
   vlSimilarityNote: 'Сходство — подсказка, а не оценка качества', vlCancelledPartial: 'Отменено, показаны готовые',

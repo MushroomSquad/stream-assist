@@ -22,13 +22,20 @@ onMount(() => { void load(); });
 {#if !status.installed}<Setup {status} installed={load} />
 {:else}
 {#if !status.ffmpeg}<p class="notice">{ru.vlWavOnly}</p>{/if}
-<nav class="segments" aria-label={ru.voiceLab}>{#each tabs as id}<button class:active={tab === id} aria-current={tab === id ? "page" : undefined} onclick={() => tab = id}>{ru[id]}</button>{/each}</nav>
-{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlExplore'}<Explore />{:else if tab === 'vlTrain'}<Train />{:else}<Renders />{/if}
+<div class="segments" role="tablist" aria-label={ru.voiceLab}>{#each tabs as id, index}<button id={`voice-tab-${id}`} role="tab" aria-controls="voice-panel" class:active={tab === id} aria-selected={tab === id} tabindex={tab === id ? 0 : -1} onclick={() => tab = id} onkeydown={e => {
+ const next = e.key === 'ArrowRight' ? (index + 1) % tabs.length : e.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+ if (next === null) return;
+ e.preventDefault(); tab = tabs[next];
+ const buttons = e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]'); buttons?.[next]?.focus();
+}}>{ru[id]}{#if id === 'vlExplore'} <span class="experimental">{ru.vlExperimental}</span>{/if}</button>{/each}</div>
+<div id="voice-panel" role="tabpanel" aria-labelledby={`voice-tab-${tab}`} tabindex="0">
+{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlExplore'}<Explore />{:else if tab === 'vlTrain'}<Train />{:else}<Renders />{/if}</div>
 {/if}{/if}</section>
 
 <style>
 /* Unslop by Damir Sokolovsky (@heydamir), CC BY 4.0. */
 .voice-lab { min-width: 0; }
+.experimental { font-size: var(--type-meta); color: var(--t3); font-weight: 400; }
 h2 { margin: 0 0 var(--s6); }
 .segments { display: flex; flex-wrap: wrap; gap: var(--s1); padding: var(--s1); margin-bottom: var(--s6); background: var(--raised); border-radius: var(--r-row); width: fit-content; max-width: 100%; }
 .segments button { border-color: transparent; background: transparent; color: var(--t2); box-shadow: none; }
@@ -41,7 +48,7 @@ h2 { margin: 0 0 var(--s6); }
 .voice-lab :global(form > :not(label)), .voice-lab :global(fieldset > :not(label)) { grid-column: 1 / -1; }
 .voice-lab :global(label) { margin: 0; max-width: none; color: var(--t2); }
 .voice-lab :global(label:has(textarea)), .voice-lab :global(label.check) { grid-column: 1 / -1; }
-.voice-lab :global(input), .voice-lab :global(select), .voice-lab :global(textarea) { color: var(--t1); width: 100%; }
+.voice-lab :global(input:not([type])), .voice-lab :global(input[type=text]), .voice-lab :global(input[type=search]), .voice-lab :global(select), .voice-lab :global(textarea) { color: var(--t1); width: 100%; }
 .voice-lab :global(input[type=checkbox]) { width: var(--s5); flex-shrink: 0; }
 .voice-lab :global(textarea) { min-height: var(--s12); }
 .voice-lab :global(button) { justify-self: start; max-width: 100%; }
@@ -49,7 +56,7 @@ h2 { margin: 0 0 var(--s6); }
 .voice-lab :global(.card > h3:first-child) { margin-top: 0; }
 .voice-lab :global(.card > .card) { border-radius: var(--r-control); background: var(--raised); }
 .voice-lab :global(.card > form), .voice-lab :global(.card > audio) { margin-block: var(--s4); }
-.voice-lab :global(.card > p + button), .voice-lab :global(.card > label + button) { margin-top: var(--s4); }
+
 .voice-lab :global(h4) { margin: 0 0 var(--s3); font-size: var(--type-card); line-height: var(--leading-card); font-weight: 500; }
 .voice-lab :global(legend) { margin-bottom: var(--s3); color: var(--t2); }
 .voice-lab :global(audio) { display: block; width: 100%; max-width: 100%; margin-block: var(--s4); border-radius: var(--r-control); background: var(--card); accent-color: var(--accent); }
@@ -60,8 +67,8 @@ h2 { margin: 0 0 var(--s6); }
 .voice-lab :global(.job-status) { display: flex; align-items: center; gap: var(--s3); }
 .voice-lab :global(.job-status .failed) { background: var(--err); }
 .voice-lab :global(.voice-screen > .check) { margin-bottom: var(--s4); }
-.voice-lab :global(.actions button[aria-pressed=true]) { background: var(--raised); border-color: var(--t2); color: var(--t1); }
-.voice-lab :global(.metrics) { font-family: var(--font-mono); font-size: var(--type-meta); line-height: var(--leading-body); font-variant-numeric: tabular-nums; color: var(--t2); }
+
+.voice-lab :global(.metrics) { font-family: var(--font-mono); font-size: var(--type-meta); line-height: var(--leading-body); font-variant-numeric: tabular-nums; color: var(--t3); }
 .voice-lab :global(.muted) { max-width: 72ch; }
 @media (min-width: 1100px) {
  .voice-lab :global(form), .voice-lab :global(fieldset) { grid-template-columns: repeat(2, minmax(0, 1fr)); }

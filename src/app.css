@@ -17,7 +17,7 @@
   --bg-deep: #0f0f10; --bg: #141415; --card: #19191b; --raised: #232325;
   --line: rgba(237,237,237,.08); --line-strong: rgba(237,237,237,.16);
   --track: #2c2c2f; --t1: #ededed; --t2: #a1a1a6; --t3: #85858b;
-  --accent: #f2a33a; --accent-ink: #1a1206; --tally-off: #3a3a3d;
+  --accent: #f2a33a; --accent-region: rgba(242,163,58,.22); --accent-ink: #1a1206; --tally-off: #3a3a3d;
   --ok: #4cc38a; --err: #e5484d; --warn-bg: rgba(242,163,58,.08);
   --primary-bg: #ededed; --primary-ink: #141415;
   --primary-highlight: inset 0 1px 0 rgba(255,255,255,.4);
@@ -56,6 +56,7 @@ button:disabled { opacity: .45; cursor: default; }
 :where(button, input, select, textarea, a, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .primary { background: var(--primary-bg); color: var(--primary-ink); box-shadow: var(--primary-highlight); }
 .primary:hover { background: var(--primary-bg); border-color: var(--t2); color: var(--primary-ink); }
+.primary:disabled { background: var(--raised); color: var(--t3); box-shadow: none; opacity: 1; }
 label { display: flex; flex-direction: column; gap: var(--s2); margin-block: var(--s4); max-width: 560px; }
 .check { flex-direction: row; align-items: center; }
 input[type=checkbox], input[type=radio], input[type=range], progress { accent-color: var(--accent); }

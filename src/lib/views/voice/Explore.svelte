@@ -91,7 +91,6 @@ async function snapshot(item: api.ExploreItem) {
 }
 </script>
 <div class="voice-screen">
-<h3>{ru.vlExplore}</h3>
 <p class="muted">{ru.vlSeedNote}</p>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
 <form onsubmit={e => { e.preventDefault(); void run(generate); }}>
