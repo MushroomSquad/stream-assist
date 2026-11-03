@@ -368,3 +368,68 @@ async fn acceptance_three_refs_mix_export_import() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires real model and speaker encoder"]
+fn worker_batch_real() {
+    use stream_assist_lib::voice_lab::{store::RenderParams, worker::*};
+    let root = model_dir();
+    let d = tempfile::tempdir().unwrap();
+    let params = RenderParams {
+        text: "Hello! This is a batch synthesis test.".into(),
+        lang: "en".into(),
+        speed: 1.0,
+        quality: 5,
+    };
+    let reference = d.path().join("reference.wav");
+    real_worker(WorkerRequest::Synth {
+        model_dir: root.clone(),
+        style: root.join("voice_styles/M1.json"),
+        out_wav: reference.clone(),
+        params: params.clone(),
+    });
+    let items: Vec<_> = (1..=3)
+        .map(|i| BatchItem {
+            style: root.join(format!("voice_styles/M{i}.json")),
+            out_wav: d.path().join(format!("{i}.wav")),
+        })
+        .collect();
+    let start = Instant::now();
+    let events = real_worker(WorkerRequest::SynthBatch {
+        model_dir: root.clone(),
+        items: items.clone(),
+        params: params.clone(),
+        encoder: Some(root.join("speaker_encoder.onnx")),
+        reference_wav: Some(reference),
+    });
+    println!("batch_wall_s={:.3}", start.elapsed().as_secs_f64());
+    let results: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let WorkerEvent::Item {
+                index, similarity, ..
+            } = e
+            {
+                Some((*index, *similarity))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(results.len(), 3);
+    for (i, (index, similarity)) in results.iter().enumerate() {
+        assert_eq!(*index, i);
+        assert!(similarity.is_some_and(f32::is_finite));
+        assert!(items[i].out_wav.is_file());
+    }
+    let start = Instant::now();
+    for item in items {
+        real_worker(WorkerRequest::Synth {
+            model_dir: root.clone(),
+            style: item.style,
+            out_wav: item.out_wav,
+            params: params.clone(),
+        });
+    }
+    println!("three_single_wall_s={:.3}", start.elapsed().as_secs_f64());
+}

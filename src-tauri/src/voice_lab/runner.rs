@@ -4,7 +4,7 @@ use super::{
     models::model_dir,
     store::{Render, RenderParams, Store},
     style::{read_style_file, sha256_hex},
-    worker::{ClonePreset, WorkerEvent, WorkerRequest, transcript_required},
+    worker::{BatchItem, ClonePreset, WorkerEvent, WorkerRequest, transcript_required},
 };
 use serde::Serialize;
 use std::{
@@ -39,13 +39,20 @@ pub struct Runner {
     extra_env: Vec<(String, String)>,
     next: AtomicU64,
     clone_slot: Mutex<Option<(u64, oneshot::Sender<()>)>>,
+    synth_cancel: Mutex<Option<(u64, oneshot::Sender<()>)>>,
     synth_busy: AtomicBool,
     jobs: Mutex<HashMap<u64, JobState>>,
 }
+enum Slot {
+    Clone,
+    Synth,
+    Batch,
+}
+
 struct JobGuard<R: std::ops::Deref<Target = Runner>> {
     runner: R,
     id: u64,
-    clone: bool,
+    slot: Slot,
     finished: bool,
     emit: Emit,
 }
@@ -67,7 +74,7 @@ impl<R: std::ops::Deref<Target = Runner>> Drop for JobGuard<R> {
                 self.runner.publish(job, &self.emit);
             }));
         }
-        if self.clone {
+        if matches!(self.slot, Slot::Clone) {
             let mut slot = self
                 .runner
                 .clone_slot
@@ -77,6 +84,16 @@ impl<R: std::ops::Deref<Target = Runner>> Drop for JobGuard<R> {
                 *slot = None;
             }
         } else {
+            if matches!(self.slot, Slot::Batch) {
+                let mut slot = self
+                    .runner
+                    .synth_cancel
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if slot.as_ref().is_some_and(|(id, _)| *id == self.id) {
+                    *slot = None;
+                }
+            }
             self.runner.synth_busy.store(false, Ordering::SeqCst);
         }
     }
@@ -111,6 +128,7 @@ impl Runner {
             extra_env,
             next: AtomicU64::new(1),
             clone_slot: Mutex::new(None),
+            synth_cancel: Mutex::new(None),
             synth_busy: AtomicBool::new(false),
             jobs: Mutex::new(HashMap::new()),
         }
@@ -162,11 +180,18 @@ impl Runner {
         let mut buffer = Vec::new();
         let mut done = None;
         let mut error = None;
+        let deadline = match req {
+            WorkerRequest::SynthBatch { items, .. } => Some(
+                tokio::time::Instant::now() + Duration::from_secs(300 + 60 * items.len() as u64),
+            ),
+            _ => None,
+        };
         let result = async {
             loop {
                 let line = tokio::select! {
                     biased;
                     _ = async { match cancel.as_mut() { Some(rx) => { let _ = rx.await; }, None => std::future::pending::<()>().await } } => return Err(err("JOB_CANCELLED")),
+                    _ = async { match deadline { Some(end) => tokio::time::sleep_until(end).await, None => std::future::pending::<()>().await } } => return Err(err("WORKER_CRASHED")),
                     line = next_line(&mut stdout, &mut buffer) => line?,
                 };
                 let Some(line) = line else { break; };
@@ -187,6 +212,7 @@ impl Runner {
                         None => std::future::pending::<()>().await,
                     }
                 } => return Err(err("JOB_CANCELLED")),
+                _ = async { match deadline { Some(end) => tokio::time::sleep_until(end).await, None => std::future::pending::<()>().await } } => return Err(err("WORKER_CRASHED")),
                 s = child.wait() => s.map_err(|_| err("WORKER_CRASHED"))?,
             };
             if let Some(e) = error {
@@ -226,7 +252,7 @@ impl Runner {
         let _guard = JobGuard {
             runner: self,
             id,
-            clone: false,
+            slot: Slot::Synth,
             finished: false,
             emit: emit.clone(),
         };
@@ -298,6 +324,134 @@ impl Runner {
         result
     }
     #[allow(clippy::too_many_arguments)]
+    pub async fn batch(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        root: &Path,
+        items: Vec<(PathBuf, Recipe)>,
+        params: RenderParams,
+        reference: Option<PathBuf>,
+        encoder: Option<PathBuf>,
+        emit: Emit,
+    ) -> Result<BatchResult, VlError> {
+        let mut files = TempFiles(items.iter().map(|(path, _)| path.clone()).collect());
+        let id = self.id();
+        let batch: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(i, (style, _))| {
+                let out_wav = root.join(format!("tmp/batch-{id}-{i}.wav"));
+                files.0.push(out_wav.clone());
+                BatchItem {
+                    style: style.clone(),
+                    out_wav,
+                }
+            })
+            .collect();
+        if self
+            .synth_busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(err("JOB_BUSY"));
+        }
+        let _guard = JobGuard {
+            runner: self,
+            id,
+            slot: Slot::Batch,
+            finished: false,
+            emit: emit.clone(),
+        };
+        let (tx, rx) = oneshot::channel();
+        *self.synth_cancel.lock().map_err(|_| err("IO_FAILED"))? = Some((id, tx));
+        let mut job = JobState {
+            id,
+            kind: "batch".into(),
+            status: "running".into(),
+            progress: None,
+            error: None,
+            profile_id: None,
+            render_id: None,
+        };
+        self.publish(job.clone(), &emit);
+        let mut completed = vec![None; items.len()];
+        let mut invalid = false;
+        let req = WorkerRequest::SynthBatch {
+            model_dir: model_dir(root),
+            items: batch.clone(),
+            params: params.clone(),
+            encoder,
+            reference_wav: reference,
+        };
+        let result = self
+            .run_worker(&req, &root.join("tmp"), Some(rx), |event| {
+                if let WorkerEvent::Item {
+                    index,
+                    duration_ms,
+                    synth_ms,
+                    similarity,
+                } = event
+                {
+                    if index >= completed.len() || completed[index].is_some() {
+                        invalid = true;
+                        let _ = self.cancel(id);
+                        return;
+                    }
+                    completed[index] = Some((duration_ms, synth_ms, similarity));
+                    job.progress = Some(event);
+                    self.publish(job.clone(), &emit);
+                }
+            })
+            .await;
+        let result = if invalid {
+            Err(err("WORKER_CRASHED"))
+        } else {
+            result
+        };
+        let cancelled = result.as_ref().is_err_and(|e| e.code() == "JOB_CANCELLED");
+        let registered = (|| {
+            let s = store.lock().map_err(|_| err("IO_FAILED"))?;
+            let mut renders = Vec::new();
+            for (index, item) in completed.into_iter().enumerate() {
+                if let Some((duration, synth, similarity)) = item {
+                    let render =
+                        s.add_render(None, Some(&items[index].1), &params, duration, synth)?;
+                    if let Err(error) =
+                        std::fs::rename(&batch[index].out_wav, s.render_path(render.id))
+                    {
+                        s.rollback_render(render.id)?;
+                        return Err(error.into());
+                    }
+                    renders.push((render, similarity));
+                }
+            }
+            s.prune_renders(200)?;
+            Ok(renders)
+        })();
+        let outcome = registered.and_then(|items| {
+            if cancelled {
+                Ok(BatchResult {
+                    items,
+                    cancelled: true,
+                })
+            } else {
+                result.map(|_| BatchResult {
+                    items,
+                    cancelled: false,
+                })
+            }
+        });
+        match &outcome {
+            Ok(_) => job.status = if cancelled { "cancelled" } else { "completed" }.into(),
+            Err(error) => {
+                job.status = "failed".into();
+                job.error = Some(error.code());
+            }
+        }
+        self.publish(job, &emit);
+        outcome
+    }
+    #[allow(clippy::too_many_arguments)]
     pub fn start_clone(
         self: &Arc<Self>,
         store: Arc<Mutex<Store>>,
@@ -326,9 +480,9 @@ impl Runner {
         {
             return Err(err("JOB_BUSY"));
         }
-        let (source, path) = {
+        let source = {
             let s = store.lock().map_err(|_| err("IO_FAILED"))?;
-            (s.source(source_id)?, s.source_work_path(source_id))
+            s.source(source_id)?
         };
         if !source.consent {
             return Err(err("NO_CONSENT"));
@@ -338,11 +492,9 @@ impl Runner {
             return Err(err("TRANSCRIPT_REQUIRED"));
         }
         let id = self.id();
-        let reference = root.join(format!("tmp/clone-{id}.wav"));
+        let reference = cut_reference(&store, &root, source_id, start_ms, end_ms, 1000, 15000)?;
         let out = root.join(format!("tmp/clone-{id}.json"));
         let files = TempFiles(vec![reference.clone(), out.clone()]);
-        let samples = audio::read_segment(&path, start_ms, end_ms)?;
-        std::fs::write(&reference, audio::wav_bytes(&samples, audio::SR))?;
         let req = WorkerRequest::Clone {
             model_dir,
             reference_wav: reference,
@@ -378,7 +530,7 @@ impl Runner {
         let guard = JobGuard {
             runner: Arc::clone(self),
             id,
-            clone: true,
+            slot: Slot::Clone,
             finished: false,
             emit: emit.clone(),
         };
@@ -437,14 +589,48 @@ impl Runner {
         Ok(id)
     }
     pub fn cancel(&self, job_id: u64) -> Result<(), VlError> {
-        let mut slot = self.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
-        if slot.as_ref().is_none_or(|(id, _)| *id != job_id) {
-            return Err(err("NOT_FOUND"));
+        for slot in [&self.clone_slot, &self.synth_cancel] {
+            let mut slot = slot.lock().map_err(|_| err("IO_FAILED"))?;
+            if slot.as_ref().is_some_and(|(id, _)| *id == job_id) {
+                let (_, tx) = slot.take().unwrap();
+                let _ = tx.send(());
+                return Ok(());
+            }
         }
-        let (_, tx) = slot.take().unwrap();
-        let _ = tx.send(());
-        Ok(())
+        Err(err("NOT_FOUND"))
     }
+}
+
+#[derive(Debug)]
+pub struct BatchResult {
+    pub items: Vec<(Render, Option<f32>)>,
+    pub cancelled: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn cut_reference(
+    store: &Arc<Mutex<Store>>,
+    root: &Path,
+    source_id: i64,
+    start_ms: u64,
+    end_ms: u64,
+    min_ms: u64,
+    max_ms: u64,
+) -> Result<PathBuf, VlError> {
+    let (source, path) = {
+        let store = store.lock().map_err(|_| err("IO_FAILED"))?;
+        (store.source(source_id)?, store.source_work_path(source_id))
+    };
+    if !source.consent {
+        return Err(err("NO_CONSENT"));
+    }
+    audio::validate_range(source.duration_ms as u64, start_ms, end_ms, min_ms, max_ms)?;
+    let samples = audio::read_segment(&path, start_ms, end_ms)?;
+    let path = root.join(format!("tmp/ref-{}.wav", rand::random::<u64>()));
+    let mut cleanup = TempFiles(vec![path.clone()]);
+    std::fs::write(&path, audio::wav_bytes(&samples, audio::SR))?;
+    cleanup.0.clear();
+    Ok(path)
 }
 
 pub(super) async fn next_line<R: AsyncBufRead + Unpin>(
@@ -478,6 +664,48 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn cut_reference_requires_consent() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(root.path()).unwrap()));
+        let source = store
+            .lock()
+            .unwrap()
+            .add_source("test", "wav", "ref", 70000, false, &[])
+            .unwrap();
+        assert_eq!(
+            cut_reference(&store, root.path(), source.id, 0, 1000, 1000, 60000)
+                .unwrap_err()
+                .code(),
+            "NO_CONSENT"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("tmp")).unwrap().count(),
+            0
+        );
+    }
+    #[test]
+    fn cut_reference_bad_region_leaves_no_file() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(Store::open(root.path()).unwrap()));
+        let source = store
+            .lock()
+            .unwrap()
+            .add_source("test", "wav", "ref", 70000, true, &[])
+            .unwrap();
+        for end in [999, 60001] {
+            assert_eq!(
+                cut_reference(&store, root.path(), source.id, 0, end, 1000, 60000)
+                    .unwrap_err()
+                    .code(),
+                "REGION_INVALID"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(root.path().join("tmp")).unwrap().count(),
+            0
+        );
+    }
     #[test]
     fn clone_slot_not_held_during_segment() {
         let root = tempfile::tempdir().unwrap();

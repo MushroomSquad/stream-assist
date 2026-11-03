@@ -453,3 +453,167 @@ async fn dropped_synth_publishes_failure_and_releases_slot() {
     assert!(r.jobs().iter().all(|j| j.status == "failed"));
     clean(d.path());
 }
+
+fn batch_items(root: &Path) -> Vec<(PathBuf, stream_assist_lib::voice_lab::mixer::Recipe)> {
+    use stream_assist_lib::voice_lab::mixer::{DpStrategy, new_recipe};
+    (0..3)
+        .map(|i| {
+            let path = root.join(format!("tmp/style-{i}.json"));
+            std::fs::write(&path, b"fake").unwrap();
+            (
+                path,
+                new_recipe(vec![], DpStrategy::Weighted, None, "test".into()),
+            )
+        })
+        .collect()
+}
+#[tokio::test]
+async fn batch_registers_after_exit() {
+    let (d, s, r, _) = setup("batch_ok", true);
+    let check = s.clone();
+    let result = r
+        .batch(
+            &s,
+            d.path(),
+            batch_items(d.path()),
+            params(),
+            None,
+            None,
+            Arc::new(move |j| {
+                if j.status == "running" {
+                    assert!(check.lock().unwrap().renders(200).unwrap().is_empty());
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.items.len(), 3);
+    assert!(!result.cancelled);
+    for (render, _) in result.items {
+        assert!(s.lock().unwrap().render_path(render.id).is_file());
+    }
+    clean(d.path());
+}
+#[tokio::test]
+async fn batch_similarity_passed_through() {
+    let (d, s, r, _) = setup("ok", true);
+    let result = r
+        .batch(
+            &s,
+            d.path(),
+            batch_items(d.path()),
+            params(),
+            None,
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result.items.iter().map(|x| x.1).collect::<Vec<_>>(),
+        vec![Some(0.0), Some(0.1), Some(0.2)]
+    );
+}
+#[tokio::test]
+async fn batch_cancel_keeps_finished() {
+    let (d, s, r, _) = setup("batch_slow", true);
+    let weak = Arc::downgrade(&r);
+    let result = r
+        .batch(
+            &s,
+            d.path(),
+            batch_items(d.path()),
+            params(),
+            None,
+            None,
+            Arc::new(move |j| {
+                if j.status == "running"
+                    && matches!(j.progress, Some(WorkerEvent::Item { index: 1, .. }))
+                {
+                    weak.upgrade().unwrap().cancel(j.id).unwrap();
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(result.cancelled);
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(r.jobs()[0].status, "cancelled");
+    r.synth(
+        &s,
+        d.path(),
+        d.path().join("style"),
+        None,
+        None,
+        params(),
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    clean(d.path());
+}
+#[tokio::test]
+async fn batch_duplicate_index_crashes() {
+    let (d, s, r, _) = setup("batch_dup", true);
+    let e = r
+        .batch(
+            &s,
+            d.path(),
+            batch_items(d.path()),
+            params(),
+            None,
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(e.code(), "WORKER_CRASHED");
+    assert_eq!(s.lock().unwrap().renders(200).unwrap().len(), 1);
+    clean(d.path());
+}
+#[tokio::test]
+async fn batch_busy_blocks_single_synth() {
+    let (d, s, r, _) = setup("batch_slow", true);
+    let items = batch_items(d.path());
+    let mut batch = Box::pin(r.batch(&s, d.path(), items, params(), None, None, Arc::new(|_| {})));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut batch)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        r.synth(
+            &s,
+            d.path(),
+            d.path().join("style"),
+            None,
+            None,
+            params(),
+            Arc::new(|_| {})
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        "JOB_BUSY"
+    );
+    let rejected = batch_items(d.path());
+    assert_eq!(
+        r.batch(
+            &s,
+            d.path(),
+            rejected,
+            params(),
+            None,
+            None,
+            Arc::new(|_| {})
+        )
+        .await
+        .err()
+        .unwrap()
+        .code(),
+        "JOB_BUSY"
+    );
+    drop(batch);
+    clean(d.path());
+}

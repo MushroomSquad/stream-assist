@@ -18,6 +18,12 @@ pub enum ClonePreset {
     Standard,
     Precise,
 }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItem {
+    pub style: PathBuf,
+    pub out_wav: PathBuf,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum WorkerRequest {
@@ -26,6 +32,14 @@ pub enum WorkerRequest {
         style: PathBuf,
         out_wav: PathBuf,
         params: RenderParams,
+    },
+    #[serde(rename = "synthBatch")]
+    SynthBatch {
+        model_dir: PathBuf,
+        items: Vec<BatchItem>,
+        params: RenderParams,
+        encoder: Option<PathBuf>,
+        reference_wav: Option<PathBuf>,
     },
     Clone {
         model_dir: PathBuf,
@@ -51,6 +65,12 @@ pub enum WorkerEvent {
         total: usize,
         loss: f32,
         best_loss: f32,
+    },
+    Item {
+        index: usize,
+        duration_ms: i64,
+        synth_ms: i64,
+        similarity: Option<f32>,
     },
     Done {
         duration_ms: Option<i64>,
@@ -151,6 +171,9 @@ fn sanitize(mut e: WorkerEvent) -> WorkerEvent {
             }
             *similarity = similarity.filter(|v| v.is_finite());
         }
+        WorkerEvent::Item { similarity, .. } => {
+            *similarity = similarity.filter(|v| v.is_finite());
+        }
         WorkerEvent::Error { .. } => {}
     }
     e
@@ -164,9 +187,9 @@ fn emit(e: WorkerEvent) {
 }
 fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
     let dir = match &req {
-        WorkerRequest::Synth { model_dir, .. } | WorkerRequest::Clone { model_dir, .. } => {
-            model_dir
-        }
+        WorkerRequest::Synth { model_dir, .. }
+        | WorkerRequest::SynthBatch { model_dir, .. }
+        | WorkerRequest::Clone { model_dir, .. } => model_dir,
     };
     let onnx = dir.join("onnx");
     let path = onnx.to_str().ok_or_else(|| err("IO_FAILED"))?;
@@ -196,6 +219,64 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
             Ok(WorkerEvent::Done {
                 duration_ms: Some(samples.len() as i64 * 1000 / tts.sample_rate as i64),
                 synth_ms: Some(synth_ms),
+                loss: None,
+                similarity: None,
+            })
+        }
+        WorkerRequest::SynthBatch {
+            items,
+            params,
+            encoder,
+            reference_wav,
+            ..
+        } => {
+            let mut reference = match (encoder, reference_wav) {
+                (None, None) => None,
+                (Some(path), Some(wav)) => {
+                    let mut encoder =
+                        supertonic3_tts::speaker::SpeakerEncoder::on_device(path, Device::Cpu)
+                            .map_err(|_| err("WORKER_FAILED"))?;
+                    let audio = features::load_wav(wav).map_err(|_| err("WORKER_FAILED"))?;
+                    let embedding = encoder
+                        .embed(&audio.samples, audio.sample_rate)
+                        .map_err(|_| err("WORKER_FAILED"))?;
+                    Some((encoder, embedding))
+                }
+                _ => return Err(err("WORKER_FAILED")),
+            };
+            for (index, item) in items.into_iter().enumerate() {
+                let style = read_style_file(&item.style)?;
+                let start = Instant::now();
+                let (samples, _) = tts
+                    .call(
+                        &params.text,
+                        &params.lang,
+                        &style,
+                        params.quality,
+                        params.speed,
+                        0.3,
+                    )
+                    .map_err(|_| err("WORKER_FAILED"))?;
+                let synth_ms = start.elapsed().as_millis() as i64;
+                write_wav_file(&item.out_wav, &samples, tts.sample_rate)
+                    .map_err(|_| err("WORKER_FAILED"))?;
+                let similarity = reference.as_mut().and_then(|(encoder, embedding)| {
+                    encoder
+                        .embed(&samples, tts.sample_rate as u32)
+                        .ok()
+                        .map(|value| supertonic3_tts::speaker::cosine(embedding, &value))
+                        .filter(|value| value.is_finite())
+                });
+                emit(WorkerEvent::Item {
+                    index,
+                    duration_ms: samples.len() as i64 * 1000 / tts.sample_rate as i64,
+                    synth_ms,
+                    similarity,
+                });
+            }
+            Ok(WorkerEvent::Done {
+                duration_ms: None,
+                synth_ms: None,
                 loss: None,
                 similarity: None,
             })
@@ -276,6 +357,12 @@ mod tests {
                     loss: value,
                     best_loss: value,
                 },
+                WorkerEvent::Item {
+                    index: 0,
+                    duration_ms: 1000,
+                    synth_ms: 1,
+                    similarity: Some(value),
+                },
                 WorkerEvent::Done {
                     duration_ms: None,
                     synth_ms: None,
@@ -293,6 +380,7 @@ mod tests {
                     WorkerEvent::Done {
                         loss, similarity, ..
                     } => assert_eq!((loss, similarity), (Some(f32::MAX), None)),
+                    WorkerEvent::Item { similarity, .. } => assert_eq!(similarity, None),
                     _ => unreachable!(),
                 }
             }

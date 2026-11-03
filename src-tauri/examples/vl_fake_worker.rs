@@ -28,7 +28,7 @@ fn main() {
     }
     let path = std::env::args_os().nth(2).unwrap();
     let req: WorkerRequest = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    if mode == "crash" {
+    if mode == "crash" && !matches!(&req, WorkerRequest::SynthBatch { .. }) {
         std::process::exit(3);
     }
     for i in 1..=2 {
@@ -39,7 +39,7 @@ fn main() {
             loss: 1.0,
             best_loss: 0.5,
         });
-        if mode == "sleep" {
+        if mode == "sleep" && !matches!(&req, WorkerRequest::SynthBatch { .. }) {
             std::thread::sleep(Duration::from_secs(30));
             return;
         }
@@ -50,6 +50,31 @@ fn main() {
             emit(WorkerEvent::Done {
                 duration_ms: Some(1000),
                 synth_ms: Some(5),
+                loss: None,
+                similarity: None,
+            });
+        }
+        WorkerRequest::SynthBatch { items, .. } => {
+            for (index, item) in items.into_iter().enumerate() {
+                if mode == "batch_slow" {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                std::fs::write(item.out_wav, wav_bytes(&vec![0.0; SR as usize], SR)).unwrap();
+                let event = WorkerEvent::Item {
+                    index,
+                    duration_ms: 1000,
+                    synth_ms: 5,
+                    similarity: Some(0.1 * index as f32),
+                };
+                emit(event.clone());
+                if mode == "batch_dup" {
+                    emit(event);
+                    break;
+                }
+            }
+            emit(WorkerEvent::Done {
+                duration_ms: None,
+                synth_ms: None,
                 loss: None,
                 similarity: None,
             });
