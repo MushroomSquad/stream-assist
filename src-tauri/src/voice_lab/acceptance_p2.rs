@@ -226,7 +226,7 @@ async fn acceptance_p2() -> anyhow::Result<()> {
         if job.status == "running"
             && matches!(job.progress, Some(WorkerEvent::Item { index: 1, .. }))
         {
-            runner.cancel(job.id).unwrap();
+            let _ = runner.cancel(job.id);
         }
     });
     let started = Instant::now();
@@ -240,6 +240,12 @@ async fn acceptance_p2() -> anyhow::Result<()> {
     .await?;
     assert!(cancelled.cancelled);
     assert!((2..9).contains(&cancelled.items.len()));
+    {
+        let s = lab.store.lock().unwrap();
+        for item in &cancelled.items {
+            assert!(s.render_path(item.render.id).is_file());
+        }
+    }
     println!(
         "p2_cancel_s={:.3} finished={}",
         started.elapsed().as_secs_f64(),
