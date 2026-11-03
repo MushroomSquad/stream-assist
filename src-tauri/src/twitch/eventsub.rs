@@ -1,7 +1,8 @@
 use super::helix::{ApiRedemption, Helix};
-use crate::model::Redemption;
+use crate::model::{ChatMessage, Fragment, Redemption};
 use anyhow::{Result, anyhow, bail};
 use futures_util::StreamExt;
+use serde::Deserialize;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -15,6 +16,8 @@ pub enum EsMsg {
     Welcome { session_id: String },
     Keepalive,
     Notification(Redemption),
+    Chat(ChatMessage),
+    Ignored,
     Reconnect { url: String },
     Revocation,
 }
@@ -40,19 +43,72 @@ pub fn parse_message(text: &str) -> Result<EsMsg> {
             let kind = v["metadata"]["subscription_type"]
                 .as_str()
                 .or_else(|| v["payload"]["subscription"]["type"].as_str());
-            if kind != Some("channel.channel_points_custom_reward_redemption.add") {
-                bail!("Unsupported EventSub notification");
+            match kind {
+                Some("channel.channel_points_custom_reward_redemption.add") => {
+                    serde_json::from_value::<ApiRedemption>(v["payload"]["event"].clone())
+                        .map(|r| EsMsg::Notification(r.into()))
+                        .unwrap_or(EsMsg::Ignored)
+                }
+                Some("channel.chat.message") => {
+                    serde_json::from_value::<ApiChatMessage>(v["payload"]["event"].clone())
+                        .map(|m| {
+                            EsMsg::Chat(ChatMessage {
+                                user_login: m.chatter_user_login,
+                                broadcaster_id: m.broadcaster_user_id,
+                                source_broadcaster_id: m.source_broadcaster_user_id,
+                                fragments: m
+                                    .message
+                                    .fragments
+                                    .into_iter()
+                                    .map(|f| Fragment {
+                                        kind: f.kind,
+                                        text: f.text,
+                                    })
+                                    .collect(),
+                                badges: m.badges.into_iter().map(|b| b.set_id).collect(),
+                            })
+                        })
+                        .unwrap_or(EsMsg::Ignored)
+                }
+                _ => EsMsg::Ignored,
             }
-            EsMsg::Notification(
-                serde_json::from_value::<ApiRedemption>(v["payload"]["event"].clone())?.into(),
-            )
         }
         _ => bail!("Unsupported EventSub message"),
     })
 }
+#[derive(Deserialize)]
+struct ApiChatMessage {
+    chatter_user_login: String,
+    broadcaster_user_id: String,
+    source_broadcaster_user_id: Option<String>,
+    message: ChatBody,
+    badges: Vec<ChatBadge>,
+}
+#[derive(Deserialize)]
+struct ChatBody {
+    fragments: Vec<ChatFragment>,
+}
+#[derive(Deserialize)]
+struct ChatFragment {
+    #[serde(rename = "type")]
+    kind: String,
+    text: String,
+}
+#[derive(Deserialize)]
+struct ChatBadge {
+    set_id: String,
+}
+#[derive(Debug)]
+pub enum ChatStatus {
+    Ok,
+    Forbidden,
+    Failed,
+}
 #[derive(Debug)]
 pub enum EsSignal {
     Redemption(Redemption),
+    ChatStatus(ChatStatus),
+    Chat(ChatMessage),
     Resync,
 }
 fn keepalive(text: &str) -> Duration {
@@ -111,6 +167,19 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                         ) {
                             break;
                         }
+                        let status = match timeout(
+                            Duration::from_secs(10),
+                            helix.subscribe_chat(&session_id),
+                        )
+                        .await
+                        {
+                            Ok(Ok(true)) => ChatStatus::Ok,
+                            Ok(Ok(false)) => ChatStatus::Forbidden,
+                            _ => ChatStatus::Failed,
+                        };
+                        if out.send(EsSignal::ChatStatus(status)).await.is_err() {
+                            return;
+                        }
                         welcomed = true;
                         if resync && out.send(EsSignal::Resync).await.is_err() {
                             return;
@@ -127,6 +196,15 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                             return;
                         }
                     }
+                    EsMsg::Chat(m) => {
+                        if !welcomed {
+                            break;
+                        }
+                        if out.send(EsSignal::Chat(m)).await.is_err() {
+                            return;
+                        }
+                    }
+                    EsMsg::Ignored => {}
                     EsMsg::Revocation => break,
                     EsMsg::Reconnect { url } => {
                         // Retain the old socket until the replacement has welcomed us.

@@ -535,6 +535,8 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 redeem(&ctx, r, &mut inflight, &tx)
             }
             Internal::Msg(DriverMsg::Es(EsSignal::Resync)) => reconcile(&ctx, &tx),
+            // Task 7 will forward these signals to the TTS engine.
+            Internal::Msg(DriverMsg::Es(EsSignal::Chat(_) | EsSignal::ChatStatus(_))) => {}
             Internal::Reconcile(rows) => {
                 let states: Result<Vec<_>> = rows
                     .into_iter()

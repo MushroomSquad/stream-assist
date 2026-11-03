@@ -1,6 +1,6 @@
 use super::{
     auth,
-    eventsub::{EsMsg, parse_message},
+    eventsub::{ChatStatus, EsMsg, EsSignal, parse_message},
     helix::{Helix, RewardError},
 };
 use crate::model::{RedemptionRef, Tokens};
@@ -215,6 +215,12 @@ async fn eventsub_welcome_notification_and_migration() {
     Mock::given(method("POST")).and(path("/helix/eventsub/subscriptions"))
         .and(body_json(json!({"type":"channel.channel_points_custom_reward_redemption.add","version":"1","condition":{"broadcaster_user_id":"b"},"transport":{"method":"websocket","session_id":"initial"}})))
         .respond_with(ResponseTemplate::new(202)).expect(1).mount(&s).await;
+    Mock::given(method("POST"))
+        .and(path("/helix/eventsub/subscriptions"))
+        .and(body_partial_json(json!({"type":"channel.chat.message"})))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&s)
+        .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let replacement = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -246,10 +252,8 @@ async fn eventsub_welcome_notification_and_migration() {
     let driver = tokio::spawn(run(Arc::new(h), url, tx));
     for _ in 0..2 {
         assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(5), rx.recv())
-                .await
-                .unwrap(),
-            Some(EsSignal::Redemption(_))
+            next_signal(&mut rx).await,
+            EsSignal::Redemption(_)
         ));
     }
     s.verify().await;
@@ -324,7 +328,7 @@ async fn eventsub_disconnect_subscribes_and_resyncs() {
     Mock::given(method("POST"))
         .and(path("/helix/eventsub/subscriptions"))
         .respond_with(ResponseTemplate::new(202))
-        .expect(2)
+        .expect(4)
         .mount(&s)
         .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -350,22 +354,13 @@ async fn eventsub_disconnect_subscribes_and_resyncs() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let driver = tokio::spawn(run(Arc::new(h), url, tx));
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap(),
-        Some(EsSignal::Redemption(_))
+        next_signal(&mut rx).await,
+        EsSignal::Redemption(_)
     ));
+    assert!(matches!(next_signal(&mut rx).await, EsSignal::Resync));
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap(),
-        Some(EsSignal::Resync)
-    ));
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap(),
-        Some(EsSignal::Redemption(_))
+        next_signal(&mut rx).await,
+        EsSignal::Redemption(_)
     ));
     s.verify().await;
     drop(rx);
@@ -408,4 +403,132 @@ async fn refresh_completes_even_if_caller_dropped() {
             .unwrap(),
         "rotated"
     );
+}
+
+async fn next_signal(rx: &mut tokio::sync::mpsc::Receiver<EsSignal>) -> EsSignal {
+    loop {
+        let signal = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if !matches!(signal, EsSignal::ChatStatus(_)) {
+            return signal;
+        }
+    }
+}
+
+// Based on the regular chat example, wrapped in a WebSocket envelope;
+// text/emote fragments and subscriber badges are edited for this fixture.
+// https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/#channelchatmessage
+#[test]
+fn parse_chat_message() {
+    let EsMsg::Chat(m) = parse_message(include_str!("fixtures/chat_message.json")).unwrap() else {
+        panic!()
+    };
+    assert_eq!(m.user_login, "cool_user");
+    assert_eq!(m.broadcaster_id, "1971641");
+    assert_eq!(m.source_broadcaster_id, None);
+    assert_eq!(m.fragments.len(), 2);
+    assert_eq!(m.fragments[0].kind, "text");
+    assert_eq!(m.fragments[0].text, "Hello % ");
+    assert_eq!(m.fragments[1].kind, "emote");
+    assert_eq!(m.fragments[1].text, "Kappa");
+    assert_eq!(m.badges, ["subscriber"]);
+}
+#[test]
+fn unknown_notification_ignored() {
+    assert!(matches!(parse_message(r#"{"metadata":{"message_type":"notification","subscription_type":"channel.follow"},"payload":{"event":{}}}"#).unwrap(), EsMsg::Ignored));
+}
+#[test]
+fn malformed_chat_ignored() {
+    let mut v: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/chat_message.json")).unwrap();
+    v["payload"]["event"]
+        .as_object_mut()
+        .unwrap()
+        .remove("message");
+    assert!(matches!(
+        parse_message(&v.to_string()).unwrap(),
+        EsMsg::Ignored
+    ));
+}
+#[tokio::test]
+async fn eventsub_chat_forbidden_keeps_session() {
+    chat_subscription_session(403).await;
+}
+#[tokio::test]
+async fn eventsub_chat_500_keeps_session() {
+    chat_subscription_session(500).await;
+}
+#[tokio::test]
+async fn eventsub_chat_ok_signals_status() {
+    chat_subscription_session(202).await;
+}
+async fn chat_subscription_session(status: u16) {
+    use super::eventsub::run;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+    let (s, h) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/helix/eventsub/subscriptions"))
+        .and(body_partial_json(
+            json!({"type":"channel.channel_points_custom_reward_redemption.add"}),
+        ))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/helix/eventsub/subscriptions"))
+        .and(body_json(json!({"type":"channel.chat.message","version":"1","condition":{"broadcaster_user_id":"b","user_id":"b"},"transport":{"method":"websocket","session_id":"initial"}})))
+        .respond_with(ResponseTemplate::new(status)).expect(1).mount(&s).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(tcp).await.unwrap();
+        ws.send(Message::Text(json!({"metadata":{"message_type":"session_welcome"},"payload":{"session":{"id":"initial","keepalive_timeout_seconds":10}}}).to_string().into())).await.unwrap();
+        // Malformed and unknown notifications must not interrupt delivery.
+        ws.send(Message::Text(r#"{"metadata":{"message_type":"notification","subscription_type":"channel.chat.message"},"payload":{"event":{}}}"#.into())).await.unwrap();
+        ws.send(Message::Text(
+            r#"{"metadata":{"message_type":"notification","subscription_type":"channel.follow"}}"#
+                .into(),
+        ))
+        .await
+        .unwrap();
+        ws.send(Message::Text(
+            include_str!("fixtures/redemption.json").into(),
+        ))
+        .await
+        .unwrap();
+        ws.send(Message::Text(
+            include_str!("fixtures/chat_message.json").into(),
+        ))
+        .await
+        .unwrap();
+        let _ = ws.next().await;
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let driver = tokio::spawn(run(std::sync::Arc::new(h), url, tx));
+    let signal = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(match status {
+        202 => matches!(signal, EsSignal::ChatStatus(ChatStatus::Ok)),
+        403 => matches!(signal, EsSignal::ChatStatus(ChatStatus::Forbidden)),
+        _ => matches!(signal, EsSignal::ChatStatus(ChatStatus::Failed)),
+    });
+    assert!(matches!(
+        next_signal(&mut rx).await,
+        EsSignal::Redemption(_)
+    ));
+    assert!(matches!(next_signal(&mut rx).await, EsSignal::Chat(_)));
+    s.verify().await;
+    drop(rx);
+    tokio::time::timeout(std::time::Duration::from_secs(2), driver)
+        .await
+        .unwrap()
+        .unwrap();
+    server.abort();
 }

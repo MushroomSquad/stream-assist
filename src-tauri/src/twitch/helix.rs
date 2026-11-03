@@ -294,6 +294,18 @@ impl Helix {
         }
         Ok(())
     }
+    pub async fn subscribe_chat(&self, session_id: &str) -> Result<bool> {
+        let (b, _) = self.me().await?;
+        let response = self.request(
+            Method::POST, "/helix/eventsub/subscriptions", &[],
+            Some(json!({"type":"channel.chat.message","version":"1","condition":{"broadcaster_user_id":b,"user_id":b},"transport":{"method":"websocket","session_id":session_id}})),
+        ).await?;
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Ok(false);
+        }
+        response.error_for_status()?;
+        Ok(true)
+    }
     pub async fn subscribe_redemptions(&self, session_id: &str) -> Result<()> {
         let (b, _) = self.me().await?;
         self.request(Method::POST,"/helix/eventsub/subscriptions",&[],Some(json!({"type":"channel.channel_points_custom_reward_redemption.add","version":"1","condition":{"broadcaster_user_id":b},"transport":{"method":"websocket","session_id":session_id}}))).await?.error_for_status()?;

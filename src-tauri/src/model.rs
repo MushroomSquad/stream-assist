@@ -68,3 +68,12 @@ pub struct Fragment {
     pub kind: String,
     pub text: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub user_login: String,
+    pub broadcaster_id: String,
+    pub source_broadcaster_id: Option<String>,
+    pub fragments: Vec<Fragment>,
+    pub badges: Vec<String>,
+}
