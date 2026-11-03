@@ -2,6 +2,7 @@ pub mod audio;
 pub mod commands;
 pub mod mixer;
 pub mod models;
+pub mod project;
 pub mod runner;
 pub mod store;
 pub mod style;

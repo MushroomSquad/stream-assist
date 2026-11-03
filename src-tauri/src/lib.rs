@@ -71,6 +71,8 @@ pub fn run() {
             voice_lab::commands::vl_renders,
             voice_lab::commands::vl_render_audio,
             voice_lab::commands::vl_set_favorite,
+            voice_lab::commands::vl_export_project,
+            voice_lab::commands::vl_import_project,
             voice_lab::commands::vl_export_profile,
             voice_lab::commands::vl_export_recipe,
             voice_lab::commands::vl_export_render,

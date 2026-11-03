@@ -319,13 +319,18 @@ pub async fn vl_explore(
     .await
 }
 
-fn export_bytes(path: &Path, ext: &str, bytes: &[u8]) -> Result<(), VlError> {
+pub(super) fn check_export_path(path: &Path, ext: &str) -> Result<(), VlError> {
     if !path.is_absolute()
         || !path.parent().is_some_and(Path::is_dir)
         || path.extension().and_then(|s| s.to_str()) != Some(ext)
     {
         return Err(err("EXPORT_FAILED"));
     }
+    Ok(())
+}
+
+fn export_bytes(path: &Path, ext: &str, bytes: &[u8]) -> Result<(), VlError> {
+    check_export_path(path, ext)?;
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
@@ -1615,4 +1620,23 @@ pub async fn vl_train_runs(state: State<'_, VlState>) -> Result<Vec<TrainRun>, S
 #[tauri::command]
 pub async fn vl_train_delete(state: State<'_, VlState>, run_id: i64) -> Result<(), String> {
     blocking(lab(&state)?, move |l| train_delete(l, run_id)).await
+}
+
+#[tauri::command]
+pub async fn vl_export_project(state: State<'_, VlState>, path: PathBuf) -> Result<(), String> {
+    blocking(lab(&state)?, move |l| {
+        super::project::export_project(&l.store, &path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vl_import_project(
+    state: State<'_, VlState>,
+    path: PathBuf,
+) -> Result<super::project::ImportReport, String> {
+    blocking(lab(&state)?, move |l| {
+        super::project::import_project(&l.store, &path)
+    })
+    .await
 }
