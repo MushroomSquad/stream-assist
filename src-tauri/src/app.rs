@@ -155,7 +155,10 @@ async fn start(
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
     use crate::tts::engine::{self, EngineDeps, SynthFn, TtsMsg};
-    std::fs::create_dir_all(&tts_dir)?;
+    // TTS must never block music startup; synthesis then fails per item instead.
+    if let Err(e) = std::fs::create_dir_all(&tts_dir) {
+        eprintln!("TTS directory unavailable: {e}");
+    }
     let (tts_tx, tts_rx) = mpsc::unbounded_channel::<TtsMsg>();
     let (outcome, tts_outcomes) = mpsc::unbounded_channel();
     handle.manage(TtsHandle(tts_tx.clone()));
