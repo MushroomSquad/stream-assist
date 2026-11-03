@@ -167,7 +167,7 @@ TTS-награда создаётся/находится при подключе
 
 ```sh
 npm ci
-cd src-tauri && cargo build --examples && cargo test  # ~380 тестов: автомат, БД, клиенты (wiremock), сервер, Voice Lab, озвучка (нужен cargo build --examples)
+cd src-tauri && cargo build --examples && cargo test  # ~380 тестов: автомат, БД, клиенты (wiremock), сервер, Voice Lab, озвучка
 npm run check                     # svelte-check
 TWITCH_CLIENT_ID=… npm run tauri dev
 TWITCH_CLIENT_ID=… npm run tauri build   # deb / rpm / AppImage на Linux
