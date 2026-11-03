@@ -64,7 +64,7 @@
   - `pub fn validate(r: &Rules) -> Result<(), String>` — ошибка всегда `"settings_invalid"`; правила Global Constraints (сочетания, ≤ 10, пределы, уникальность названий и меток).
   - `pub fn from_legacy(v: &serde_json::Value) -> Rules` — по таблице спеки «Миграция». Каждое поле читается **отдельно** из `Value` (`v["tts"]["reward_id"].as_str()` и т. п.; неверный тип или отсутствие → умолчание только для этого поля). `limits` — `from_value`, при ошибке — умолчание. Значения приводятся к пределам: название — обрезка до 45 символов, пустое → умолчание; цена — `max(1)`; кулдаун — `min(604800)`; метка вне правил → `"%"`; `speed` → clamp 0.7–1.5; кулдауны чата → `min(3600)`; если названия музыки и озвучки совпали после `trim().to_lowercase()` — к названию озвучки добавляется `" (озвучка)"` с обрезкой до 45. Id триггеров: `music-reward`, `tts-reward`, `tts-chat`; `next_id: 1`.
 
-- [ ] **Step 1: Тесты** (`mod tests` в `rules.rs`):
+- [x] **Step 1: Тесты** (`mod tests` в `rules.rs`):
   - `defaults_shape` — `Rules::default()` как выше; `serde_json::to_value` наградного триггера == `{"id":"music-reward","enabled":true,"kind":"reward","title":"Заказать трек","cost":500,"cooldown_s":0,"reward_id":null}`, метки — `{"id":"tts-chat","enabled":false,"kind":"chat_marker","marker":"%"}`; round-trip `from_value(to_value(x)) == x`; JSON без `retiring`/`next_id` читается (`[]`, `1`).
   - `migrate_legacy_full` — старый JSON с `music_reward_id:"m1"`, `reward_title:"Трек"`, `reward_cost:700`, `reward_cooldown_s:30`, `limits.no_repeat_last_n:5`, `tts:{reward_enabled:true, chat_enabled:false, reward_id:"t1", reward_title:"Скажи", reward_cost:100, marker:"!!", speed:1.2, stop_words:["x"]}` → музыка `Reward{"Трек",700,30,Some("m1")}` enabled, `limits.no_repeat_last_n==5`; tts-reward `enabled:true`, `Some("t1")`; tts-chat `enabled:false`, `"!!"`; `cfg.speed==1.2`, `cfg.stop_words==["x"]`; оба действия `enabled:true`.
   - `migrate_legacy_empty` — `from_legacy(&json!({}))` == `Rules::default()`.
@@ -73,10 +73,10 @@
   - `is_active_matrix` — 4 сочетания `trigger.enabled × action.enabled`.
   - `tts_runtime_flags` — `in_use`/`chat_active`: всё выкл; только награда; только метка; действие выкл при включённых триггерах (оба `false`).
   - `reward_ids_include_retiring`.
-- [ ] **Step 2:** `cargo test --lib rules` → FAIL.
-- [ ] **Step 3:** Реализовать.
-- [ ] **Step 4:** `cargo test --lib rules` → PASS; `cargo test` → всё зелёное.
-- [ ] **Step 5:** Commit `feat(rules): model, defaults, validation, legacy migration`.
+- [x] **Step 2:** `cargo test --lib rules` → FAIL.
+- [x] **Step 3:** Реализовать.
+- [x] **Step 4:** `cargo test --lib rules` → PASS; `cargo test` → всё зелёное.
+- [x] **Step 5:** Commit `feat(rules): model, defaults, validation, legacy migration`.
 
 ### Task 2: `rules.rs` — маршрутизация, решения и операции над наградами
 
@@ -97,7 +97,7 @@
   2. **Удалённые.** Триггер current с `reward_id`, чьего id нет в результате → `Retiring{action, reward_id}` в `retiring` + `RewardOp::Retire`.
   3. **Остальные** (сопоставление по id): с `reward_id` и изменились `(title,cost,cooldown_s,active)` → `Patch{ body: if was_active && !now_active {{"is_enabled":false}} else reward_body(.., now_active) }`; без id, активен и (раньше не был активен, или новый, или изменились title/cost/cooldown) → `Ensure{known_id:None, create:true}`.
 
-- [ ] **Step 1: Тесты:**
+- [x] **Step 1: Тесты:**
   - `route_reward_cases` — id музыки → `{Music, Some("music-reward"), true}`; выключенная награда озвучки → `active:false`; id из `retiring` → `{.., None, false}`; неизвестный → `None`.
   - `music_decision_cases` — `Process`; действие выключено → `Refund`; триггер выключен → `Refund`; retiring музыки → `Refund`; награда озвучки → `Ignore`; неизвестный → `Ignore`.
   - `route_chat_cases` — активная `%`: `"привет %"` → `"привет"`; `"на 100% согласен"` → `None`; метка выключена → `None`; действие выключено → `None`; чужой `source_broadcaster_id` → `None`; эмоут вырезан до поиска метки; метки `"%"` и `"!!"` — срабатывает та, что в тексте.
@@ -111,8 +111,8 @@
   - `assign_ids_unknown_id_is_new` — incoming id, которого нет в current (`"t99"`, ≥ `next_id`) → новый id, `reward_id: None`; current `t4` с id отсутствует в incoming → `Retire`. Удалённый id никогда не выдаётся повторно (персистентный `next_id`).
   - `assign_ids_kind_change_is_new` — `tts-chat` пришёл как `Reward` → новый id; нет `Patch` по старому id.
   - `assign_ids_duplicate_incoming` — два триггера с одним известным id → второй получает новый id и `reward_id: None`.
-- [ ] **Step 2–4:** FAIL → реализовать → `cargo test --lib rules` PASS.
-- [ ] **Step 5:** Commit `feat(rules): routing, decisions and reward operations`.
+- [x] **Step 2–4:** FAIL → реализовать → `cargo test --lib rules` PASS.
+- [x] **Step 5:** Commit `feat(rules): routing, decisions and reward operations`.
 
 ### Task 3: исполнители операций над наградами (Helix) и движок озвучки на `TtsRuntime`
 
@@ -131,13 +131,13 @@
 
 Поведение движка: `Chat` — маркер и источник проверены маршрутизатором; игнор при `!chat_active`; сбрасывает `tts_chat_failed`; дальше как сейчас (стример обходит роли/кулдауны, `clean`, голос). `ChatSeen` — только сброс `tts_chat_failed`. `Reward` — `!active` → `Outcome::Disabled`, дальше как сейчас. `tts_no_voice` при `profile_id.is_none() && in_use`; `chat_warning` показывается при `chat_active`. `DropReward` → `remove_pending` элементов `Origin::Reward(r)` с `r.reward_id == reward_id` → `report(.., Outcome::Cleared)`; ответ — id текущего, если он этой награды.
 
-- [ ] **Step 1: Тесты:**
+- [x] **Step 1: Тесты:**
   - `twitch/tests.rs` (wiremock): `delete_reward_ok_and_404`; `find_reward_excludes` — строка из `exclude` не находится ни по id, ни по названию; `ensure_known_found_no_post` — найдено по id → `Some`, ни одного `POST`; `ensure_missing_no_create` — не найдено, `create:false` → `None`, нет `POST`; `ensure_creates_when_missing` — `POST` с `prompt` по действию; `retire_order` — порядок в `received_requests()`: `PATCH is_enabled:false` → `GET` выкупов → `PATCH status=CANCELED` (по одному на строку не из `keep`; строка из `keep` не трогается) → `DELETE`; `retire_delete_failure_errs` — `DELETE` 500 → `Err`, отключение уже отправлено; `retire_missing_reward_ok` — `PATCH` отключения 404 → `Ok(())`, больше запросов нет.
   - `engine.rs`: адаптировать существующие тесты к новым сообщениям, смысл тот же; `shared_chat_ignored` удаляется (покрыт `route_chat_cases`), `chat_disabled_ignored` становится `chat_ignored_when_chat_inactive`; `chat_relogin_warning_only_when_enabled` сбрасывает предупреждение через `ChatSeen`; новые `drop_reward_cancels_pending_only` (текущий элемент этой награды доигрывает и возвращается в `reply`; ожидающие этой награды → `CANCELED`; чужие и чатовые остаются), `inactive_reward_disabled`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Реализовать. Временный адаптер до Task 5, помечен `// TODO(Task 5)`: драйвер и `app.rs` строят `TtsRuntime` через `rules::from_legacy(&serde_json::to_value(&settings)?).tts_runtime()`; `Reward{active: settings.tts.reward_enabled}`; чат — `route_chat` на `from_legacy(..)`, без маршрута → `ChatSeen`.
-- [ ] **Step 4:** `cargo build --examples && cargo test` → PASS.
-- [ ] **Step 5:** Commit `feat(tts,twitch): engine on TtsRuntime, reward ensure/retire executors`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3:** Реализовать. Временный адаптер до Task 5, помечен `// TODO(Task 5)`: драйвер и `app.rs` строят `TtsRuntime` через `rules::from_legacy(&serde_json::to_value(&settings)?).tts_runtime()`; `Reward{active: settings.tts.reward_enabled}`; чат — `route_chat` на `from_legacy(..)`, без маршрута → `ChatSeen`.
+- [x] **Step 4:** `cargo build --examples && cargo test` → PASS.
+- [x] **Step 5:** Commit `feat(tts,twitch): engine on TtsRuntime, reward ensure/retire executors`.
 
 ### Task 4: `rewards.rs` — учёт жизненного цикла (чистый)
 
@@ -160,7 +160,7 @@
   - всё выпускаемое — через `admit`.
 - `pub fn on_retired(&mut self, rules: &mut Rules, reward_id: &str, result: Result<(), String>) -> bool` — снять из `retiring_now`; `Ok` → убрать из `rules.retiring` (true), убрать `errors["retire:<id>"]`; `Err(e)` → `errors["retire:<id>"] = e`, оставить в `retiring` (false).
 
-- [ ] **Step 1: Тесты** (`mod tests` в `rewards.rs`):
+- [x] **Step 1: Тесты** (`mod tests` в `rewards.rs`):
   - `save_during_ensure_single_ensure` — `on_connect` выпустил `Ensure` для `music-reward`; `on_save` с новым названием → `Ensure` не выпущен; `on_ready(Ok(Some("r1")))` → id сохранён, выпущен ровно один `Patch` с **новым** названием, ни одного второго `Ensure`.
   - `ready_for_deleted_trigger_retires` — триггер удалён во время `Ensure`; `on_ready(Ok(Some("r9")))` → `"r9"` в `rules.retiring`, выпущен `Retire`.
   - `ready_none_keeps_foreign_id` — `reward_id` уже `"r2"`, `on_ready(known_id: Some("r1"), Ok(None))` → `"r2"` не тронут.
@@ -170,8 +170,8 @@
   - `retire_not_duplicated_in_flight` — два `on_connect` подряд → один `Retire`.
   - `offline_release_then_connect_reissues` — `on_save` выпустил `Ensure` и `Retire`; `release_ensure`/`release_retire`; `on_connect` выпускает их снова; следующий `on_save` с изменением не помечается как `dirty`.
   - `ready_with_retiring_id_not_assigned` — `Ok(Some(id))`, где `id` в `retiring` → не привязан; активный триггер → новый `Ensure`.
-- [ ] **Step 2–4:** FAIL → реализовать → `cargo test --lib rewards` PASS.
-- [ ] **Step 5:** Commit `feat(rewards): reward lifecycle bookkeeping`.
+- [x] **Step 2–4:** FAIL → реализовать → `cargo test --lib rewards` PASS.
+- [x] **Step 5:** Commit `feat(rewards): reward lifecycle bookkeeping`.
 
 ### Task 5: `Settings.rules` — склейка в драйвере и приложении
 
@@ -200,17 +200,17 @@
 - `TwitchLogout` и `app::exit`: пауза для `rules.reward_ids()`.
 - Удалить: временный адаптер Task 3, `router.rs`, `keep_reward_id`, `tts_target`, `spawn_tts_reward`, `tts_settings_changed`, `Internal::Reward/TtsReward`, `DriverMsg::SettingsChanged` (отправителя нет, валидацию обходит).
 
-- [ ] **Step 1: Тесты** (`driver.rs` `mod tests` — только функции без `AppHandle`):
+- [x] **Step 1: Тесты** (`driver.rs` `mod tests` — только функции без `AppHandle`):
   - `load_settings_migrates_legacy` — старый JSON в БД → ожидаемые `rules`, `migrated:true`; `load_settings_new_form` — round-trip, `migrated:false`.
   - `bootstrap_resaves_new_form` — функция миграции на старте (вынести в `fn migrate_stored(db: &Db) -> Result<Settings>`): после вызова в БД `settings` в новой форме, `settings_legacy` — исходный JSON.
   - `apply_settings_keeps_reward_id_and_updates_reward` и `settings_change_keeps_*` — переписать на `rules`: подмена `reward_id` из панели игнорируется; смена цены → `Patch` в возвращённых ops.
   - `app.rs`: `validate_rejects_bad_tts` → на `rules` (пределы те же).
   - Поведение `redeem`/`ResolveDone`/чата покрыто чистыми тестами Task 2/4; здесь — `cargo test` целиком зелёный.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Реализовать.
-- [ ] **Step 4:** `cargo build --examples && cargo test` → всё зелёное; `cargo clippy --all-targets` без новых предупреждений.
-- [ ] **Step 5:** Ручная проверка оркестратором: копия реальной старой БД, `TWITCH_CLIENT_ID=… npm run tauri dev` — приложение стартует, `settings_legacy` записан, награды не задвоились.
-- [ ] **Step 6:** Commit `feat(rules): settings.rules drives routing and reward lifecycle`.
+- [x] **Step 2:** FAIL.
+- [x] **Step 3:** Реализовать.
+- [x] **Step 4:** `cargo build --examples && cargo test` → всё зелёное; `cargo clippy --all-targets` без новых предупреждений.
+- [x] **Step 5:** Ручная проверка оркестратором: копия реальной старой БД, `TWITCH_CLIENT_ID=… npm run tauri dev` — приложение стартует, `settings_legacy` записан, награды не задвоились.
+- [x] **Step 6:** Commit `feat(rules): settings.rules drives routing and reward lifecycle`.
 
 ### Task 6: панель на новой форме настроек (минимально), dev-моки, документация ядра
 
@@ -232,11 +232,11 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 - Обёртки с браузерным фолбэком (`get_state`, `get_settings`, `running_port`, `spotify_volume`, `list_themes`): `isTauri() || mockEnabled ? call(..) : fallback`.
 - `src/lib/mock.ts`: `export const mockEnabled = !isTauri() && import.meta.env.DEV;` `export function mockCall<T>(name: string, args?: Record<string, unknown>): Promise<T>` — фикстуры: `get_state` (текущий трек + 3 в очереди), `get_settings`/`save_settings` (в памяти; `save_settings` заменяет пустые id триггеров на `t${next_id++}` и возвращает результат, как ядро), `rule_errors` (`{}`; ошибка у `tts-reward` при `?mock=errors` в URL), `tts_state` (текущий + 2 в очереди), `vl_*`, нужные для отрисовки Voice Lab (модель установлена, 3 профиля, 2 источника, 3 рендера, пустые задания), остальные — `Promise.resolve(undefined)`. Функции `call` в `api.ts`, `ttsApi.ts`, `voiceApi.ts`: `isTauri() ? invoke(..) : mockEnabled ? mockCall(..) : Promise.reject(new Error('browser'))`. В production-сборке (`import.meta.env.DEV === false`) моки не используются.
 
-- [ ] **Step 1:** Типы, `defaultSettings`, `mock.ts`, ветка `mockEnabled` в трёх `call`.
-- [ ] **Step 2:** Вкладки только перепривязать: «Награды» → первый `reward`-триггер музыки; «Лимиты» → `rules.music.cfg.limits`; «Озвучка» → `rules.tts.cfg`, первый `reward`- и первый `chat_marker`-триггер (их `enabled`). Под каждой формой наград — строка ошибки `rule_errors[trigger.id]` (подписка `onRuleErrors`), иначе ошибки создания награды не видны до фазы 2. Других изменений UI нет.
-- [ ] **Step 3:** `npm run check` → 0 ошибок; `node --test tests/` → PASS; `npm run build` проходит.
-- [ ] **Step 4:** `docs/architecture.md`: таблица модулей (`rules.rs`, `rewards.rs` вместо `router.rs`); «Как добавить новую награду» → «Как добавить вид триггера или действие» (вариант `TriggerKind`/`ActionKind`, строка в `allowed`, ветка в `route_*`, исполнение в драйвере); жизненный цикл наград (`retiring`, `ensuring`, порядок retire), миграция и `settings_legacy`; известное ограничение: текущий элемент удаляемой награды (трек или фраза озвучки) остаётся `UNFULFILLED` до конца и становится FULFILLED при `DELETE`; если он затем не запустится/не синтезируется, возврата не будет.
-- [ ] **Step 5:** Commit `feat(panel): settings.rules shape, dev mocks; docs: rules architecture`.
+- [x] **Step 1:** Типы, `defaultSettings`, `mock.ts`, ветка `mockEnabled` в трёх `call`.
+- [x] **Step 2:** Вкладки только перепривязать: «Награды» → первый `reward`-триггер музыки; «Лимиты» → `rules.music.cfg.limits`; «Озвучка» → `rules.tts.cfg`, первый `reward`- и первый `chat_marker`-триггер (их `enabled`). Под каждой формой наград — строка ошибки `rule_errors[trigger.id]` (подписка `onRuleErrors`), иначе ошибки создания награды не видны до фазы 2. Других изменений UI нет.
+- [x] **Step 3:** `npm run check` → 0 ошибок; `node --test tests/*.mjs` → PASS; `npm run build` проходит.
+- [x] **Step 4:** `docs/architecture.md`: таблица модулей (`rules.rs`, `rewards.rs` вместо `router.rs`); «Как добавить новую награду» → «Как добавить вид триггера или действие» (вариант `TriggerKind`/`ActionKind`, строка в `allowed`, ветка в `route_*`, исполнение в драйвере); жизненный цикл наград (`retiring`, `ensuring`, порядок retire), миграция и `settings_legacy`; известное ограничение: текущий элемент удаляемой награды (трек или фраза озвучки) остаётся `UNFULFILLED` до конца и становится FULFILLED при `DELETE`; если он затем не запустится/не синтезируется, возврата не будет.
+- [x] **Step 5:** Commit `feat(panel): settings.rules shape, dev mocks; docs: rules architecture`.
 
 ---
 
@@ -276,6 +276,7 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 - Ошибки `retire:<reward_id>` — плашкой на карточке действия, указанного в `rules.retiring` для этого id: «Не удалось удалить награду на Twitch, повторим при следующем подключении».
 - «+ триггер»: вид только из `allowedTriggers[action]`; затем поля; новый триггер с `id: ''`; при 10 триггерах кнопка неактивна.
 - Удаление наградного триггера с `reward_id` — подтверждение **в интерфейсе** (не `confirm()`): «Награда будет удалена на Twitch, не начатые заказы вернут баллы».
+- Подписку на `rule_errors` вынести в один помощник `watchRuleErrors(cb): () => void` в `api.ts` (сейчас продублирована в `Rewards.svelte` и `Tts.svelte`, которые уходят). Текст ошибки из ядра показывать как есть (он уже по-русски), без префикса «Не удалось выполнить действие».
 - Подсказки дублей названия/метки и пределов на клиенте (HTML-атрибуты + проверка перед `save`); `settings_invalid` от ядра → общий текст ошибки.
 
 - [ ] **Step 1:** Реализовать компоненты.
@@ -296,7 +297,7 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 **Files:** Modify `src/lib/views/voice/*.svelte`, `src/lib/i18n/ru.ts`
 
 - [ ] **Step 1:** Проходы `unslop` по `VoiceLab`, `Setup`, `Sources`, `Voices`, `Mixer`, `Train`, `Renders`, `Explore`; логика, события, `canvas`/`audio` — без изменений.
-- [ ] **Step 2:** `npm run check` → 0; `node --test tests/` → PASS; скриншоты каждой подвкладки (моки) → ревью.
+- [ ] **Step 2:** `npm run check` → 0; `node --test tests/*.mjs` → PASS; скриншоты каждой подвкладки (моки) → ревью.
 - [ ] **Step 3:** Commit `feat(panel): redesign voice lab`.
 
 ### Task 12: финальный проход и документация
@@ -306,6 +307,6 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 - [ ] **Step 1:** Повторный аудит всей панели по `references/signs.md`; исправить находки.
 - [ ] **Step 2:** Клавиатура: Tab проходит все экраны, фокус видим; у каждого поля подпись; контраст текста ≥ 4.5:1 (пары токенов).
 - [ ] **Step 3:** `docs/user-guide.md` — разделы про награды, лимиты и озвучку переписать под экран «Правила».
-- [ ] **Step 4:** `npm run check`, `node --test tests/`, `npm run build`, `cd src-tauri && cargo test` → всё зелёное.
+- [ ] **Step 4:** `npm run check`, `node --test tests/*.mjs`, `npm run build`, `cd src-tauri && cargo test` → всё зелёное.
 - [ ] **Step 5:** Пользователь смотрит панель в `TWITCH_CLIENT_ID=… npm run tauri dev` (реальные данные).
 - [ ] **Step 6:** Commit `feat(panel): final polish; docs: user guide for rules`.
