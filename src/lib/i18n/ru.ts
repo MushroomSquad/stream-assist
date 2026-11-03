@@ -1,4 +1,5 @@
 export const ru = {
+  rules: 'Правила', voiceLab: 'Voice Lab', navigation: 'Разделы панели', serviceStatus: 'Состояние сервисов',
   tts: 'Озвучка', ttsRewardDefault: 'Озвучить текст', ttsVoice: 'Голос', ttsSelectVoice: 'Выберите голос',
   ttsReward: 'Награда', ttsRewardEnabled: 'Включить награду', ttsChat: 'Чат', ttsChatEnabled: 'Включить озвучку чата',
   ttsMarker: 'Метка', ttsMarkerHint: 'Озвучивается текст до метки. „100%“ не считается',

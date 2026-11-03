@@ -1,0 +1,75 @@
+/* Panel direction uses unslop by Damir Sokolovsky (@heydamir), CC BY 4.0. */
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-sans-cyrillic-400-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-sans-cyrillic-500-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/ibm-plex-sans-cyrillic-600-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-cyrillic-400-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-mono-cyrillic-500-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2"); unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("/fonts/ibm-plex-mono-cyrillic-600-normal.woff2") format("woff2"); unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116; }
+
+:root {
+  color-scheme: dark;
+  --bg-deep: #0f0f10; --bg: #141415; --card: #19191b; --raised: #232325;
+  --line: rgba(237,237,237,.08); --line-strong: rgba(237,237,237,.16);
+  --t1: #ededed; --t2: #a1a1a6; --t3: #85858b;
+  --accent: #f2a33a; --accent-ink: #1a1206; --tally-off: #3a3a3d;
+  --ok: #4cc38a; --err: #e5484d; --warn-bg: rgba(242,163,58,.08);
+  --primary-bg: #ededed; --primary-ink: #141415;
+  --primary-highlight: inset 0 1px 0 rgba(255,255,255,.4);
+  --active-highlight: inset 0 1px 0 rgba(255,255,255,.06);
+  --tally-ring: 0 0 0 3px rgba(242,163,58,.14);
+  --ease: cubic-bezier(.22,1,.36,1); --fast: 140ms; --mid: 200ms; --slow: 360ms;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px;
+  --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
+  --r-control: 8px; --r-row: 10px; --r-card: 16px; --r-switch: 9px; --r-round: 50%;
+  --sidebar: 240px; --sidebar-compact: 56px; --content-max: 1280px;
+  --nav-height: 34px; --nav-gap: 2px; --status-height: 28px; --control-height: 36px;
+  --font-ui: "IBM Plex Sans", sans-serif; --font-mono: "IBM Plex Mono", monospace;
+  --type-meta: 12px; --type-secondary: 13px; --type-body: 14px; --type-card: 16px; --type-page: 20px;
+  --leading-meta: 16px; --leading-body: 20px; --leading-card: 22px; --leading-page: 28px;
+  /* Compatibility for screens redesigned in subsequent tasks. */
+  --surface: var(--card); --border: var(--line); --muted: var(--t2); --notice: var(--warn-bg);
+  font-family: var(--font-ui); font-size: var(--type-body); line-height: var(--leading-body);
+  font-weight: 400; font-synthesis: none; color: var(--t1); background: var(--bg);
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+h1, h2, h3, p { margin: 0; }
+h1, h2 { font-size: var(--type-page); line-height: var(--leading-page); font-weight: 500; }
+h2 { margin-block: var(--s6) var(--s4); }
+h3 { font-size: var(--type-card); line-height: var(--leading-card); font-weight: 500; margin-block: var(--s4); }
+p + p { margin-top: var(--s2); }
+strong, b { font-weight: 500; }
+a { color: var(--t1); text-underline-offset: var(--s1); }
+button, input, select, textarea { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--raised); padding: var(--s2) var(--s3); min-width: 0; }
+button { cursor: pointer; min-height: var(--control-height); transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+button:hover { background: var(--card); border-color: var(--line-strong); }
+button:active:not(:disabled) { transform: scale(.98); }
+button:disabled { opacity: .45; cursor: default; }
+:where(button, input, select, textarea, a, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.primary { background: var(--primary-bg); color: var(--primary-ink); box-shadow: var(--primary-highlight); }
+.primary:hover { background: var(--primary-bg); border-color: var(--t2); }
+label { display: flex; flex-direction: column; gap: var(--s2); margin-block: var(--s4); max-width: 560px; }
+.check { flex-direction: row; align-items: center; }
+input[type=checkbox], input[type=radio], input[type=range], progress { accent-color: var(--accent); }
+input[type=checkbox] { width: var(--s5); height: var(--s5); }
+textarea { resize: vertical; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card); padding: var(--s5); margin-block: var(--s4); }
+.actions { display: flex; gap: var(--s2); flex-wrap: wrap; margin-block: var(--s4); }
+.muted { color: var(--t2); font-size: var(--type-secondary); line-height: var(--leading-body); }
+.mono, code, time, input[type=number], input[readonly] { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.notice { padding: var(--s3) var(--s4); background: var(--warn-bg); border: 1px solid var(--line); border-radius: var(--r-row); margin-block: var(--s4); overflow-wrap: anywhere; }
+.error, [role=alert] { color: var(--err); }
+progress { width: 100%; height: var(--s2); }
+ol { padding: 0; list-style: none; }
+li { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding: var(--s3); background: var(--card); border-bottom: 1px solid var(--line); }
+iframe { width: 100%; height: 280px; border: 1px solid var(--line); border-radius: var(--r-control); margin-top: var(--s5); }
+.tally { display: inline-block; flex: 0 0 var(--s2); width: var(--s2); height: var(--s2); border-radius: var(--r-round); background: var(--tally-off); }
+.tally.connected { background: var(--ok); }
+.tally.live { background: var(--accent); box-shadow: var(--tally-ring); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; } }
