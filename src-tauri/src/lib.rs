@@ -77,6 +77,7 @@ pub fn run() {
             voice_lab::commands::vl_save_snapshot,
             voice_lab::commands::vl_render,
             voice_lab::commands::vl_mix_preview,
+            voice_lab::commands::vl_explore,
             voice_lab::commands::vl_clone
         ])
         .setup(|app| {

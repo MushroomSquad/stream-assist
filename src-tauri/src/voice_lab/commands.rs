@@ -2,7 +2,7 @@ use super::{
     VlError, VlState, VoiceLab, audio, err,
     mixer::{self, DpStrategy, Recipe, RecipeInput, new_recipe},
     models,
-    runner::{Emit, JobState},
+    runner::{Emit, JobState, TempFiles, cut_reference},
     store::{Profile, Render, RenderParams, Source},
     store::{TrainParams, TrainRun},
     style::{canonical_bytes, load_verified, read_style_file},
@@ -40,7 +40,7 @@ fn require_model(root: &Path) -> Result<(), VlError> {
     }
 }
 
-fn validate_params(p: &RenderParams) -> Result<(), VlError> {
+pub(crate) fn validate_params(p: &RenderParams) -> Result<(), VlError> {
     if !(1..=1000).contains(&p.text.trim().chars().count()) {
         return Err(err("TEXT_INVALID"));
     }
@@ -175,6 +175,148 @@ pub(crate) async fn mix_preview(
             emit,
         )
         .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Explore {
+    Interp {
+        a: i64,
+        b: i64,
+        points: usize,
+    },
+    Random {
+        ids: Vec<i64>,
+        k: usize,
+        seed: u32,
+        dp: DpStrategy,
+    },
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefRegion {
+    pub source_id: i64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExploreItem {
+    pub render: Render,
+    pub similarity: Option<f32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExploreResult {
+    pub items: Vec<ExploreItem>,
+    pub cancelled: bool,
+}
+
+pub(crate) async fn explore(
+    lab: &VoiceLab,
+    explore: Explore,
+    params: RenderParams,
+    reference: Option<RefRegion>,
+    emit: Emit,
+) -> Result<ExploreResult, VlError> {
+    require_model(&lab.root)?;
+    if !(1..=300).contains(&params.text.trim().chars().count()) {
+        return Err(err("BATCH_INVALID"));
+    }
+    let (ids, weights, dp) = match explore {
+        Explore::Interp { a, b, points } => {
+            if !(3..=9).contains(&points) {
+                return Err(err("BATCH_INVALID"));
+            }
+            (
+                vec![a, b],
+                mixer::interp_weights(points)
+                    .into_iter()
+                    .map(Vec::from)
+                    .collect::<Vec<_>>(),
+                DpStrategy::Weighted,
+            )
+        }
+        Explore::Random { ids, k, seed, dp } => {
+            if !(2..=8).contains(&ids.len()) || !(2..=8).contains(&k) || dp == DpStrategy::Select {
+                return Err(err("BATCH_INVALID"));
+            }
+            let weights = mixer::dirichlet_weights(ids.len(), k, seed);
+            (ids, weights, dp)
+        }
+    };
+    validate_params(&params)?;
+    let mut files = TempFiles(Vec::new());
+    let mut items = Vec::with_capacity(weights.len());
+    for weights in weights {
+        let (style, recipe) = build_mix(lab, ids.iter().copied().zip(weights).collect(), dp, None)?;
+        let path = lab
+            .root
+            .join(format!("tmp/explore-{:x}.json", rand::random::<u64>()));
+        files.0.push(path.clone());
+        std::fs::write(&path, canonical_bytes(&style))?;
+        items.push((path, recipe));
+    }
+    let (reference, encoder) = if let Some(region) = reference {
+        if !models::status(&lab.root).encoder_installed {
+            return Err(err("ENCODER_MISSING"));
+        }
+        let path = cut_reference(
+            &lab.store,
+            &lab.root,
+            region.source_id,
+            region.start_ms,
+            region.end_ms,
+            1000,
+            60000,
+        )?;
+        files.0.push(path.clone());
+        (Some(path), Some(models::encoder_path(&lab.root)))
+    } else {
+        (None, None)
+    };
+    let result = lab
+        .runner
+        .batch(
+            &lab.store, &lab.root, items, params, reference, encoder, emit,
+        )
+        .await?;
+    Ok(ExploreResult {
+        items: result
+            .items
+            .into_iter()
+            .map(|(render, similarity)| ExploreItem { render, similarity })
+            .collect(),
+        cancelled: result.cancelled,
+    })
+}
+
+#[tauri::command]
+pub async fn vl_explore(
+    state: State<'_, VlState>,
+    app: tauri::AppHandle,
+    explore: Explore,
+    params: RenderParams,
+    reference: Option<RefRegion>,
+) -> Result<ExploreResult, String> {
+    let handle = tokio::runtime::Handle::current();
+    blocking(lab(&state)?, move |l| {
+        handle.block_on(self::explore(
+            l,
+            explore,
+            params,
+            reference,
+            job_emitter(app),
+        ))
+    })
+    .await
 }
 
 fn export_bytes(path: &Path, ext: &str, bytes: &[u8]) -> Result<(), VlError> {
@@ -659,6 +801,264 @@ mod tests {
         };
         (d, lab, p)
     }
+    fn explore_setup() -> (tempfile::TempDir, VoiceLab, i64, i64) {
+        let (d, lab, a) = setup();
+        for file in models::MODEL_FILES {
+            let dest = models::model_dir(&lab.root).join(file.path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::File::create(dest)
+                .unwrap()
+                .set_len(file.size)
+                .unwrap();
+        }
+        let b = lab
+            .store
+            .lock()
+            .unwrap()
+            .put_profile(
+                &Style {
+                    ttl: Array3::from_elem((1, 50, 256), 0.3),
+                    dp: Array3::from_elem((1, 8, 16), 0.4),
+                },
+                "B",
+                "import",
+                None,
+                None,
+            )
+            .unwrap();
+        (d, lab, a.id, b.id)
+    }
+
+    #[tokio::test]
+    async fn interp_returns_points_in_order() {
+        let (_d, lab, a, b) = explore_setup();
+        let result = explore(
+            &lab,
+            Explore::Interp { a, b, points: 5 },
+            params(),
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(result.items.len(), 5);
+        for (i, item) in result.items.iter().enumerate() {
+            let recipe = item.render.recipe.as_ref().unwrap();
+            assert_eq!(
+                recipe.inputs.iter().map(|p| p.weight).collect::<Vec<_>>(),
+                vec![100.0 - i as f64 * 25.0, i as f64 * 25.0]
+            );
+            assert_eq!(item.similarity, Some(i as f32 * 0.1));
+            assert!(
+                lab.store
+                    .lock()
+                    .unwrap()
+                    .render_path(item.render.id)
+                    .is_file()
+            );
+        }
+        assert_eq!(lab.store.lock().unwrap().profiles().unwrap().len(), 2);
+        assert_eq!(std::fs::read_dir(lab.root.join("tmp")).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn interp_uses_weighted_dp() {
+        let (_d, lab, a, b) = explore_setup();
+        let result = explore(
+            &lab,
+            Explore::Interp { a, b, points: 5 },
+            params(),
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        for item in result.items {
+            assert_eq!(
+                item.render.recipe.unwrap().dp_strategy,
+                DpStrategy::Weighted
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn random_same_seed_same_weights() {
+        let (_d, lab, a, b) = explore_setup();
+        let mut weights = Vec::new();
+        for _ in 0..2 {
+            let result = explore(
+                &lab,
+                Explore::Random {
+                    ids: vec![a, b],
+                    k: 4,
+                    seed: 7,
+                    dp: DpStrategy::Dominant,
+                },
+                params(),
+                None,
+                Arc::new(|_| {}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.items.len(), 4);
+            weights.push(
+                result
+                    .items
+                    .into_iter()
+                    .map(|item| {
+                        item.render
+                            .recipe
+                            .unwrap()
+                            .inputs
+                            .into_iter()
+                            .map(|p| p.weight)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(weights[0], weights[1]);
+    }
+
+    #[tokio::test]
+    async fn random_select_rejected() {
+        let (_d, lab, a, b) = explore_setup();
+        let error = explore(
+            &lab,
+            Explore::Random {
+                ids: vec![a, b],
+                k: 4,
+                seed: 7,
+                dp: DpStrategy::Select,
+            },
+            params(),
+            None,
+            Arc::new(|_| {}),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.code(), "BATCH_INVALID");
+        assert!(lab.runner.jobs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn explore_text_over_300_rejected() {
+        let (_d, lab, a, b) = explore_setup();
+        for text in ["я".repeat(301), "я".repeat(1001), " ".into()] {
+            let mut p = params();
+            p.text = text;
+            let error = explore(
+                &lab,
+                Explore::Interp { a, b, points: 3 },
+                p,
+                None,
+                Arc::new(|_| {}),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert_eq!(error.code(), "BATCH_INVALID");
+        }
+        let mut p = params();
+        p.text = format!(" {} ", "я".repeat(300));
+        assert_eq!(
+            explore(
+                &lab,
+                Explore::Interp { a, b, points: 3 },
+                p,
+                None,
+                Arc::new(|_| {})
+            )
+            .await
+            .unwrap()
+            .items
+            .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_reference_without_encoder() {
+        let (_d, lab, a, b) = explore_setup();
+        let error = explore(
+            &lab,
+            Explore::Interp { a, b, points: 3 },
+            params(),
+            Some(RefRegion {
+                source_id: 1,
+                start_ms: 0,
+                end_ms: 1000,
+            }),
+            Arc::new(|_| {}),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.code(), "ENCODER_MISSING");
+        assert!(lab.runner.jobs().is_empty());
+        assert_eq!(std::fs::read_dir(lab.root.join("tmp")).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn explore_cancel_returns_partial() {
+        let (_d, mut lab, a, b) = explore_setup();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples")
+            .join(format!("vl_fake_worker{}", std::env::consts::EXE_SUFFIX));
+        lab.runner = Arc::new(Runner::new(
+            exe,
+            vec![("VL_FAKE_MODE".into(), "batch_slow".into())],
+        ));
+        let runner = lab.runner.clone();
+        let emit: Emit = Arc::new(move |job| {
+            if matches!(
+                job.progress,
+                Some(super::super::worker::WorkerEvent::Item { index: 1, .. })
+            ) && job.status == "running"
+            {
+                runner.cancel(job.id).unwrap();
+            }
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            explore(
+                &lab,
+                Explore::Interp { a, b, points: 5 },
+                params(),
+                None,
+                emit,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(result.cancelled);
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(lab.store.lock().unwrap().renders(200).unwrap().len(), 2);
+        assert_eq!(std::fs::read_dir(lab.root.join("tmp")).unwrap().count(), 0);
+        assert_eq!(
+            explore(
+                &lab,
+                Explore::Interp { a, b, points: 3 },
+                params(),
+                None,
+                Arc::new(|_| {})
+            )
+            .await
+            .unwrap()
+            .items
+            .len(),
+            3
+        );
+    }
+
     #[test]
     fn start_requires_pack() {
         let (d, lab, _) = setup();

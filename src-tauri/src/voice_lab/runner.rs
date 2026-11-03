@@ -98,7 +98,7 @@ impl<R: std::ops::Deref<Target = Runner>> Drop for JobGuard<R> {
         }
     }
 }
-struct TempFiles(Vec<PathBuf>);
+pub(super) struct TempFiles(pub(super) Vec<PathBuf>);
 impl Drop for TempFiles {
     fn drop(&mut self) {
         for p in &self.0 {
