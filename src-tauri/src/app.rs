@@ -195,7 +195,8 @@ async fn start(
                 let _ = tauri::Emitter::emit(&view_handle, "tts", view);
             }),
         },
-        settings.tts.clone(),
+        // TODO(Task 5): use the persisted rules directly.
+        crate::rules::from_legacy(&serde_json::to_value(&settings)?).tts_runtime(),
         tts_rx,
     ));
     if let Some(mut events) = ws.tts_rx.take() {

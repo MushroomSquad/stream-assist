@@ -123,7 +123,7 @@ async fn find_reward_404_is_none() {
         .mount(&s)
         .await;
     assert!(
-        h.find_manageable_reward(Some("r"), "title")
+        h.find_manageable_reward(Some("r"), "title", &[])
             .await
             .unwrap()
             .is_none()
@@ -287,11 +287,13 @@ async fn find_reward_prefers_id_then_title() {
         .mount(&s)
         .await;
     assert_eq!(
-        h.find_manageable_reward(Some("two"), "song").await.unwrap(),
+        h.find_manageable_reward(Some("two"), "song", &[])
+            .await
+            .unwrap(),
         Some("two".into())
     );
     assert_eq!(
-        h.find_manageable_reward(Some("missing"), "song")
+        h.find_manageable_reward(Some("missing"), "song", &[])
             .await
             .unwrap(),
         Some("one".into())
@@ -531,4 +533,167 @@ async fn chat_subscription_session(status: u16) {
         .unwrap()
         .unwrap();
     server.abort();
+}
+
+const REWARDS_PATH: &str = "/helix/channel_points/custom_rewards";
+const REDEMPTIONS_PATH: &str = "/helix/channel_points/custom_rewards/redemptions";
+
+#[tokio::test]
+async fn delete_reward_ok_and_404() {
+    for status in [204, 404] {
+        let (s, h) = setup().await;
+        Mock::given(method("DELETE"))
+            .and(path(REWARDS_PATH))
+            .and(query_param("broadcaster_id", "b"))
+            .and(query_param("id", "r"))
+            .respond_with(ResponseTemplate::new(status))
+            .expect(1)
+            .mount(&s)
+            .await;
+        h.delete_reward("r").await.unwrap();
+    }
+}
+#[tokio::test]
+async fn find_reward_excludes() {
+    let (s, h) = setup().await;
+    Mock::given(path(REWARDS_PATH))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"r","title":"title"}]})),
+        )
+        .mount(&s)
+        .await;
+    for id in [Some("r"), None] {
+        assert_eq!(
+            h.find_manageable_reward(id, "title", &["r".into()])
+                .await
+                .unwrap(),
+            None
+        );
+    }
+}
+async fn ensure_case(found: bool, create: bool, action: crate::rules::ActionKind) {
+    use crate::{rewards::ensure_reward, rules::reward_prompt};
+    let (s, h) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(REWARDS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(if found {
+            json!({"data":[{"id":"known","title":"old"}]})
+        } else {
+            json!({"data":[]})
+        }))
+        .mount(&s)
+        .await;
+    Mock::given(method("POST")).and(path(REWARDS_PATH))
+        .and(body_json(json!({"title":"title","cost":42,"prompt":reward_prompt(action),"is_user_input_required":true})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"new"}]})))
+        .expect(if !found && create { 1 } else { 0 }).mount(&s).await;
+    let result = ensure_reward(&h, action, Some("known"), "title", 42, create, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        result.as_deref(),
+        if found {
+            Some("known")
+        } else if create {
+            Some("new")
+        } else {
+            None
+        }
+    );
+    let posts = s
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method == "POST")
+        .count();
+    assert_eq!(posts, usize::from(!found && create));
+}
+#[tokio::test]
+async fn ensure_known_found_no_post() {
+    ensure_case(true, true, crate::rules::ActionKind::Music).await;
+}
+#[tokio::test]
+async fn ensure_missing_no_create() {
+    ensure_case(false, false, crate::rules::ActionKind::Tts).await;
+}
+#[tokio::test]
+async fn ensure_creates_when_missing() {
+    for action in [
+        crate::rules::ActionKind::Music,
+        crate::rules::ActionKind::Tts,
+    ] {
+        ensure_case(false, true, action).await;
+    }
+}
+async fn retire_case(disable_status: u16, delete_status: u16) {
+    use crate::rewards::retire_reward;
+    let (s, h) = setup().await;
+    Mock::given(method("PATCH"))
+        .and(path(REWARDS_PATH))
+        .and(body_json(json!({"is_enabled":false})))
+        .respond_with(ResponseTemplate::new(disable_status))
+        .expect(1)
+        .mount(&s)
+        .await;
+    let rows: Vec<_> = ["one", "keep", "two"]
+        .into_iter()
+        .map(|id| json!({"id":id,"reward":{"id":"r"},"user_login":"u","user_input":"text"}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path(REDEMPTIONS_PATH))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":rows,"pagination":{}})),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(REDEMPTIONS_PATH))
+        .and(body_json(json!({"status":"CANCELED"})))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(REWARDS_PATH))
+        .respond_with(ResponseTemplate::new(delete_status))
+        .mount(&s)
+        .await;
+    let result = retire_reward(&h, "r", &["keep".into()].into()).await;
+    assert_eq!(
+        result.is_err(),
+        disable_status != 404 && delete_status == 500
+    );
+    let requests: Vec<_> = s
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() != "/helix/users")
+        .collect();
+    if disable_status == 404 {
+        assert_eq!(requests.len(), 1);
+        return;
+    }
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| r.method.as_str())
+            .collect::<Vec<_>>(),
+        ["PATCH", "GET", "PATCH", "PATCH", "DELETE"]
+    );
+    for (request, id) in requests[2..4].iter().zip(["one", "two"]) {
+        assert!(request.url.query_pairs().any(|(k, v)| k == "id" && v == id));
+    }
+}
+#[tokio::test]
+async fn retire_order() {
+    retire_case(200, 204).await;
+}
+#[tokio::test]
+async fn retire_delete_failure_errs() {
+    retire_case(200, 500).await;
+}
+#[tokio::test]
+async fn retire_missing_reward_ok() {
+    retire_case(404, 204).await;
 }

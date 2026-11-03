@@ -1,6 +1,6 @@
 use super::filter::{self, Gate};
 use super::queue::{Item, Origin, Outcome, Queue, fulfilled};
-use super::{TtsSettings, TtsView};
+use super::{TtsRuntime, TtsView};
 use crate::model::{ChatMessage, Redemption, RedemptionRef};
 use crate::server::{TtsWidgetEvent, WsOut};
 use crate::twitch::eventsub::ChatStatus;
@@ -16,9 +16,20 @@ use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::time::Instant;
 
 pub enum TtsMsg {
-    Chat(ChatMessage),
-    Reward(Redemption),
-    Settings(TtsSettings),
+    Chat {
+        msg: ChatMessage,
+        text: String,
+    },
+    ChatSeen,
+    Reward {
+        r: Redemption,
+        active: bool,
+    },
+    DropReward {
+        reward_id: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
+    Settings(TtsRuntime),
     ChatStatus(ChatStatus),
     Warning(String),
     Widget(TtsWidgetEvent),
@@ -43,7 +54,7 @@ pub struct EngineDeps {
 
 pub async fn run(
     deps: EngineDeps,
-    mut settings: TtsSettings,
+    mut settings: TtsRuntime,
     mut rx: mpsc::UnboundedReceiver<TtsMsg>,
 ) {
     let mut queue = Queue::default();
@@ -52,7 +63,8 @@ pub async fn run(
     let mut order = VecDeque::new();
     let mut next_id = 0;
     let mut widget = false;
-    let mut warning = None;
+    let mut warning =
+        (settings.cfg.profile_id.is_none() && settings.in_use).then(|| "tts_no_voice".into());
     let mut chat_warning = None;
     let mut voice_broken = false;
     let mut flight: Option<(u64, Arc<AtomicBool>, Arc<Notify>)> = None;
@@ -63,8 +75,8 @@ pub async fn run(
         // Drain unavailable items individually; never overlap synthesis workers.
         if flight.is_none() && queue.view().0.is_none() && widget {
             while let Some(item) = queue.take_next() {
-                if settings.profile_id.is_none() || voice_broken {
-                    if settings.profile_id.is_none() {
+                if settings.cfg.profile_id.is_none() || voice_broken {
+                    if settings.cfg.profile_id.is_none() {
                         warning = Some("tts_no_voice".into());
                     }
                     finish(&deps, &mut queue, Outcome::SynthFailed);
@@ -76,9 +88,9 @@ pub async fn run(
                 let synth = deps.synth.clone();
                 let tx = done_tx.clone();
                 let path = deps.dir.join(format!("{}.wav", item.id));
-                let profile = settings.profile_id.unwrap();
-                let lang = settings.lang.clone();
-                let speed = settings.speed;
+                let profile = settings.cfg.profile_id.unwrap();
+                let lang = settings.cfg.lang.clone();
+                let speed = settings.cfg.speed;
                 tokio::spawn(async move {
                     let started = Instant::now();
                     let result = loop {
@@ -119,7 +131,7 @@ pub async fn run(
             queue: pending,
             widget,
             warning: warning.clone().or_else(|| {
-                if settings.chat_enabled {
+                if settings.chat_active {
                     chat_warning.clone()
                 } else {
                     None
@@ -142,7 +154,7 @@ pub async fn run(
                     TtsMsg::State(tx) => { let _ = tx.send(view); }
                     TtsMsg::Settings(new) => {
                         settings = new; voice_broken = false;
-                        warning = (settings.profile_id.is_none() && (settings.reward_enabled || settings.chat_enabled)).then(|| "tts_no_voice".into());
+                        warning = (settings.cfg.profile_id.is_none() && settings.in_use).then(|| "tts_no_voice".into());
                     }
                     TtsMsg::Warning(text) => warning = Some(text),
                     TtsMsg::ChatStatus(status) => chat_warning = match status {
@@ -150,28 +162,30 @@ pub async fn run(
                         ChatStatus::Forbidden => Some("tts_chat_relogin".into()),
                         ChatStatus::Failed => Some("tts_chat_failed".into()),
                     },
-                    TtsMsg::Chat(m) => {
+                    TtsMsg::ChatSeen => {
                         if chat_warning.as_deref() == Some("tts_chat_failed") { chat_warning = None; }
-                        if !settings.chat_enabled || m.source_broadcaster_id.as_ref().is_some_and(|s| s != &m.broadcaster_id) { continue; }
+                    }
+                    TtsMsg::Chat { msg: m, text } => {
+                        if chat_warning.as_deref() == Some("tts_chat_failed") { chat_warning = None; }
+                        if !settings.chat_active { continue; }
                         let broadcaster = m.badges.iter().any(|b| b == "broadcaster");
-                        let Some(text) = filter::extract_marked(&filter::strip_emotes(&m.fragments), &settings.marker) else { continue; };
-                        if !broadcaster && (!filter::role_allowed(&settings.roles, &m.badges) || !gate.allowed(&m.user_login, settings.global_cooldown_s, settings.user_cooldown_s, Instant::now())) { continue; }
-                        let Ok(text) = filter::clean(&text, settings.strip_links, &settings.stop_words) else { continue; };
-                        if settings.profile_id.is_none() { warning = Some("tts_no_voice".into()); continue; }
+                        if !broadcaster && (!filter::role_allowed(&settings.cfg.roles, &m.badges) || !gate.allowed(&m.user_login, settings.cfg.global_cooldown_s, settings.cfg.user_cooldown_s, Instant::now())) { continue; }
+                        let Ok(text) = filter::clean(&text, settings.cfg.strip_links, &settings.cfg.stop_words) else { continue; };
+                        if settings.cfg.profile_id.is_none() { warning = Some("tts_no_voice".into()); continue; }
                         if voice_broken { continue; }
                         next_id += 1;
                         let user = m.user_login;
                         if queue.push(Item { id: next_id, origin: Origin::Chat, user: user.clone(), text }).is_ok() && !broadcaster {
-                            gate.mark(&user, Instant::now(), settings.user_cooldown_s);
+                            gate.mark(&user, Instant::now(), settings.cfg.user_cooldown_s);
                         }
                     }
-                    TtsMsg::Reward(r) => {
+                    TtsMsg::Reward { r, active } => {
                         if !remember(&mut seen, &mut order, &r.r.redemption_id) { continue; }
-                        let text = filter::clean(&r.user_input, settings.strip_links, &settings.stop_words);
-                        let rejection = if !settings.reward_enabled { Some(Outcome::Disabled) }
+                        let text = filter::clean(&r.user_input, settings.cfg.strip_links, &settings.cfg.stop_words);
+                        let rejection = if !active { Some(Outcome::Disabled) }
                             else if text.is_err() { Some(Outcome::Rejected) }
-                            else if settings.profile_id.is_none() || voice_broken {
-                                if settings.profile_id.is_none() { warning = Some("tts_no_voice".into()); }
+                            else if settings.cfg.profile_id.is_none() || voice_broken {
+                                if settings.cfg.profile_id.is_none() { warning = Some("tts_no_voice".into()); }
                                 Some(Outcome::SynthFailed)
                             } else { None };
                         if let Some(outcome) = rejection { report(&deps, Item { id: 0, origin: Origin::Reward(r.r), user: r.user_login, text: r.user_input }, outcome); }
@@ -182,7 +196,7 @@ pub async fn run(
                     }
                     TtsMsg::Test(text) => {
                         if let Ok(text) = filter::clean(&text, false, &[]) {
-                            if settings.profile_id.is_none() { warning = Some("tts_no_voice".into()); continue; }
+                            if settings.cfg.profile_id.is_none() { warning = Some("tts_no_voice".into()); continue; }
                             if voice_broken { continue; }
                             next_id += 1;
                             let _ = queue.push(Item { id: next_id, origin: Origin::Test, user: String::new(), text });
@@ -191,6 +205,16 @@ pub async fn run(
                     TtsMsg::Reconcile(refs) => for r in refs {
                         if remember(&mut seen, &mut order, &r.redemption_id) { let _ = deps.outcome.send((r, fulfilled(&Outcome::Reconciled))); }
                     },
+                    TtsMsg::DropReward { reward_id, reply } => {
+                        for item in queue.remove_pending(|item| matches!(&item.origin, Origin::Reward(r) if r.reward_id == reward_id)) {
+                            report(&deps, item, Outcome::Cleared);
+                        }
+                        let current = queue.current().and_then(|item| match &item.origin {
+                            Origin::Reward(r) if r.reward_id == reward_id => Some(r.redemption_id.clone()),
+                            _ => None,
+                        });
+                        let _ = reply.send(current);
+                    }
                     TtsMsg::Clear => for item in queue.clear() { report(&deps, item, Outcome::Cleared); },
                     TtsMsg::Skip => {
                         if queue.current().is_some() {
@@ -289,10 +313,10 @@ mod tests {
         dir: tempfile::TempDir,
     }
     impl Harness {
-        fn new(settings: TtsSettings) -> Self {
+        fn new(settings: TtsRuntime) -> Self {
             Self::custom(settings, None)
         }
-        fn custom(settings: TtsSettings, synth: Option<SynthFn>) -> Self {
+        fn custom(settings: TtsRuntime, synth: Option<SynthFn>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let calls = Arc::new(AtomicUsize::new(0));
             let count = calls.clone();
@@ -349,20 +373,29 @@ mod tests {
             assert_eq!(actual, ok);
         }
     }
-    fn settings() -> TtsSettings {
-        TtsSettings {
-            profile_id: Some(1),
-            chat_enabled: true,
-            reward_enabled: true,
-            ..Default::default()
+    fn settings() -> TtsRuntime {
+        TtsRuntime {
+            cfg: super::super::TtsCfg {
+                profile_id: Some(1),
+                ..Default::default()
+            },
+            in_use: true,
+            chat_active: true,
         }
     }
     fn reward(id: &str, text: &str) -> TtsMsg {
-        TtsMsg::Reward(Redemption {
-            r: reference(id),
-            user_login: "alice".into(),
-            user_input: text.into(),
-        })
+        TtsMsg::Reward {
+            r: Redemption {
+                r: reference(id),
+                user_login: "alice".into(),
+                user_input: text.into(),
+            },
+            active: true,
+        }
+    }
+    fn routed_chat(msg: ChatMessage) -> TtsMsg {
+        let text = filter::extract_marked(&filter::strip_emotes(&msg.fragments), "%").unwrap();
+        TtsMsg::Chat { msg, text }
     }
     fn reference(id: &str) -> RedemptionRef {
         RedemptionRef {
@@ -387,7 +420,7 @@ mod tests {
     async fn chat_marked_message_plays() {
         let mut h = Harness::new(settings());
         h.connect().await;
-        h.send(TtsMsg::Chat(chat("привет % хвост", &[])));
+        h.send(routed_chat(chat("привет % хвост", &[])));
         let v = h.state().await;
         assert_eq!(v.current.unwrap().text, "привет");
         assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsPlay { .. })));
@@ -395,10 +428,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn chat_cooldown_marks_only_accepted() {
         let mut s = settings();
-        s.stop_words = vec!["плохо".into()];
+        s.cfg.stop_words = vec!["плохо".into()];
         let h = Harness::new(s);
         for text in ["плохо %", "хорошо %", "ещё %"] {
-            h.send(TtsMsg::Chat(chat(text, &[])));
+            h.send(routed_chat(chat(text, &[])));
         }
         let v = h.state().await;
         assert_eq!(v.queue.len(), 1);
@@ -407,31 +440,23 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn chat_roles_and_broadcaster_bypass() {
         let mut s = settings();
-        s.roles.everyone = false;
-        s.roles.subscribers = false;
-        s.roles.vips = false;
-        s.roles.moderators = false;
+        s.cfg.roles.everyone = false;
+        s.cfg.roles.subscribers = false;
+        s.cfg.roles.vips = false;
+        s.cfg.roles.moderators = false;
         let h = Harness::new(s);
-        h.send(TtsMsg::Chat(chat("нет %", &[])));
+        h.send(routed_chat(chat("нет %", &[])));
         for _ in 0..2 {
-            h.send(TtsMsg::Chat(chat("да %", &["broadcaster"])));
+            h.send(routed_chat(chat("да %", &["broadcaster"])));
         }
         assert_eq!(h.state().await.queue.len(), 2);
     }
     #[tokio::test(start_paused = true)]
-    async fn shared_chat_ignored() {
-        let h = Harness::new(settings());
-        let mut m = chat("привет %", &[]);
-        m.source_broadcaster_id = Some("other".into());
-        h.send(TtsMsg::Chat(m));
-        assert!(h.state().await.queue.is_empty());
-    }
-    #[tokio::test(start_paused = true)]
-    async fn chat_disabled_ignored() {
+    async fn chat_ignored_when_chat_inactive() {
         let mut s = settings();
-        s.chat_enabled = false;
+        s.chat_active = false;
         let h = Harness::new(s);
-        h.send(TtsMsg::Chat(chat("привет %", &[])));
+        h.send(routed_chat(chat("привет %", &[])));
         assert!(h.state().await.queue.is_empty());
     }
     #[tokio::test(start_paused = true)]
@@ -441,12 +466,14 @@ mod tests {
         h.outcome("1", false).await;
     }
     #[tokio::test(start_paused = true)]
-    async fn reward_disabled_refunds() {
-        let mut s = settings();
-        s.reward_enabled = false;
-        let mut h = Harness::new(s);
-        h.send(reward("1", "текст"));
+    async fn inactive_reward_disabled() {
+        let mut h = Harness::new(settings());
+        let TtsMsg::Reward { r, .. } = reward("1", "текст") else {
+            unreachable!()
+        };
+        h.send(TtsMsg::Reward { r, active: false });
         h.outcome("1", false).await;
+        assert!(h.state().await.queue.is_empty());
     }
     #[tokio::test(start_paused = true)]
     async fn reward_played_fulfills() {
@@ -610,11 +637,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn missing_voice_rejects_at_intake() {
         let mut s = settings();
-        s.profile_id = None;
+        s.cfg.profile_id = None;
         let mut h = Harness::new(s);
         h.send(reward("1", "текст"));
         h.send(TtsMsg::Test("тест".into()));
-        h.send(TtsMsg::Chat(chat("чат %", &[])));
+        h.send(routed_chat(chat("чат %", &[])));
         h.outcome("1", false).await;
         let v = h.state().await;
         assert!(v.queue.is_empty());
@@ -669,8 +696,8 @@ mod tests {
     async fn settings_without_voice_warns_immediately() {
         let h = Harness::new(settings());
         let mut s = settings();
-        s.profile_id = None;
-        s.chat_enabled = true;
+        s.cfg.profile_id = None;
+        s.chat_active = true;
         h.send(TtsMsg::Settings(s));
         assert_eq!(h.state().await.warning.as_deref(), Some("tts_no_voice"));
     }
@@ -689,15 +716,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn chat_relogin_warning_only_when_enabled() {
         let mut s = settings();
-        s.chat_enabled = false;
+        s.chat_active = false;
         let h = Harness::new(s.clone());
         h.send(TtsMsg::ChatStatus(ChatStatus::Forbidden));
         assert!(h.state().await.warning.is_none());
-        s.chat_enabled = true;
+        s.chat_active = true;
         h.send(TtsMsg::Settings(s));
         assert_eq!(h.state().await.warning.as_deref(), Some("tts_chat_relogin"));
         h.send(TtsMsg::ChatStatus(ChatStatus::Failed));
-        h.send(TtsMsg::Chat(chat("без метки", &[])));
+        h.send(TtsMsg::ChatSeen);
         assert!(h.state().await.warning.is_none());
         h.send(TtsMsg::ChatStatus(ChatStatus::Forbidden));
         h.send(TtsMsg::ChatStatus(ChatStatus::Ok));
@@ -710,5 +737,59 @@ mod tests {
         assert!(h.state().await.warning.is_some());
         h.send(TtsMsg::Settings(settings()));
         assert!(h.state().await.warning.is_none());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn drop_reward_cancels_pending_only() {
+        let mut h = Harness::new(settings());
+        h.connect().await;
+        h.send(reward("current", "текущий"));
+        let current = h.state().await.current.unwrap().id;
+        h.send(reward("pending", "ожидающий"));
+        let TtsMsg::Reward { mut r, active } = reward("other", "чужой") else {
+            unreachable!()
+        };
+        r.r.reward_id = "other-reward".into();
+        h.send(TtsMsg::Reward { r, active });
+        h.send(routed_chat(chat("чат %", &[])));
+        let (reply, rx) = oneshot::channel();
+        h.send(TtsMsg::DropReward {
+            reward_id: "reward".into(),
+            reply,
+        });
+        assert_eq!(rx.await.unwrap().as_deref(), Some("current"));
+        h.outcome("pending", false).await;
+        let view = h.state().await;
+        assert_eq!(view.current.unwrap().id, current);
+        assert_eq!(
+            view.queue
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            ["чужой", "чат"]
+        );
+        assert!(h.outcomes.try_recv().is_err());
+        let (reply, rx) = oneshot::channel();
+        h.send(TtsMsg::DropReward {
+            reward_id: "missing".into(),
+            reply,
+        });
+        assert_eq!(rx.await.unwrap(), None);
+        h.send(TtsMsg::Widget(TtsWidgetEvent::Ended(current)));
+        h.outcome("current", true).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_voice_warning_tracks_runtime_use() {
+        for in_use in [false, true] {
+            let mut s = settings();
+            s.cfg.profile_id = None;
+            s.in_use = in_use;
+            s.chat_active = false;
+            let h = Harness::new(s.clone());
+            let expected = in_use.then_some("tts_no_voice");
+            assert_eq!(h.state().await.warning.as_deref(), expected);
+            h.send(TtsMsg::Settings(s));
+            assert_eq!(h.state().await.warning.as_deref(), expected);
+        }
     }
 }

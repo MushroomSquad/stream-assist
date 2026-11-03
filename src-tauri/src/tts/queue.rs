@@ -58,6 +58,18 @@ impl Queue {
     pub fn clear(&mut self) -> Vec<Item> {
         self.pending.drain(..).collect()
     }
+    pub fn remove_pending(&mut self, pred: impl Fn(&Item) -> bool) -> Vec<Item> {
+        let mut removed = Vec::new();
+        self.pending.retain(|item| {
+            if pred(item) {
+                removed.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
     pub fn view(&self) -> (Option<ItemView>, Vec<ItemView>) {
         let view = |item: &Item| ItemView {
             id: item.id,

@@ -126,6 +126,7 @@ impl Helix {
         &self,
         id: Option<&str>,
         title: &str,
+        exclude: &[String],
     ) -> Result<Option<String>> {
         let (b, _) = self.me().await?;
         let r = self
@@ -145,8 +146,20 @@ impl Helix {
             .ok_or_else(|| anyhow!("Missing rewards"))?;
         Ok(rows
             .iter()
+            .filter(|r| {
+                !r["id"]
+                    .as_str()
+                    .is_some_and(|id| exclude.iter().any(|e| e == id))
+            })
             .find(|r| id.is_some_and(|id| r["id"] == id))
-            .or_else(|| rows.iter().find(|r| r["title"] == title))
+            .or_else(|| {
+                rows.iter().find(|r| {
+                    r["title"] == title
+                        && !r["id"]
+                            .as_str()
+                            .is_some_and(|id| exclude.iter().any(|e| e == id))
+                })
+            })
             .and_then(|r| r["id"].as_str())
             .map(str::to_owned))
     }
@@ -206,6 +219,37 @@ impl Helix {
         )
         .await?
         .error_for_status()?;
+        Ok(())
+    }
+    pub async fn disable_reward(&self, id: &str) -> Result<bool> {
+        let (b, _) = self.me().await?;
+        let response = self
+            .request(
+                Method::PATCH,
+                REWARDS,
+                &[("broadcaster_id", &b), ("id", id)],
+                Some(json!({"is_enabled": false})),
+            )
+            .await?;
+        if response.status() == 404 {
+            return Ok(false);
+        }
+        response.error_for_status()?;
+        Ok(true)
+    }
+    pub async fn delete_reward(&self, id: &str) -> Result<()> {
+        let (b, _) = self.me().await?;
+        let response = self
+            .request(
+                Method::DELETE,
+                REWARDS,
+                &[("broadcaster_id", &b), ("id", id)],
+                None,
+            )
+            .await?;
+        if response.status() != 404 {
+            response.error_for_status()?;
+        }
         Ok(())
     }
     pub async fn set_redemption_status(&self, r: &RedemptionRef, fulfilled: bool) -> Result<()> {

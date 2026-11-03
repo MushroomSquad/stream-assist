@@ -9,6 +9,7 @@ pub mod music;
 pub mod obs;
 pub mod player;
 pub mod request;
+pub mod rewards;
 pub mod router;
 pub mod rules;
 pub mod secrets;

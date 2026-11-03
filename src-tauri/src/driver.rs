@@ -395,7 +395,11 @@ fn redeem(
 ) {
     match tts_target(&r, &c.settings) {
         Some(router::FeatureKind::Tts) => {
-            let _ = c.tts.send(TtsMsg::Reward(r));
+            // TODO(Task 5): use the routed trigger activity.
+            let _ = c.tts.send(TtsMsg::Reward {
+                r,
+                active: c.settings.tts.reward_enabled,
+            });
             return;
         }
         Some(router::FeatureKind::Music) => {}
@@ -467,7 +471,7 @@ fn connect_twitch(
     let tx = tx.clone();
     tokio::spawn(async move {
         let res = bounded(async {
-            match h.find_manageable_reward(s.music_reward_id.as_deref(), &s.reward_title).await? {
+            match h.find_manageable_reward(s.music_reward_id.as_deref(), &s.reward_title, &[]).await? {
                 Some(id) => Ok(id),
                 None => h.create_reward(&s.reward_title, s.reward_cost, "Название или ссылка на трек")
                     .await.map_err(|error| anyhow!(match error {
@@ -582,7 +586,18 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 tts_reconcile(&ctx, &tx);
             }
             Internal::Msg(DriverMsg::Es(EsSignal::Chat(m))) => {
-                let _ = ctx.tts.send(TtsMsg::Chat(m));
+                // TODO(Task 5): route using the persisted rules directly.
+                let rules = crate::rules::from_legacy(
+                    &serde_json::to_value(&ctx.settings).expect("settings serialize"),
+                );
+                let msg = match crate::rules::route_chat(&rules, &m) {
+                    Some(route) => TtsMsg::Chat {
+                        msg: m,
+                        text: route.text,
+                    },
+                    None => TtsMsg::ChatSeen,
+                };
+                let _ = ctx.tts.send(msg);
             }
             Internal::Msg(DriverMsg::Es(EsSignal::ChatStatus(s))) => {
                 let _ = ctx.tts.send(TtsMsg::ChatStatus(s));
@@ -735,7 +750,13 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                         .reward_body(ctx.settings.tts.reward_enabled);
                     background(async move { h.update_reward(&id, &body).await });
                 }
-                let _ = ctx.tts.send(TtsMsg::Settings(ctx.settings.tts.clone()));
+                // TODO(Task 5): use the persisted rules directly.
+                let _ = ctx.tts.send(TtsMsg::Settings(
+                    crate::rules::from_legacy(
+                        &serde_json::to_value(&ctx.settings).expect("settings serialize"),
+                    )
+                    .tts_runtime(),
+                ));
                 tts_reconcile(&ctx, &tx);
             }
             Internal::TtsReward(Err(e)) => {
@@ -942,7 +963,11 @@ fn tts_settings_changed(
     tts_tx: &mpsc::UnboundedSender<TtsMsg>,
     tx: &mpsc::UnboundedSender<Internal>,
 ) {
-    let _ = tts_tx.send(TtsMsg::Settings(new.tts.clone()));
+    // TODO(Task 5): use the persisted rules directly.
+    let _ = tts_tx.send(TtsMsg::Settings(
+        crate::rules::from_legacy(&serde_json::to_value(new).expect("settings serialize"))
+            .tts_runtime(),
+    ));
     if let Some(h) = helix {
         if let Some(id) = new.tts.reward_id.clone() {
             if let Some(body) = tts_reward_patch(old, &new.tts) {
@@ -961,7 +986,7 @@ fn spawn_tts_reward(helix: Arc<Helix>, tts: &TtsSettings, tx: &mpsc::UnboundedSe
     let tx = tx.clone();
     tokio::spawn(async move {
         let result = bounded(async {
-            match helix.find_manageable_reward(tts.reward_id.as_deref(), &tts.reward_title).await? {
+            match helix.find_manageable_reward(tts.reward_id.as_deref(), &tts.reward_title, &[]).await? {
                 Some(id) => Ok(id),
                 None => helix.create_reward(&tts.reward_title, tts.reward_cost, "Текст для озвучки").await.map_err(|error| anyhow!(match error {
                     RewardError::NotAffiliate => "нужен статус компаньона/партнёра",
