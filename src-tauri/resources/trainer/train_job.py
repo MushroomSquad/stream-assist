@@ -284,7 +284,11 @@ def train(req, torch, proto, lock, phase, stop_event):
 
     def send(event, **fields):
         with lock:
-            emit(proto, event, **fields)
+            try:
+                emit(proto, event, **fields)
+            except OSError:
+                # App gone (broken stdout): stop and save state instead of dying mid-step.
+                stop_event.set()
 
     with lock:
         phase['loop_started'] = True
@@ -351,7 +355,10 @@ def main(argv) -> int:
         traceback.print_tb(exc.__traceback__, file=sys.stderr)
         with lock:
             phase['loop_started'] = True  # watcher must not follow error with stopped
-            emit(proto, 'error', code=error_code(exc, torch))
+            try:
+                emit(proto, 'error', code=error_code(exc, torch))
+            except OSError:
+                pass
         return 1
     finally:
         if run_lock is not None:

@@ -203,6 +203,11 @@ impl TrainRunner {
             if !matches!(j.status.as_str(), "stopped" | "interrupted" | "failed") {
                 return Err(err("JOB_BUSY"));
             }
+            if let Some(source_id) = j.source_id {
+                if !s.source(source_id)?.consent {
+                    return Err(err("NO_CONSENT"));
+                }
+            }
             let resume = s.run_dir(run_id).join("state.pt").is_file();
             s.set_run_status(run_id, "running", None)?;
             (j, resume)
@@ -329,7 +334,12 @@ impl TrainRunner {
             .envs(self.extra_env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(std::fs::File::create(dir.join("worker.log"))?);
+            .stderr(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("worker.log"))?,
+            );
         #[cfg(unix)]
         cmd.process_group(0);
         #[cfg(windows)]
