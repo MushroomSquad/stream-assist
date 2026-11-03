@@ -10,6 +10,7 @@ pub mod obs;
 pub mod player;
 pub mod request;
 pub mod router;
+pub mod rules;
 pub mod secrets;
 pub mod server;
 pub mod spotify;
