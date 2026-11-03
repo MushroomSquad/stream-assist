@@ -85,6 +85,11 @@ pub fn venv_python(root: &Path) -> PathBuf {
 }
 
 pub fn write_adapter(root: &Path) -> Result<(), VlError> {
+    // Drop files a previous release embedded but this one no longer does.
+    match std::fs::remove_dir_all(trainer_dir(root).join("adapter")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
     for (name, contents) in EMBEDDED {
         let dest = trainer_dir(root).join("adapter").join(name);
         std::fs::create_dir_all(dest.parent().unwrap())?;
@@ -345,7 +350,8 @@ pub async fn install(
         .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
         .env("UV_PYTHON_PREFERENCE", "only-managed")
         .env("UV_CACHE_DIR", dir.join("uv-cache"))
-        .stdout(Stdio::null());
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(dir.join("install.log"))?);
     let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
     tokio::select! {
         result = child.wait() => {
