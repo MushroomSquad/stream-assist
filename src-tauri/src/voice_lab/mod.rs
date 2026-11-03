@@ -5,6 +5,7 @@ pub mod models;
 pub mod runner;
 pub mod store;
 pub mod style;
+pub mod trainer;
 pub mod worker;
 
 #[derive(Debug, thiserror::Error)]

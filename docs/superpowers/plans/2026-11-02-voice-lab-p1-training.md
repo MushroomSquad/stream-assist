@@ -63,12 +63,32 @@ docs/voice-lab.md
 
 **Interfaces — Produces:** `pub const TRAINER_REV: &str`; `pub const WAVLM_REV: &str`; `pub const WAVLM_FILES: &[ModelFile]` (`path` — имя файла); `pub const MIN_UV: (u32, u32, u32)` (версия uv, которой сгенерирован lock).
 
-- [ ] **Step 1:** Скопировать из апстрима `TRAINER_REV` в `upstream/`: `pipeline/helper.py` → `helper.py`; `pipeline/utils/model.py` → `utils_model.py` **без** блока `httpx`/`_NoVerifyClient`/удаления `SSL_*` переменных; `utils/dataloader.py` → `utils_dataloader.py`; `utils/style.py` → `utils_style.py`; из `utils/loss.py` только `WAVLM_LAYER`, `extract_wavlm_targets`, `wavlm_loss` → `wavlm_loss.py`; `LICENSE`. В каждом файле первая строка `# Copied from Saganaki22/supertonic_embeddings_trainer@<rev> (MIT). Changes: <что изменено>`. Внутренние импорты поправить на плоские имена.
-- [ ] **Step 2:** `pyproject.toml`: `[project] requires-python = "==3.12.*"`, зависимости с точными версиями `torch`, `torchaudio`, `torchvision` (тройка из одного релиза cu128), `transformers`, `onnx`, `onnx2torch`, `onnxslim`, `onnxruntime`, `soundfile`, `numpy`; `[tool.uv] package = false`, `environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]`; `[[tool.uv.index]] name = "pytorch-cu128"`, `url = "https://download.pytorch.org/whl/cu128"`, `explicit = true`; `[tool.uv.sources]` для трёх torch-пакетов → этот индекс. `uv lock` → `uv.lock`; `MIN_UV` = `uv --version`.
-- [ ] **Step 3:** Скачать три файла WavLM ревизии `WAVLM_REV`, снять SHA-256/размеры → `WAVLM_FILES`.
-- [ ] **Step 4:** Во временном каталоге с переменными из Global Constraints: `uv sync --frozen`; `python -c` → `torch.cuda.is_available()==True`, `torch.version.cuda` 12.8, пробное ядро на GPU выполняется. Иначе остановиться и доложить.
-- [ ] **Step 5:** (предусловие: модель P0 установлена; одноразовый скрипт в scratchpad, не в репо) **Офлайн** (`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`): `WavLMModel.from_pretrained(<weights>)`, `SupertonicModel(<model-cache>/onnx)` из копии, 50 шагов цикла на WAV 5–10 с. Записать: размер `.venv`+`python`+`uv-cache`, время 50 шагов, пик VRAM (`torch.cuda.max_memory_allocated`), время конвертации onnx2torch.
-- [ ] **Step 6:** Commit `chore(voice-lab): vendored trainer code and pinned environment`.
+- [x] **Step 1:** Скопировать из апстрима `TRAINER_REV` в `upstream/`: `pipeline/helper.py` → `helper.py`; `pipeline/utils/model.py` → `utils_model.py` **без** блока `httpx`/`_NoVerifyClient`/удаления `SSL_*` переменных; `utils/dataloader.py` → `utils_dataloader.py`; `utils/style.py` → `utils_style.py`; из `utils/loss.py` только `WAVLM_LAYER`, `extract_wavlm_targets`, `wavlm_loss` → `wavlm_loss.py`; `LICENSE`. В каждом файле первая строка `# Copied from Saganaki22/supertonic_embeddings_trainer@<rev> (MIT). Changes: <что изменено>`. Внутренние импорты поправить на плоские имена.
+- [x] **Step 2:** `pyproject.toml`: `[project] requires-python = "==3.12.*"`, зависимости с точными версиями `torch`, `torchaudio`, `torchvision` (тройка из одного релиза cu128), `transformers`, `onnx`, `onnx2torch`, `onnxslim`, `onnxruntime`, `soundfile`, `numpy`; `[tool.uv] package = false`, `environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]`; `[[tool.uv.index]] name = "pytorch-cu128"`, `url = "https://download.pytorch.org/whl/cu128"`, `explicit = true`; `[tool.uv.sources]` для трёх torch-пакетов → этот индекс. `uv lock` → `uv.lock`; `MIN_UV` = `uv --version`.
+- [x] **Step 3:** Скачать три файла WavLM ревизии `WAVLM_REV`, снять SHA-256/размеры → `WAVLM_FILES`.
+- [x] **Step 4:** Во временном каталоге с переменными из Global Constraints: `uv sync --frozen`; `python -c` → `torch.cuda.is_available()==True`, `torch.version.cuda` 12.8, пробное ядро на GPU выполняется. Иначе остановиться и доложить.
+- [x] **Step 5:** (предусловие: модель P0 установлена; одноразовый скрипт в scratchpad, не в репо) **Офлайн** (`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`): `WavLMModel.from_pretrained(<weights>)`, `SupertonicModel(<model-cache>/onnx)` из копии, 50 шагов цикла на WAV 5–10 с. Записать: размер `.venv`+`python`+`uv-cache`, время 50 шагов, пик VRAM (`torch.cuda.max_memory_allocated`), время конвертации onnx2torch.
+- [x] **Step 6:** Commit `chore(voice-lab): vendored trainer code and pinned environment`.
+
+**Task 1 spike (2026-11-03):** upstream проверен на `TRAINER_REV`; uv 0.10.4,
+Python 3.12.12, torch/torchaudio 2.7.1+cu128 и torchvision 0.22.1+cu128.
+`uv sync --frozen --no-config` выполнен в scratchpad/p1-spike с управляемыми
+Python/venv/cache; CUDA 12.8, `sm_120` и пробное GPU-ядро — PASS
+(RTX 5070 Ti 16 GB, драйвер 615.78.08).
+Офлайн WavLM + Supertonic: 50 шагов Adam/style_ttl (lr 2e-4, vocoder_steps 6,
+seed 42, 16 английских фраз апстрима, начальный стиль M1), регион реальной
+`luna_reference.wav` 7.534 с после trim/peak, без ECAPA/ранней остановки:
+**17.650 с**, пик `torch.cuda.max_memory_allocated` **4 859 623 424 байт
+(4.526 ГиБ)**; конвертация четырёх ONNX через onnx2torch **10.273 с**.
+Loss/градиенты конечны; best loss 1.06504. После выхода Python на GPU не остался.
+Размер `.venv` + `python` + `uv-cache`: **7 120 588 800 байт (6.632 ГиБ)**
+(`du -sB1 -c`, общие hardlink-файлы учитываются один раз; веса WavLM отдельно).
+Тест контракта констант сначала FAIL (модуля нет), затем PASS; полный `cargo test`:
+238 passed, 0 failed, 7 ignored. `cargo clippy --all-targets`: успешно,
+предупреждений в voice_lab нет (существующие предупреждения в других модулях).
+Отклонения: Task 1 не перечисляет тесты — добавлен один тест контракта констант
+для требуемого TDD; упомянутый workflow superpowers недоступен, шаги выполнены напрямую.
+Одноразовый скрипт, логи, веса и окружение оставлены только в scratchpad/p1-spike.
 
 ### Task 2: `train_job.py`
 
