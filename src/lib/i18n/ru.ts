@@ -1,4 +1,7 @@
 export const ru = {
+  vlMode: 'Режим', vlProfiles: 'Профили', vlSaved: 'Сохранено',
+  vlRefRegion: 'Фрагмент для сравнения: 1–60 с', vlBatchProgress: 'Прогресс генерации пачки',
+  vlResultsInRenders: 'Генерация завершена. Готовые результаты — в «Рендерах».',
   vlExplore: 'Исследование · экспериментально', vlInterp: 'Интерполяция', vlRandom: 'Случайные смеси',
   vlPoints: 'Точек', vlCount: 'Смесей', vlNewSeed: 'Новый', vlSeedNote: 'Одинаковый seed повторяет веса, но не звук',
   vlTNote: 't — вес смеси, а не доля пути', vlReference: 'Сравнить с записью', vlSimilarity: 'Сходство',

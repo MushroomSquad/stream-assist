@@ -4,7 +4,13 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import * as api from '$lib/voiceApi';
 import { ru, errorText } from '$lib/i18n/ru';
 let profiles = $state<api.Profile[]>([]), message = $state(''), url = $state(''), busy = $state(false), disposed = false;
-async function run(f: () => Promise<void>) { message = ''; try { await f(); } catch (e) { message = errorText(e); } }
+let projectBusy = $state(false), reportMessage = $state('');
+async function project(f: () => Promise<void>) {
+  if (projectBusy) return;
+  projectBusy = true;
+  try { await run(f); } finally { projectBusy = false; }
+}
+async function run(f: () => Promise<void>) { message = ''; reportMessage = ''; try { await f(); } catch (e) { message = errorText(e); } }
 async function load() { profiles = await api.vl_profiles(); }
 onMount(() => { void run(load); return () => { disposed = true; if (url) URL.revokeObjectURL(url); }; });
 async function exportProject() {
@@ -16,7 +22,7 @@ async function importProject() {
   if (typeof path !== 'string') return;
   const report = await api.vl_import_project(path);
   await load();
-  message = `${ru.vlImportedProfiles}: ${report.profiles} · ${ru.vlImportedRenders}: ${report.renders} · ${ru.vlSkipped}: ${report.skipped}${report.revisionMismatch ? `. ${ru.vlRevisionMismatch}` : ''}`;
+  reportMessage = `${ru.vlImportedProfiles}: ${report.profiles} · ${ru.vlImportedRenders}: ${report.renders} · ${ru.vlSkipped}: ${report.skipped}${report.revisionMismatch ? `. ${ru.vlRevisionMismatch}` : ''}`;
 }
 async function importJson() { const path = await open({ multiple: false, filters: [{ name: ru.vlImportJson, extensions: ['json'] }] }); if (typeof path === 'string') { await api.vl_import_profile(path, path.split(/[\\/]/).at(-1)?.replace(/\.json$/i, '') ?? ru.voice); await load(); } }
 async function listen(id: number) {
@@ -24,9 +30,10 @@ async function listen(id: number) {
 }
 async function exportJson(p: api.Profile, recipe = false) { const path = await save({ defaultPath: recipe ? 'recipe.json' : 'voice.json', filters: [{ name: recipe ? ru.vlExportRecipe : ru.vlExportJson, extensions: ['json'] }] }); if (path) await (recipe ? api.vl_export_recipe(p.id, path) : api.vl_export_profile(p.id, path)); }
 </script>
-<div class="actions"><button onclick={() => run(exportProject)}>{ru.vlExportProject}</button><button onclick={() => run(importProject)}>{ru.vlImportProject}</button></div>
+<div class="actions"><button disabled={projectBusy} onclick={() => project(exportProject)}>{ru.vlExportProject}</button><button disabled={projectBusy} onclick={() => project(importProject)}>{ru.vlImportProject}</button></div>
 <button onclick={() => run(importJson)}>{ru.vlImportJson}</button>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
+{#if reportMessage}<p role="status">{reportMessage}</p>{/if}
 {#if url}<audio controls src={url}></audio>{/if}
 {#if !profiles.length}<p class="muted">{ru.vlEmpty}</p>{/if}
 {#each profiles as p (p.id)}<div class="card"><p class="muted">{ru.vlOrigin[p.origin]}</p>

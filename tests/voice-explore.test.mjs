@@ -32,10 +32,59 @@ test('ribbon sorts similarity without changing original indices and resolves sna
 });
 test('UI exposes experimental tab, batch cancellation, endpoints and project report', () => {
   const ui = read('views/voice/Explore.svelte');
-  for (const pattern of [/kind !== 'batch'/, /vl_cancel_job\(job.id\)/, /result.cancelled/, /index === 0/, /index === .*points - 1/, /profileSha256/, /revokeObjectURL/, /2\s*\*\*\s*32/]) assert.match(ui, pattern);
+  for (const pattern of [/kind !== 'batch'/, /vl_cancel_job\(job.id\)/, /result.cancelled/, /input.weight === 0/, /interpolation\(item\)/, /profileSha256/, /revokeObjectURL/, /2\s*\*\*\s*32/]) assert.match(ui, pattern);
   assert.match(read('views/voice/VoiceLab.svelte'), /vlExplore/);
   const voices = read('views/voice/Voices.svelte');
   for (const word of ['vl_export_project', 'vl_import_project', 'revisionMismatch', 'report.profiles', 'report.renders', 'report.skipped']) assert.ok(voices.includes(word), word);
   const ru = read('i18n/ru.ts');
   for (const word of ['BATCH_INVALID', 'ENCODER_MISSING', 'PROJECT_INVALID', 'PROJECT_TOO_LARGE', 't — вес смеси, а не доля пути']) assert.ok(ru.includes(word), word);
+});
+
+test('interpolation labels follow recipe weights even with missing batch items', () => {
+  const script = read('views/voice/Explore.svelte');
+  const helper = script.match(/function interpolation[\s\S]*?\n}/)[0];
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(ts.transpile(helper, { target: ts.ScriptTarget.ES2022 }), context);
+  const item = weight => ({ render: { recipe: { inputs: [{ weight: 100 - weight }, { weight }] } } });
+  assert.equal(context.interpolation(item(75)), .75);
+  assert.equal(context.interpolation(item(0)), 0);
+  assert.equal(context.interpolation(item(100)), 1);
+});
+test('remount, snapshot feedback and accessibility controls are wired', () => {
+  const ui = read('views/voice/Explore.svelte');
+  for (const pattern of [/api.vl_jobs\(\)/, /observed.get\(j.id\)/, /busy = next.status === 'running'/,
+    /disabled={saving\[item.render.id\]}/, /names\[id\] = ''/, /role="status">{ru.vlSaved}/,
+    /<legend>{ru.vlProfiles}/, /<progress aria-label=/, /aria-label={`\$\{ru.vlListen\}: \$\{label\}`}/,
+    /ru.vlRefRegion/, /ru.vlResultsInRenders/]) assert.match(ui, pattern);
+  const voices = read('views/voice/Voices.svelte');
+  assert.equal((voices.match(/disabled={projectBusy}/g) ?? []).length, 2);
+  assert.match(voices, /finally { projectBusy = false; }/);
+  assert.match(voices, /role="status">{reportMessage}/);
+});
+test('remount restores a batch and follows its progress through completion', async () => {
+  const source = read('views/voice/Explore.svelte');
+  const mount = source.slice(source.indexOf('onMount(() =>'), source.indexOf('\nasync function generate'));
+  let event, pending;
+  const running = { id: 42, kind: 'batch', status: 'running', progress: { event: 'item', index: 1 } };
+  const context = {
+    api: { onJob: async cb => { event = cb; return () => {}; }, vl_profiles: async () => [], vl_sources: async () => [], vl_jobs: async () => [running] },
+    onMount: cb => cb(), run: f => { pending = f(); return pending; },
+    disposed: false, busy: false, restored: false, job: null, done: 0, listening: false,
+    profiles: [], sources: [], a: 0, b: 0, sourceId: 0, timers: new Set(), clearTimeout,
+    clearAudio() {}, errorText: e => e,
+  };
+  vm.createContext(context);
+  vm.runInContext(ts.transpile(mount, { target: ts.ScriptTarget.ES2022 }), context);
+  await pending;
+  assert.equal(context.busy, true);
+  assert.equal(context.job.id, 42);
+  assert.equal(context.done, 2);
+  event({ ...running, id: 43, progress: { event: 'item', index: 8 } });
+  assert.equal(context.done, 2);
+  event({ ...running, progress: { event: 'item', index: 3 } });
+  assert.equal(context.done, 4);
+  event({ ...running, status: 'completed' });
+  assert.equal(context.busy, false);
+  assert.equal(context.restored, true);
 });
