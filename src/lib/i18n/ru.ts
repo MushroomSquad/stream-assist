@@ -1,4 +1,16 @@
 export const ru = {
+  vlMinutes: 'мин', vlTrain: 'Обучение', vlTrainWarning: 'Обучение загружает GPU полностью — не запускайте во время стрима',
+  vlTrainLowVram: 'Свободно меньше 6 ГБ VRAM — обучение может завершиться из-за нехватки памяти.',
+  vlTrainInstall: 'Установить пакет обучения (≈ 7 ГБ)', vlTrainUpdate: 'Обновить пакет', vlTrainUninstall: 'Удалить пакет',
+  vlTrainPack: 'Пакет обучения', vlTrainPackState: { none: 'Не установлен', ok: 'Установлен', outdated: 'Требуется обновление' },
+  vlTrainUv: 'Версия uv', vlTrainUvOld: 'uv отсутствует или устарел', vlTrainGpu: 'GPU', vlTrainDriver: 'Драйвер',
+  vlTrainVram: 'VRAM свободно / всего, МБ', vlTrainCuda: 'CUDA torch', vlTrainDisk: 'Свободно на диске, МБ', vlUnknown: 'Нет данных',
+  vlTrainStages: { venv: 'Python и зависимости', weights: 'Веса WavLM' }, vlTrainRegion: 'Регион 3–30 с чистой речи из «Записей»',
+  vlTrainLong: 'Долго — 6000 шагов', vlTrainFast: 'Быстро — 1000 шагов', vlTrainStandard: 'Стандарт — 3000 шагов',
+  vlTrainStart: 'Начать обучение', vlTrainStep: 'Шаг', vlTrainBest: 'Лучшая ошибка', vlTrainLr: 'Скорость обучения (lr)',
+  vlTrainStop: 'Остановить', vlTrainKill: 'Прервать', vlTrainKillConfirm: 'Прервать процесс? Несохранённый прогресс будет потерян.',
+  vlTrainResume: 'Продолжить', vlTrainRuns: 'Прогоны', vlTrainDeleteConfirm: 'Удалить прогон и его состояние? Профили сохранятся.',
+  vlTrainStatus: { running: 'Обучение', stopped: 'Остановлен', interrupted: 'Прерван при выходе', failed: 'Ошибка', completed: 'Завершён' },
   voice: 'Голоса', vlSources: 'Записи', vlVoices: 'Голоса', vlMixer: 'Микшер', vlRenders: 'Рендеры',
   vlSetup: 'Установка Supertonic 3', vlDownload: 'Скачать модель', vlSize: 'Модель занимает около 400 МБ. После установки работа полностью локальна.',
   vlLicense: 'Лицензия модели', vlLicenseNotice: 'OpenRAIL-M: не выдавайте синтез за речь реального человека без его согласия.',
@@ -17,7 +29,7 @@ export const ru = {
   vlUndo: 'Отменить веса', vlRedo: 'Вернуть веса', vlText: 'Текст', vlSpeed: 'Скорость', vlQuality: 'Качество',
   vlGenerate: 'Сгенерировать', vlSnapshot: 'Сохранить снимок', vlCompare: 'Сравнить', vlABetter: 'A лучше', vlBBetter: 'B лучше',
   vlExportWav: 'Экспорт WAV', vlDuration: 'Длительность, с', vlRtf: 'RTF', vlFavorite: 'Избранное', vlEmpty: 'Пока ничего нет',
-  vlOrigin: { builtin: 'Встроенный', import: 'Импорт', clone: 'Клон', mix: 'Микс' },
+  vlOrigin: { builtin: 'Встроенный', import: 'Импорт', clone: 'Клон', mix: 'Микс', train: 'Обучение' },
   vlJobStatus: { running: 'Выполняется', completed: 'Завершено', failed: 'Ошибка', cancelled: 'Отменено' },
 
   server_port_busy: 'Порт N занят — сервер виджета не запущен. Выберите другой порт в разделе «Виджет» и перезапустите программу.',
@@ -33,6 +45,16 @@ export const ru = {
 };
 
 export const errorMessages: Record<string, string> = {
+  UV_MISSING: 'Установите uv и добавьте его в PATH или ~/.local/bin',
+  UV_TOO_OLD: 'Обновите uv до поддерживаемой версии',
+  TRAINER_NOT_INSTALLED: 'Сначала установите пакет обучения',
+  TRAINER_OUTDATED: 'Обновите пакет обучения',
+  TRAINER_INSTALL_FAILED: 'Не удалось установить пакет обучения. Проверьте сеть и свободное место (нужно 9 ГБ).',
+  GPU_UNAVAILABLE: 'Для обучения нужна доступная NVIDIA GPU с CUDA',
+  GPU_OUT_OF_MEMORY: 'Недостаточно памяти GPU. Освободите VRAM и продолжите прогон.',
+  CUDA_DRIVER_MISMATCH: 'Драйвер или GPU несовместимы с CUDA пакета обучения',
+  TRAINING_STATE_CORRUPTED: 'Состояние обучения повреждено. Создайте новый прогон.',
+
   MODEL_MISSING: 'Сначала установите модель',
   MODEL_CHECKSUM_MISMATCH: 'Контрольная сумма модели не совпала',
   MODEL_DOWNLOAD_FAILED: 'Не удалось скачать модель',

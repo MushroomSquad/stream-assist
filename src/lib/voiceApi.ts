@@ -5,7 +5,7 @@ export interface Source { id: number; name: string; durationMs: number; consent:
 export type DpStrategy = 'dominant' | 'weighted' | 'select';
 export type ClonePreset = 'fast' | 'standard' | 'precise';
 export interface Recipe { schemaVersion: number; kind: string; engine: { id: string; version: string; assetRevision: string }; inputs: { profileSha256: string; name: string; weight: number }[]; dpStrategy: DpStrategy; selectedDpProfileSha256: string | null; createdAt: string }
-export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix'; recipe: Recipe | null; meta: unknown; createdAt: number }
+export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix' | 'train'; recipe: Recipe | null; meta: unknown; createdAt: number }
 export interface RenderParams { text: string; lang: string; speed: number; quality: number }
 export interface Render extends RenderParams { id: number; profileId: number | null; recipe: Recipe | null; durationMs: number; wallMs: number; favorite: boolean; createdAt: number }
 export interface JobState { id: number; kind: string; status: string; progress: { event: string; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
@@ -36,3 +36,21 @@ export const vl_export_render = (id: number, path: string) => call<void>('vl_exp
 export const onJob = (cb: (job: JobState) => void) => listen<JobState>('vl-job', e => cb(e.payload));
 export const onInstall = (cb: (p: { done: number; total: number }) => void) => listen<{ done: number; total: number }>('vl-install', e => cb(e.payload));
 export const blobUrl = (buf: ArrayBuffer) => URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+
+export type TrainPreset = 'fast' | 'standard' | 'long';
+export interface TrainParams { preset: TrainPreset; totalSteps: number; lr: number; saveEvery: number; seed: number; threshold: number }
+export interface TrainRun { id: number; sourceId: number | null; startMs: number; endMs: number; lang: string; params: TrainParams; status: string; step: number; total: number; bestLoss: number | null; history: [number, number, number][]; error: string | null; lr: number | null; createdAt: number; updatedAt: number }
+export interface TrainStatus { uv: string | null; uvOk: boolean; pack: 'none' | 'ok' | 'outdated'; gpu: { name: string; driver: string; vramTotalMb: number; vramFreeMb: number } | null; torchCuda: string | null; diskFreeMb: number | null }
+export interface TrainInstallProgress { stage: string; done: number; total: number }
+export const vl_train_status = (refresh = false) => call<TrainStatus>('vl_train_status', { refresh });
+export const vl_train_install = () => call<void>('vl_train_install');
+export const vl_train_install_cancel = () => call<void>('vl_train_install_cancel');
+export const vl_train_uninstall = () => call<void>('vl_train_uninstall');
+export const vl_train_start = (sourceId: number, startMs: number, endMs: number, lang: string, preset: TrainPreset, seed: number) => call<number>('vl_train_start', { sourceId, startMs, endMs, lang, preset, seed });
+export const vl_train_resume = (runId: number) => call<void>('vl_train_resume', { runId });
+export const vl_train_stop = (runId: number) => call<void>('vl_train_stop', { runId });
+export const vl_train_kill = (runId: number) => call<void>('vl_train_kill', { runId });
+export const vl_train_runs = () => call<TrainRun[]>('vl_train_runs');
+export const vl_train_delete = (runId: number) => call<void>('vl_train_delete', { runId });
+export const onTrain = (cb: (run: TrainRun) => void) => listen<TrainRun>('vl-train', e => cb(e.payload));
+export const onTrainInstall = (cb: (progress: TrainInstallProgress) => void) => listen<TrainInstallProgress>('vl-train-install', e => cb(e.payload));

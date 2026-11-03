@@ -4,7 +4,9 @@ use super::{
     models,
     runner::{Emit, JobState},
     store::{Profile, Render, RenderParams, Source},
+    store::{TrainParams, TrainRun},
     style::{canonical_bytes, load_verified, read_style_file},
+    trainer,
     worker::ClonePreset,
 };
 use std::{
@@ -641,10 +643,189 @@ mod tests {
         let lab = VoiceLab {
             root: d.path().into(),
             store: Arc::new(std::sync::Mutex::new(store)),
-            runner: Arc::new(Runner::new(exe, vec![("VL_FAKE_MODE".into(), "ok".into())])),
+            runner: Arc::new(Runner::new(
+                exe.clone(),
+                vec![("VL_FAKE_MODE".into(), "ok".into())],
+            )),
+            train: Arc::new(super::super::train_runner::TrainRunner::new(
+                exe.with_file_name(format!("vl_fake_trainer{}", std::env::consts::EXE_SUFFIX)),
+                "unused".into(),
+                vec![("VL_FAKE_MODE".into(), "hang".into())],
+                Duration::from_secs(1),
+            )),
+            train_install: tokio::sync::Mutex::new(None),
+            torch_cache: std::sync::Mutex::new(None),
             installing: tokio::sync::Mutex::new(()),
         };
         (d, lab, p)
+    }
+    #[test]
+    fn start_requires_pack() {
+        let (d, lab, _) = setup();
+        assert_eq!(
+            train_start(
+                &lab,
+                1,
+                0,
+                3000,
+                "ru".into(),
+                "fast".into(),
+                42,
+                Arc::new(|_| {})
+            )
+            .unwrap_err()
+            .code(),
+            "TRAINER_NOT_INSTALLED"
+        );
+        std::fs::create_dir_all(d.path().join("trainer")).unwrap();
+        std::fs::write(d.path().join("trainer/installed.ok"), "old").unwrap();
+        assert_eq!(
+            train_start(
+                &lab,
+                1,
+                0,
+                3000,
+                "ru".into(),
+                "fast".into(),
+                42,
+                Arc::new(|_| {})
+            )
+            .unwrap_err()
+            .code(),
+            "TRAINER_OUTDATED"
+        );
+    }
+    #[test]
+    fn resume_requires_pack() {
+        let (d, lab, _) = setup();
+        assert_eq!(
+            train_resume(&lab, 1, Arc::new(|_| {})).unwrap_err().code(),
+            "TRAINER_NOT_INSTALLED"
+        );
+        std::fs::create_dir_all(d.path().join("trainer")).unwrap();
+        std::fs::write(d.path().join("trainer/installed.ok"), "old").unwrap();
+        assert_eq!(
+            train_resume(&lab, 1, Arc::new(|_| {})).unwrap_err().code(),
+            "TRAINER_OUTDATED"
+        );
+    }
+    async fn active_run_checks() {
+        let (_d, lab, _) = setup();
+        let source = lab
+            .store
+            .lock()
+            .unwrap()
+            .add_source("a", "wav", "reference", 3000, true, &[])
+            .unwrap();
+        std::fs::write(
+            lab.store.lock().unwrap().source_work_path(source.id),
+            audio::wav_bytes(&vec![0.1; audio::SR as usize * 3], audio::SR),
+        )
+        .unwrap();
+        let id = lab
+            .train
+            .start(
+                lab.store.clone(),
+                lab.root.clone(),
+                source.id,
+                0,
+                3000,
+                "ru".into(),
+                train_params("fast", 42).unwrap(),
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+        assert_eq!(train_delete(&lab, id).unwrap_err().code(), "JOB_BUSY");
+        assert_eq!(train_uninstall(&lab).unwrap_err().code(), "JOB_BUSY");
+        lab.train.kill(id);
+        while lab.train.active().is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    #[tokio::test]
+    async fn delete_active_run_busy() {
+        active_run_checks().await;
+    }
+    #[tokio::test]
+    async fn uninstall_during_run_busy() {
+        active_run_checks().await;
+    }
+    #[test]
+    fn train_presets_and_model_required() {
+        let (d, lab, _) = setup();
+        for (preset, total) in [("fast", 1000), ("standard", 3000), ("long", 6000)] {
+            let p = train_params(preset, 123).unwrap();
+            assert_eq!((p.total_steps, p.save_every, p.seed), (total, 500, 123));
+            assert_eq!((p.lr, p.threshold), (2e-4, 0.24));
+        }
+        assert!(train_params("unknown", 42).is_err());
+        let dir = d.path().join("trainer/weights/wavlm-large");
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in trainer::WAVLM_FILES {
+            std::fs::File::create(dir.join(file.path))
+                .unwrap()
+                .set_len(file.size)
+                .unwrap();
+        }
+        std::fs::write(d.path().join("trainer/installed.ok"), trainer::lock_hash()).unwrap();
+        assert_eq!(
+            train_start(
+                &lab,
+                1,
+                0,
+                3000,
+                "ru".into(),
+                "fast".into(),
+                42,
+                Arc::new(|_| {})
+            )
+            .unwrap_err()
+            .code(),
+            "MODEL_MISSING"
+        );
+        assert_eq!(
+            train_resume(&lab, 1, Arc::new(|_| {})).unwrap_err().code(),
+            "MODEL_MISSING"
+        );
+    }
+    #[test]
+    fn install_blocks_start_resume_and_uninstall() {
+        let (_d, lab, _) = setup();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        *lab.train_install.try_lock().unwrap() = Some(tx);
+        assert_eq!(
+            train_start(
+                &lab,
+                1,
+                0,
+                3000,
+                "ru".into(),
+                "fast".into(),
+                42,
+                Arc::new(|_| {})
+            )
+            .unwrap_err()
+            .code(),
+            "JOB_BUSY"
+        );
+        assert_eq!(
+            train_resume(&lab, 1, Arc::new(|_| {})).unwrap_err().code(),
+            "JOB_BUSY"
+        );
+        assert_eq!(train_uninstall(&lab).unwrap_err().code(), "JOB_BUSY");
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+    }
+    #[test]
+    fn uninstall_resets_torch_cache() {
+        let (d, lab, _) = setup();
+        std::fs::create_dir_all(d.path().join("trainer")).unwrap();
+        *lab.torch_cache.lock().unwrap() = Some(Some("12.8".into()));
+        train_uninstall(&lab).unwrap();
+        assert_eq!(*lab.torch_cache.lock().unwrap(), None);
+        assert!(!d.path().join("trainer").exists());
     }
     fn params() -> RenderParams {
         RenderParams {
@@ -779,4 +960,207 @@ mod tests {
             "MODEL_MISSING"
         );
     }
+}
+
+fn require_train(lab: &VoiceLab) -> Result<(), VlError> {
+    match trainer::pack_state(&lab.root) {
+        "ok" => require_model(&lab.root),
+        "outdated" => Err(err("TRAINER_OUTDATED")),
+        _ => Err(err("TRAINER_NOT_INSTALLED")),
+    }
+}
+fn train_params(preset: &str, seed: u64) -> Result<TrainParams, VlError> {
+    let total_steps = match preset {
+        "fast" => 1000,
+        "standard" => 3000,
+        "long" => 6000,
+        _ => return Err(err("RENDER_INVALID")),
+    };
+    Ok(TrainParams {
+        preset: preset.into(),
+        total_steps,
+        lr: 2e-4,
+        save_every: 500,
+        seed,
+        threshold: 0.24,
+    })
+}
+type TrainEmit = Arc<dyn Fn(&TrainRun) + Send + Sync>;
+fn train_emitter(app: tauri::AppHandle) -> TrainEmit {
+    Arc::new(move |run| {
+        let _ = app.emit("vl-train", run);
+    })
+}
+#[allow(clippy::too_many_arguments)]
+fn train_start(
+    lab: &VoiceLab,
+    source_id: i64,
+    start_ms: u64,
+    end_ms: u64,
+    lang: String,
+    preset: String,
+    seed: u64,
+    emit: TrainEmit,
+) -> Result<i64, VlError> {
+    let slot = lab.train_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
+    if slot.is_some() {
+        return Err(err("JOB_BUSY"));
+    }
+    require_train(lab)?;
+    if !AVAILABLE_LANGS.contains(&lang.as_str()) {
+        return Err(err("RENDER_INVALID"));
+    }
+    lab.train.start(
+        lab.store.clone(),
+        lab.root.clone(),
+        source_id,
+        start_ms,
+        end_ms,
+        lang,
+        train_params(&preset, seed)?,
+        emit,
+    )
+}
+fn train_resume(lab: &VoiceLab, run_id: i64, emit: TrainEmit) -> Result<(), VlError> {
+    let slot = lab.train_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
+    if slot.is_some() {
+        return Err(err("JOB_BUSY"));
+    }
+    require_train(lab)?;
+    lab.train
+        .resume(lab.store.clone(), lab.root.clone(), run_id, emit)
+}
+fn train_delete(lab: &VoiceLab, run_id: i64) -> Result<(), VlError> {
+    lab.train.delete_run(&lab.store, run_id)
+}
+fn train_uninstall(lab: &VoiceLab) -> Result<(), VlError> {
+    let slot = lab.train_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
+    if slot.is_some() || lab.train.active().is_some() {
+        return Err(err("JOB_BUSY"));
+    }
+    *lab.torch_cache.lock().map_err(|_| err("IO_FAILED"))? = None;
+    trainer::uninstall(&lab.root)
+}
+#[tauri::command]
+pub async fn vl_train_status(
+    state: State<'_, VlState>,
+    refresh: bool,
+) -> Result<trainer::TrainStatus, String> {
+    let l = lab(&state)?;
+    // Serialize diagnostics with package mutations, including cache invalidation.
+    let slot = l.train_install.lock().await;
+    if slot.is_some() {
+        return Err("JOB_BUSY".into());
+    }
+    Ok(trainer::status(&l.root, &l.torch_cache, refresh).await)
+}
+#[tauri::command]
+pub async fn vl_train_install(
+    state: State<'_, VlState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let l = lab(&state)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut slot = l
+            .train_install
+            .try_lock()
+            .map_err(|_| "JOB_BUSY".to_string())?;
+        if slot.is_some() || l.train.active().is_some() {
+            return Err("JOB_BUSY".into());
+        }
+        *slot = Some(tx);
+        *l.torch_cache.lock().map_err(|_| "IO_FAILED".to_string())? = None;
+    }
+    let last = std::sync::Mutex::new(None::<Instant>);
+    let progress = |stage: &str, done, total| {
+        let mut last = last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if done == total || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
+            let _ = app.emit(
+                "vl-train-install",
+                serde_json::json!({"stage":stage,"done":done,"total":total}),
+            );
+            *last = Some(Instant::now());
+        }
+    };
+    let result = trainer::install(&l.root, &progress, rx).await;
+    *l.torch_cache.lock().map_err(|_| "IO_FAILED".to_string())? = None;
+    l.train_install.lock().await.take();
+    result.map_err(|e| e.code())
+}
+#[tauri::command]
+pub async fn vl_train_install_cancel(state: State<'_, VlState>) -> Result<(), String> {
+    // Keep the slot occupied until install has finished cleaning up.
+    let l = lab(&state)?;
+    let mut slot = l.train_install.lock().await;
+    if slot.is_some() {
+        let (placeholder, _rx) = tokio::sync::oneshot::channel();
+        if let Some(tx) = slot.replace(placeholder) {
+            let _ = tx.send(());
+        }
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn vl_train_uninstall(state: State<'_, VlState>) -> Result<(), String> {
+    blocking(lab(&state)?, train_uninstall).await
+}
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn vl_train_start(
+    state: State<'_, VlState>,
+    app: tauri::AppHandle,
+    source_id: i64,
+    start_ms: u64,
+    end_ms: u64,
+    lang: String,
+    preset: String,
+    seed: u64,
+) -> Result<i64, String> {
+    blocking(lab(&state)?, move |l| {
+        train_start(
+            l,
+            source_id,
+            start_ms,
+            end_ms,
+            lang,
+            preset,
+            seed,
+            train_emitter(app),
+        )
+    })
+    .await
+}
+#[tauri::command]
+pub async fn vl_train_resume(
+    state: State<'_, VlState>,
+    app: tauri::AppHandle,
+    run_id: i64,
+) -> Result<(), String> {
+    blocking(lab(&state)?, move |l| {
+        train_resume(l, run_id, train_emitter(app))
+    })
+    .await
+}
+#[tauri::command]
+pub async fn vl_train_stop(state: State<'_, VlState>, run_id: i64) -> Result<(), String> {
+    lab(&state)?.train.stop(run_id).map_err(|e| e.code())
+}
+#[tauri::command]
+pub async fn vl_train_kill(state: State<'_, VlState>, run_id: i64) -> Result<(), String> {
+    lab(&state)?.train.kill(run_id);
+    Ok(())
+}
+#[tauri::command]
+pub async fn vl_train_runs(state: State<'_, VlState>) -> Result<Vec<TrainRun>, String> {
+    blocking(lab(&state)?, |l| {
+        l.store.lock().map_err(|_| err("IO_FAILED"))?.runs()
+    })
+    .await
+}
+#[tauri::command]
+pub async fn vl_train_delete(state: State<'_, VlState>, run_id: i64) -> Result<(), String> {
+    blocking(lab(&state)?, move |l| train_delete(l, run_id)).await
 }
