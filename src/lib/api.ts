@@ -60,3 +60,17 @@ export const spotify_volume = () => isTauri() || mockEnabled ? call<number | nul
 
 export const rule_errors = () => call<Record<string, string>>('rule_errors');
 export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri() ? listen<Record<string, string>>('rule_errors', e => cb(e.payload)) : Promise.resolve(() => {});
+
+// Subscribe before reading the snapshot so a late read cannot overwrite an event.
+export function watchRuleErrors(cb: (errors: Record<string, string>) => void): () => void {
+  let disposed = false, updated = false;
+  let unlisten = () => {};
+  void (async () => {
+    const cleanup = await onRuleErrors(errors => { updated = true; if (!disposed) cb(errors); });
+    if (disposed) { cleanup(); return; }
+    unlisten = cleanup;
+    const initial = await rule_errors();
+    if (!disposed && !updated) cb(initial);
+  })().catch(() => {});
+  return () => { disposed = true; unlisten(); };
+}

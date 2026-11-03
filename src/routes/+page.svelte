@@ -4,11 +4,9 @@ import { onMount } from 'svelte';
 import * as api from '$lib/api';
 import { ru, errorText } from '$lib/i18n/ru';
 import NowQueue from '$lib/views/NowQueue.svelte';
-import Rewards from '$lib/views/Rewards.svelte';
-import Limits from '$lib/views/Limits.svelte';
+import Rules from '$lib/views/rules/Rules.svelte';
 import Widget from '$lib/views/Widget.svelte';
 import VoiceLab from '$lib/views/voice/VoiceLab.svelte';
-import Tts from '$lib/views/Tts.svelte';
 import Connections from '$lib/views/Connections.svelte';
 let tab = $state('now');
 let snapshot = $state(api.emptyState);
@@ -88,9 +86,7 @@ onMount(() => {
 {:else if tab === 'voice'}<VoiceLab />
 {:else if !ready}<p>{ru.settingsLoading}</p><button onclick={load}>{ru.reload}</button>
 {:else if tab === 'rules'}
-  <Rewards {settings} {save} />
-  <Limits {settings} {save} />
-  <Tts {settings} {runningPort} {save} {run} />
+  <Rules {settings} {runningPort} {save} {run} />
 {:else if tab === 'widget'}<Widget {runningPort} {settings} {themes} {save} {run} {refreshThemes} />
 {:else}<Connections {runningPort} bind:settings {save} {run} />{/if}
 </main>
