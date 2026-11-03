@@ -1,4 +1,6 @@
+pub mod engine;
 pub mod filter;
+pub mod queue;
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +44,23 @@ impl Default for TtsSettings {
             stop_words: Vec::new(),
         }
     }
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ItemView {
+    pub id: u64,
+    pub user: String,
+    pub text: String,
+    pub reward: bool,
+    pub synthesizing: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct TtsView {
+    pub current: Option<ItemView>,
+    pub queue: Vec<ItemView>,
+    pub widget: bool,
+    pub warning: Option<String>,
 }
 
 #[cfg(test)]
