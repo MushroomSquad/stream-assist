@@ -252,17 +252,26 @@ impl Runner {
             progress_emit(job);
         });
         let result: Result<Render, VlError> = async {
-            let (duration_ms, synth_ms) = self
-                .synth_raw(root, style_path, &params, &out, Some(&progress))
-                .await?;
-            let s = store.lock().map_err(|_| err("IO_FAILED"))?;
-            let r = s.add_render(profile_id, recipe.as_ref(), &params, duration_ms, synth_ms)?;
-            if let Err(e) = std::fs::rename(&out, s.render_path(r.id)) {
-                s.rollback_render(r.id)?;
-                return Err(e.into());
-            }
-            s.prune_renders(200)?;
-            Ok(r)
+            // Registration runs inside synth_raw so the slot is held until the render exists.
+            self.synth_raw(
+                root,
+                style_path,
+                &params,
+                &out,
+                Some(&progress),
+                |duration_ms, synth_ms| {
+                    let s = store.lock().map_err(|_| err("IO_FAILED"))?;
+                    let r =
+                        s.add_render(profile_id, recipe.as_ref(), &params, duration_ms, synth_ms)?;
+                    if let Err(e) = std::fs::rename(&out, s.render_path(r.id)) {
+                        s.rollback_render(r.id)?;
+                        return Err(e.into());
+                    }
+                    s.prune_renders(200)?;
+                    Ok(r)
+                },
+            )
+            .await
         }
         .await;
         let job = state.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -290,19 +299,22 @@ impl Runner {
         out: &Path,
     ) -> Result<i64, VlError> {
         let mut files = TempFiles(vec![out.to_owned()]);
-        let (duration_ms, _) = self.synth_raw(root, style_path, &params, out, None).await?;
+        let duration_ms = self
+            .synth_raw(root, style_path, &params, out, None, |d, _| Ok(d))
+            .await?;
         files.0.clear();
         Ok(duration_ms)
     }
 
-    async fn synth_raw(
+    async fn synth_raw<T>(
         &self,
         root: &Path,
         style_path: PathBuf,
         params: &RenderParams,
         out: &Path,
         emit: Option<&Emit>,
-    ) -> Result<(i64, i64), VlError> {
+        finish: impl FnOnce(i64, i64) -> Result<T, VlError>,
+    ) -> Result<T, VlError> {
         if self
             .synth_busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -357,10 +369,10 @@ impl Runner {
             else {
                 return Err(err("WORKER_CRASHED"));
             };
-            Ok((
+            finish(
                 duration_ms.unwrap_or(0),
                 synth_ms.unwrap_or(t.elapsed().as_millis() as i64),
-            ))
+            )
         }
         .await;
         guard.finished = true;
