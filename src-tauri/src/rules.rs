@@ -328,6 +328,251 @@ pub fn from_legacy(v: &serde_json::Value) -> Rules {
     r
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RewardRoute {
+    pub action: ActionKind,
+    pub trigger_id: Option<String>,
+    pub active: bool,
+}
+pub fn route_reward(r: &Rules, reward_id: &str) -> Option<RewardRoute> {
+    for (action, t) in r.triggers() {
+        if matches!(&t.kind, TriggerKind::Reward { reward_id: Some(id), .. } if id == reward_id) {
+            return Some(RewardRoute {
+                action,
+                trigger_id: Some(t.id.clone()),
+                active: r.is_active(action, t),
+            });
+        }
+    }
+    r.retiring
+        .iter()
+        .find(|t| t.reward_id == reward_id)
+        .map(|t| RewardRoute {
+            action: t.action,
+            trigger_id: None,
+            active: false,
+        })
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MusicDecision {
+    Ignore,
+    Refund,
+    Process,
+}
+pub fn music_decision(r: &Rules, reward_id: &str) -> MusicDecision {
+    match route_reward(r, reward_id) {
+        Some(RewardRoute {
+            action: ActionKind::Music,
+            active: true,
+            ..
+        }) => MusicDecision::Process,
+        Some(RewardRoute {
+            action: ActionKind::Music,
+            active: false,
+            ..
+        }) => MusicDecision::Refund,
+        _ => MusicDecision::Ignore,
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatRoute {
+    pub action: ActionKind,
+    pub trigger_id: String,
+    pub text: String,
+}
+pub fn route_chat(r: &Rules, m: &crate::model::ChatMessage) -> Option<ChatRoute> {
+    if m.source_broadcaster_id
+        .as_ref()
+        .is_some_and(|id| id != &m.broadcaster_id)
+    {
+        return None;
+    }
+    let text = crate::tts::filter::strip_emotes(&m.fragments);
+    r.triggers().into_iter().find_map(|(action, t)| {
+        if !r.is_active(action, t) {
+            return None;
+        }
+        if let TriggerKind::ChatMarker { marker } = &t.kind {
+            crate::tts::filter::extract_marked(&text, marker).map(|text| ChatRoute {
+                action,
+                trigger_id: t.id.clone(),
+                text,
+            })
+        } else {
+            None
+        }
+    })
+}
+pub fn reconcile_targets(r: &Rules) -> Vec<(ActionKind, String)> {
+    r.triggers()
+        .into_iter()
+        .filter_map(|(action, t)| {
+            if let TriggerKind::Reward {
+                reward_id: Some(id),
+                ..
+            } = &t.kind
+            {
+                Some((action, id.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+pub fn reward_body(title: &str, cost: u32, cooldown_s: u32, enabled: bool) -> serde_json::Value {
+    serde_json::json!({"title":title,"cost":cost,"is_enabled":enabled,"is_paused":false,"global_cooldown_setting":{"is_enabled":cooldown_s>0,"global_cooldown_seconds":cooldown_s}})
+}
+pub fn reward_prompt(a: ActionKind) -> &'static str {
+    match a {
+        ActionKind::Music => "Название или ссылка на трек",
+        ActionKind::Tts => "Текст для озвучки",
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub enum RewardOp {
+    Ensure {
+        action: ActionKind,
+        trigger_id: String,
+        known_id: Option<String>,
+        title: String,
+        cost: u32,
+        create: bool,
+    },
+    Patch {
+        reward_id: String,
+        body: serde_json::Value,
+    },
+    Retire {
+        action: ActionKind,
+        reward_id: String,
+    },
+}
+pub fn connect_ops(r: &Rules) -> Vec<RewardOp> {
+    let mut ops = Vec::new();
+    for (action, t) in r.triggers() {
+        if let TriggerKind::Reward {
+            title,
+            cost,
+            reward_id,
+            ..
+        } = &t.kind
+        {
+            let active = r.is_active(action, t);
+            if reward_id.is_some() || active {
+                ops.push(RewardOp::Ensure {
+                    action,
+                    trigger_id: t.id.clone(),
+                    known_id: reward_id.clone(),
+                    title: title.clone(),
+                    cost: *cost,
+                    create: active,
+                });
+            }
+        }
+    }
+    ops.extend(r.retiring.iter().map(|t| RewardOp::Retire {
+        action: t.action,
+        reward_id: t.reward_id.clone(),
+    }));
+    ops
+}
+pub fn plan_save(current: &Rules, mut incoming: Rules) -> (Rules, Vec<RewardOp>) {
+    incoming.retiring = current.retiring.clone();
+    incoming.next_id = current.next_id;
+    let mut seen = HashSet::new();
+    for (action, t) in incoming
+        .music
+        .triggers
+        .iter_mut()
+        .map(|t| (ActionKind::Music, t))
+        .chain(
+            incoming
+                .tts
+                .triggers
+                .iter_mut()
+                .map(|t| (ActionKind::Tts, t)),
+        )
+    {
+        let old = current.trigger(&t.id).filter(|(a, old)| {
+            *a == action && old.kind.tag() == t.kind.tag() && !seen.contains(&t.id)
+        });
+        if old.is_none() {
+            t.id = format!("t{}", incoming.next_id);
+            incoming.next_id += 1;
+        }
+        if let TriggerKind::Reward { reward_id, .. } = &mut t.kind {
+            *reward_id = old.and_then(|(_, old)| match &old.kind {
+                TriggerKind::Reward { reward_id, .. } => reward_id.clone(),
+                _ => None,
+            });
+        }
+        seen.insert(t.id.clone());
+    }
+    let mut ops = Vec::new();
+    for (action, t) in current.triggers() {
+        if incoming.trigger(&t.id).is_none() {
+            if let TriggerKind::Reward {
+                reward_id: Some(id),
+                ..
+            } = &t.kind
+            {
+                incoming.retiring.push(Retiring {
+                    action,
+                    reward_id: id.clone(),
+                });
+                ops.push(RewardOp::Retire {
+                    action,
+                    reward_id: id.clone(),
+                });
+            }
+        }
+    }
+    for (action, t) in incoming.triggers() {
+        if let TriggerKind::Reward {
+            title,
+            cost,
+            cooldown_s,
+            reward_id,
+        } = &t.kind
+        {
+            let active = incoming.is_active(action, t);
+            let old = current.trigger(&t.id);
+            let was_active = old.is_some_and(|(a, t)| current.is_active(a, t));
+            let changed = old.is_none_or(|(_, old)| match &old.kind {
+                TriggerKind::Reward {
+                    title: ot,
+                    cost: oc,
+                    cooldown_s: os,
+                    ..
+                } => (ot, oc, os) != (title, cost, cooldown_s),
+                _ => true,
+            });
+            if let Some(id) = reward_id {
+                if changed || was_active != active {
+                    ops.push(RewardOp::Patch {
+                        reward_id: id.clone(),
+                        body: if was_active && !active {
+                            serde_json::json!({"is_enabled":false})
+                        } else {
+                            reward_body(title, *cost, *cooldown_s, active)
+                        },
+                    });
+                }
+            } else if active && (!was_active || changed) {
+                ops.push(RewardOp::Ensure {
+                    action,
+                    trigger_id: t.id.clone(),
+                    known_id: None,
+                    title: title.clone(),
+                    cost: *cost,
+                    create: true,
+                });
+            }
+        }
+    }
+    (incoming, ops)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +833,365 @@ mod tests {
         assert!(r.trigger("missing").is_none());
         assert!(r.set_reward_id("music-reward", None));
         assert_eq!(r.reward_ids(), vec!["t", "old"]);
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn known() -> Rules {
+        let mut r = Rules::default();
+        r.set_reward_id("music-reward", Some("m1".into()));
+        r.set_reward_id("tts-reward", Some("t1".into()));
+        r.retiring.push(Retiring {
+            action: ActionKind::Music,
+            reward_id: "old".into(),
+        });
+        r
+    }
+    fn reward(id: &str) -> Trigger {
+        Trigger {
+            id: id.into(),
+            enabled: true,
+            kind: TriggerKind::Reward {
+                title: id.into(),
+                cost: 10,
+                cooldown_s: 0,
+                reward_id: Some("forged".into()),
+            },
+        }
+    }
+    #[test]
+    fn route_reward_cases() {
+        let r = known();
+        assert_eq!(
+            route_reward(&r, "m1"),
+            Some(RewardRoute {
+                action: ActionKind::Music,
+                trigger_id: Some("music-reward".into()),
+                active: true
+            })
+        );
+        assert!(!route_reward(&r, "t1").unwrap().active);
+        assert_eq!(
+            route_reward(&r, "old"),
+            Some(RewardRoute {
+                action: ActionKind::Music,
+                trigger_id: None,
+                active: false
+            })
+        );
+        assert_eq!(route_reward(&r, "unknown"), None);
+    }
+    #[test]
+    fn music_decision_cases() {
+        let mut r = known();
+        assert_eq!(music_decision(&r, "m1"), MusicDecision::Process);
+        r.music.enabled = false;
+        assert_eq!(music_decision(&r, "m1"), MusicDecision::Refund);
+        r.music.enabled = true;
+        r.music.triggers[0].enabled = false;
+        for id in ["m1", "old"] {
+            assert_eq!(music_decision(&r, id), MusicDecision::Refund);
+        }
+        for id in ["t1", "unknown"] {
+            assert_eq!(music_decision(&r, id), MusicDecision::Ignore);
+        }
+    }
+    #[test]
+    fn route_chat_cases() {
+        use crate::model::{ChatMessage, Fragment};
+        let mut r = Rules::default();
+        r.tts.triggers[1].enabled = true;
+        let mut m = ChatMessage {
+            user_login: "u".into(),
+            broadcaster_id: "b".into(),
+            source_broadcaster_id: None,
+            fragments: vec![],
+            badges: vec![],
+        };
+        let fragment = |kind: &str, text: &str| Fragment {
+            kind: kind.into(),
+            text: text.into(),
+        };
+        m.fragments = vec![fragment("text", "привет %")];
+        assert_eq!(
+            route_chat(&r, &m),
+            Some(ChatRoute {
+                action: ActionKind::Tts,
+                trigger_id: "tts-chat".into(),
+                text: "привет".into()
+            })
+        );
+        m.source_broadcaster_id = Some("other".into());
+        assert_eq!(route_chat(&r, &m), None);
+        m.source_broadcaster_id = Some("b".into());
+        assert!(route_chat(&r, &m).is_some());
+        r.tts.triggers[1].enabled = false;
+        assert_eq!(route_chat(&r, &m), None);
+        r.tts.triggers[1].enabled = true;
+        r.tts.enabled = false;
+        assert_eq!(route_chat(&r, &m), None);
+        r.tts.enabled = true;
+        m.fragments = vec![fragment("text", "на 100% согласен")];
+        assert_eq!(route_chat(&r, &m), None);
+        m.fragments = vec![fragment("text", "привет "), fragment("emote", "%")];
+        assert_eq!(route_chat(&r, &m), None);
+        m.fragments.push(fragment("text", "!!"));
+        r.tts.triggers.push(Trigger {
+            id: "second".into(),
+            enabled: true,
+            kind: TriggerKind::ChatMarker {
+                marker: "!!".into(),
+            },
+        });
+        assert_eq!(route_chat(&r, &m).unwrap().trigger_id, "second");
+        m.fragments = vec![fragment("text", "привет !! потом %")];
+        assert_eq!(route_chat(&r, &m).unwrap().trigger_id, "tts-chat");
+    }
+    #[test]
+    fn reconcile_targets_cases() {
+        let mut r = known();
+        r.music.triggers.push(reward("new"));
+        r.set_reward_id("new", None);
+        assert_eq!(
+            reconcile_targets(&r),
+            vec![
+                (ActionKind::Music, "m1".into()),
+                (ActionKind::Tts, "t1".into())
+            ]
+        );
+    }
+    #[test]
+    fn reward_body_shape() {
+        for cooldown in [0, 30] {
+            assert_eq!(
+                reward_body("Название", 500, cooldown, true),
+                json!({"title":"Название","cost":500,"is_enabled":true,"is_paused":false,"global_cooldown_setting":{"is_enabled":cooldown>0,"global_cooldown_seconds":cooldown}})
+            );
+        }
+        assert_eq!(
+            reward_prompt(ActionKind::Music),
+            "Название или ссылка на трек"
+        );
+        let legacy = crate::tts::TtsSettings::default();
+        for enabled in [false, true] {
+            assert_eq!(
+                reward_body(
+                    &legacy.reward_title,
+                    legacy.reward_cost,
+                    legacy.reward_cooldown_s,
+                    enabled
+                )
+                .to_string(),
+                legacy.reward_body(enabled).to_string()
+            );
+        }
+        assert_eq!(reward_prompt(ActionKind::Tts), "Текст для озвучки");
+    }
+    #[test]
+    fn connect_ops_lazy() {
+        assert_eq!(
+            connect_ops(&Rules::default()),
+            vec![RewardOp::Ensure {
+                action: ActionKind::Music,
+                trigger_id: "music-reward".into(),
+                known_id: None,
+                title: "Заказать трек".into(),
+                cost: 500,
+                create: true
+            }]
+        );
+        let ops = connect_ops(&known());
+        assert!(
+            matches!(&ops[1], RewardOp::Ensure { known_id: Some(id), create: false, .. } if id == "t1")
+        );
+        assert_eq!(
+            ops[2],
+            RewardOp::Retire {
+                action: ActionKind::Music,
+                reward_id: "old".into()
+            }
+        );
+    }
+    #[test]
+    fn connect_ops_after_migration_no_create() {
+        let r = from_legacy(
+            &json!({"music_reward_id":"m1","tts":{"reward_id":"t1","reward_enabled":true}}),
+        );
+        let ops = connect_ops(&r);
+        assert_eq!(ops.len(), 2);
+        assert!(ops.iter().all(|op| matches!(
+            op,
+            RewardOp::Ensure {
+                known_id: Some(_),
+                ..
+            }
+        )));
+    }
+    #[test]
+    fn plan_save_ops() {
+        let r = known();
+        assert!(plan_save(&r, r.clone()).1.is_empty());
+        let mut incoming = r.clone();
+        if let TriggerKind::Reward { cost, .. } = &mut incoming.music.triggers[0].kind {
+            *cost = 600;
+        }
+        assert_eq!(
+            plan_save(&r, incoming).1,
+            vec![RewardOp::Patch {
+                reward_id: "m1".into(),
+                body: reward_body("Заказать трек", 600, 0, true)
+            }]
+        );
+        for action_off in [false, true] {
+            let mut incoming = r.clone();
+            if action_off {
+                incoming.music.enabled = false;
+            } else {
+                incoming.music.triggers[0].enabled = false;
+            }
+            assert_eq!(
+                plan_save(&r, incoming).1,
+                vec![RewardOp::Patch {
+                    reward_id: "m1".into(),
+                    body: json!({"is_enabled":false})
+                }]
+            );
+        }
+        let mut multiple = r.clone();
+        multiple.music.triggers.push(reward("second"));
+        let mut incoming = multiple.clone();
+        incoming.music.enabled = false;
+        assert_eq!(
+            plan_save(&multiple, incoming).1,
+            vec![
+                RewardOp::Patch {
+                    reward_id: "m1".into(),
+                    body: json!({"is_enabled":false})
+                },
+                RewardOp::Patch {
+                    reward_id: "forged".into(),
+                    body: json!({"is_enabled":false})
+                },
+            ]
+        );
+        let mut incoming = r.clone();
+        incoming.music.triggers.clear();
+        let (saved, ops) = plan_save(&r, incoming);
+        assert_eq!(
+            ops,
+            vec![RewardOp::Retire {
+                action: ActionKind::Music,
+                reward_id: "m1".into()
+            }]
+        );
+        assert_eq!(saved.retiring.len(), 2);
+        let r = Rules::default();
+        assert!(plan_save(&r, r.clone()).1.is_empty());
+        let mut incoming = r.clone();
+        incoming.music.triggers.clear();
+        assert!(plan_save(&r, incoming).1.is_empty());
+        let mut incoming = r.clone();
+        incoming.tts.triggers[0].enabled = true;
+        assert!(matches!(
+            &plan_save(&r, incoming).1[..],
+            [RewardOp::Ensure {
+                known_id: None,
+                create: true,
+                ..
+            }]
+        ));
+        let mut incoming = r.clone();
+        if let TriggerKind::Reward { title, .. } = &mut incoming.music.triggers[0].kind {
+            *title = "Новое".into();
+        }
+        assert!(matches!(
+            &plan_save(&r, incoming).1[..],
+            [RewardOp::Ensure { .. }]
+        ));
+    }
+    #[test]
+    fn assign_ids_keeps_owned_reward_id() {
+        let r = known();
+        let mut incoming = r.clone();
+        incoming.set_reward_id("music-reward", Some("forged".into()));
+        incoming.retiring.clear();
+        incoming.next_id = 999;
+        let (saved, ops) = plan_save(&r, incoming);
+        assert_eq!(saved, r);
+        assert!(ops.is_empty());
+    }
+    #[test]
+    fn assign_ids_two_new_triggers_distinct() {
+        let r = Rules::default();
+        let mut incoming = r.clone();
+        incoming.tts.triggers.extend([reward(""), reward("")]);
+        let (saved, _) = plan_save(&r, incoming);
+        assert_eq!(saved.tts.triggers[2].id, "t1");
+        assert_eq!(saved.tts.triggers[3].id, "t2");
+        assert_eq!(saved.next_id, 3);
+        assert!(matches!(
+            saved.tts.triggers[2].kind,
+            TriggerKind::Reward {
+                reward_id: None,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn assign_ids_unknown_id_is_new() {
+        let mut r = Rules::default();
+        r.music.triggers[0].id = "t4".into();
+        r.next_id = 5;
+        r.set_reward_id("t4", Some("m1".into()));
+        let mut incoming = r.clone();
+        incoming.music.triggers[0].id = "t99".into();
+        let (saved, ops) = plan_save(&r, incoming);
+        assert_eq!(saved.music.triggers[0].id, "t5");
+        assert_eq!(saved.next_id, 6);
+        assert!(matches!(
+            saved.music.triggers[0].kind,
+            TriggerKind::Reward {
+                reward_id: None,
+                ..
+            }
+        ));
+        assert!(ops.contains(&RewardOp::Retire {
+            action: ActionKind::Music,
+            reward_id: "m1".into()
+        }));
+        let mut incoming = saved.clone();
+        incoming.music.triggers[0].id = "t4".into();
+        assert_eq!(plan_save(&saved, incoming).0.music.triggers[0].id, "t6");
+    }
+    #[test]
+    fn assign_ids_kind_change_is_new() {
+        let r = known();
+        let mut incoming = r.clone();
+        incoming.tts.triggers[1] = reward("tts-chat");
+        let (saved, ops) = plan_save(&r, incoming);
+        assert_eq!(saved.tts.triggers[1].id, "t1");
+        assert!(!ops.iter().any(|op| matches!(op, RewardOp::Patch { .. })));
+    }
+    #[test]
+    fn assign_ids_duplicate_incoming() {
+        let r = known();
+        let mut incoming = r.clone();
+        incoming
+            .music
+            .triggers
+            .push(incoming.music.triggers[0].clone());
+        let (saved, _) = plan_save(&r, incoming);
+        assert_eq!(saved.music.triggers[1].id, "t1");
+        assert!(matches!(
+            saved.music.triggers[1].kind,
+            TriggerKind::Reward {
+                reward_id: None,
+                ..
+            }
+        ));
     }
 }
