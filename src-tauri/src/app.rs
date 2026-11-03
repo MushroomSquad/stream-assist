@@ -105,11 +105,7 @@ async fn start(
     let db = Arc::new(Mutex::new(crate::db::Db::open(
         &dir.join("stream-assist.db"),
     )?));
-    let settings = db
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_setting::<Settings>("settings")?
-        .unwrap_or_default();
+    let settings = crate::driver::migrate_stored(&db.lock().unwrap_or_else(|e| e.into_inner()))?;
     handle.manage(db.clone());
     let mut warning = None;
     let spotify = match load("spotify").await {
@@ -195,8 +191,7 @@ async fn start(
                 let _ = tauri::Emitter::emit(&view_handle, "tts", view);
             }),
         },
-        // TODO(Task 5): use the persisted rules directly.
-        crate::rules::from_legacy(&serde_json::to_value(&settings)?).tts_runtime(),
+        settings.rules.tts_runtime(),
         tts_rx,
     ));
     if let Some(mut events) = ws.tts_rx.take() {
@@ -233,15 +228,11 @@ pub fn exit(app: &tauri::AppHandle) {
         let operation = async {
             let dir = app.path().app_data_dir()?;
             let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
-            let settings = db.get_setting::<Settings>("settings")?.unwrap_or_default();
+            let (settings, _) = crate::driver::load_settings(&db)?;
             drop(db);
             if let Some(t) = load("twitch").await? {
                 let helix = twitch_client(t, app.clone());
-                // Both rewards are paused concurrently to fit the 2 s exit budget.
-                let ids: Vec<String> = [settings.music_reward_id, settings.tts.reward_id]
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                let ids = settings.rules.reward_ids();
                 let pause = serde_json::json!({"is_paused":true});
                 futures_util::future::join_all(
                     ids.iter().map(|id| helix.update_reward(id, &pause)),
@@ -275,58 +266,82 @@ mod tests {
         let mut invalid = Vec::new();
         for marker in ["", "abcd", "a b"] {
             let mut s = base.clone();
-            s.tts.marker = marker.into();
+            s.rules.tts.triggers[1].kind = crate::rules::TriggerKind::ChatMarker {
+                marker: marker.into(),
+            };
             invalid.push(s);
         }
         for speed in [2.0, 0.6, f32::NAN] {
             let mut s = base.clone();
-            s.tts.speed = speed;
+            s.rules.tts.cfg.speed = speed;
             invalid.push(s);
         }
         let mut s = base.clone();
-        s.tts.global_cooldown_s = 3601;
+        s.rules.tts.cfg.global_cooldown_s = 3601;
         invalid.push(s);
         let mut s = base.clone();
-        s.tts.user_cooldown_s = 3601;
+        s.rules.tts.cfg.user_cooldown_s = 3601;
         invalid.push(s);
         let mut s = base.clone();
-        s.tts.reward_title = s.reward_title.clone();
+        s.rules.tts.triggers[0].kind = s.rules.music.triggers[0].kind.clone();
         invalid.push(s);
         let mut s = base.clone();
-        s.tts.lang = "xx".into();
+        s.rules.tts.cfg.lang = "xx".into();
         invalid.push(s);
-        for title in ["".to_string(), "я".repeat(46)] {
+        for value in ["".to_string(), "я".repeat(46)] {
             let mut s = base.clone();
-            s.tts.reward_title = title;
+            if let crate::rules::TriggerKind::Reward { title, .. } =
+                &mut s.rules.tts.triggers[0].kind
+            {
+                *title = value;
+            }
             invalid.push(s);
         }
-        for cost in [0, 2147483648] {
+        for value in [0, 2147483648] {
             let mut s = base.clone();
-            s.tts.reward_cost = cost;
+            if let crate::rules::TriggerKind::Reward { cost, .. } =
+                &mut s.rules.tts.triggers[0].kind
+            {
+                *cost = value;
+            }
             invalid.push(s);
         }
         let mut s = base.clone();
-        s.tts.reward_cooldown_s = 604801;
+        if let crate::rules::TriggerKind::Reward { cooldown_s, .. } =
+            &mut s.rules.tts.triggers[0].kind
+        {
+            *cooldown_s = 604801;
+        }
         invalid.push(s);
         let mut s = base.clone();
-        s.tts.stop_words = vec!["a".into(); 201];
+        s.rules.tts.cfg.stop_words = vec!["a".into(); 201];
         invalid.push(s);
         let mut s = base.clone();
-        s.tts.stop_words = vec!["я".repeat(51)];
+        s.rules.tts.cfg.stop_words = vec!["я".repeat(51)];
         invalid.push(s);
         for s in invalid {
             assert!(validate_settings(&s).is_err());
         }
         let mut s = base;
-        s.tts.marker = "я!?".into();
-        s.tts.reward_title = "я".repeat(45);
-        s.tts.reward_cost = 2147483647;
-        s.tts.reward_cooldown_s = 604800;
-        s.tts.global_cooldown_s = 3600;
-        s.tts.user_cooldown_s = 3600;
-        s.tts.stop_words = vec!["я".repeat(50); 200];
+        s.rules.tts.triggers[1].kind = crate::rules::TriggerKind::ChatMarker {
+            marker: "я!?".into(),
+        };
+        if let crate::rules::TriggerKind::Reward { title, .. } = &mut s.rules.tts.triggers[0].kind {
+            *title = "я".repeat(45);
+        }
+        if let crate::rules::TriggerKind::Reward { cost, .. } = &mut s.rules.tts.triggers[0].kind {
+            *cost = 2147483647;
+        }
+        if let crate::rules::TriggerKind::Reward { cooldown_s, .. } =
+            &mut s.rules.tts.triggers[0].kind
+        {
+            *cooldown_s = 604800;
+        }
+        s.rules.tts.cfg.global_cooldown_s = 3600;
+        s.rules.tts.cfg.user_cooldown_s = 3600;
+        s.rules.tts.cfg.stop_words = vec!["я".repeat(50); 200];
         for speed in [0.7, 1.5] {
-            s.tts.speed = speed;
+            s.rules.tts.cfg.speed = speed;
             assert!(validate_settings(&s).is_ok());
         }
     }
@@ -337,7 +352,10 @@ mod tests {
         s.port = 0;
         assert!(validate_settings(&s).is_err());
         s.port = 47821;
-        s.reward_cost = 0;
+        if let crate::rules::TriggerKind::Reward { cost, .. } = &mut s.rules.music.triggers[0].kind
+        {
+            *cost = 0;
+        }
         assert!(validate_settings(&s).is_err());
     }
     #[test]
@@ -416,14 +434,15 @@ pub fn get_settings(app: tauri::AppHandle) -> Result<Settings, String> {
     let db = app
         .try_state::<Arc<Mutex<crate::db::Db>>>()
         .ok_or("starting")?;
-    db.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_setting("settings")
-        .map(|s| s.unwrap_or_default())
+    crate::driver::load_settings(&db.lock().unwrap_or_else(|e| e.into_inner()))
+        .map(|(s, _)| s)
         .map_err(|_| "settings_read_failed".into())
 }
 #[tauri::command]
-pub async fn save_settings(state: tauri::State<'_, AppState>, s: Settings) -> Result<(), String> {
+pub async fn save_settings(
+    state: tauri::State<'_, AppState>,
+    s: Settings,
+) -> Result<Settings, String> {
     validate_settings(&s)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     send(&state, DriverMsg::SaveSettings(s, tx)).await?;
@@ -617,29 +636,19 @@ fn validate_volume(pct: u8) -> Result<(), String> {
     }
 }
 fn validate_settings(s: &Settings) -> Result<(), String> {
-    let t = &s.tts;
-    if s.port == 0
-        || s.obs.port == 0
-        || s.reward_cost == 0
-        || s.reward_title.trim().is_empty()
-        || !(1..=3).contains(&t.marker.chars().count())
-        || t.marker.chars().any(char::is_whitespace)
-        || !(0.7..=1.5).contains(&t.speed)
-        || t.global_cooldown_s > 3600
-        || t.user_cooldown_s > 3600
-        || t.stop_words.len() > 200
-        || t.stop_words.iter().any(|w| w.chars().count() > 50)
-        || t.reward_title.trim().is_empty()
-        || t.reward_title.chars().count() > 45
-        || t.reward_title.trim().to_lowercase() == s.reward_title.trim().to_lowercase()
-        || !(1..=2147483647).contains(&t.reward_cost)
-        || t.reward_cooldown_s > 604800
-        || !supertonic3_tts::AVAILABLE_LANGS.contains(&t.lang.as_str())
-    {
-        Err("settings_invalid".into())
-    } else {
-        Ok(())
+    if s.port == 0 || s.obs.port == 0 {
+        return Err("settings_invalid".into());
     }
+    crate::rules::validate(&s.rules)
+}
+
+#[tauri::command]
+pub async fn rule_errors(
+    state: tauri::State<'_, AppState>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    send(&state, DriverMsg::RuleErrors(tx)).await?;
+    rx.await.map_err(|_| "driver_closed".to_string())
 }
 
 pub struct RunningPort(pub Option<u16>);

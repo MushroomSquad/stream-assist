@@ -975,17 +975,10 @@ mod routing_tests {
             reward_prompt(ActionKind::Music),
             "Название или ссылка на трек"
         );
-        let legacy = crate::tts::TtsSettings::default();
         for enabled in [false, true] {
             assert_eq!(
-                reward_body(
-                    &legacy.reward_title,
-                    legacy.reward_cost,
-                    legacy.reward_cooldown_s,
-                    enabled
-                )
-                .to_string(),
-                legacy.reward_body(enabled).to_string()
+                reward_body("Озвучить текст", 300, 0, enabled),
+                json!({"title":"Озвучить текст","cost":300,"is_enabled":enabled,"is_paused":false,"global_cooldown_setting":{"is_enabled":false,"global_cooldown_seconds":0}})
             );
         }
         assert_eq!(reward_prompt(ActionKind::Tts), "Текст для озвучки");

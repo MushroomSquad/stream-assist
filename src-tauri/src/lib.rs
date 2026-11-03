@@ -10,7 +10,6 @@ pub mod obs;
 pub mod player;
 pub mod request;
 pub mod rewards;
-pub mod router;
 pub mod rules;
 pub mod secrets;
 pub mod server;
@@ -42,6 +41,7 @@ pub fn run() {
             app::running_port,
             app::twitch_status,
             app::save_settings,
+            app::rule_errors,
             app::twitch_login_start,
             app::twitch_login_poll,
             app::twitch_logout,

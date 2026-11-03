@@ -1,6 +1,6 @@
 use stream_assist_lib::{
     model::Source,
-    router::{FeatureKind, route},
+    rules::{ActionKind, Rules, route_reward},
 };
 
 #[test]
@@ -20,10 +20,12 @@ fn source_roundtrip_json() {
 
 #[test]
 fn route_music() {
+    let mut rules = Rules::default();
+    rules.set_reward_id("music-reward", Some("music".into()));
     assert_eq!(
-        route("music", Some("music"), None),
-        Some(FeatureKind::Music)
+        route_reward(&rules, "music").unwrap().action,
+        ActionKind::Music
     );
-    assert_eq!(route("other", Some("music"), None), None);
-    assert_eq!(route("music", None, None), None);
+    assert_eq!(route_reward(&rules, "other"), None);
+    assert_eq!(route_reward(&Rules::default(), "music"), None);
 }
