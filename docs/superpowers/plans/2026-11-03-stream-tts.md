@@ -21,6 +21,7 @@
 - Канал в движок — `mpsc::unbounded_channel::<TtsMsg>()`; драйвер и команды панели шлют `send()` без ожидания (порядок сохраняется, блокировки нет; никаких `tokio::spawn` для отправки). Движок шлёт исходы в `mpsc::UnboundedSender<(RedemptionRef, bool)>`, который драйвер читает в своём `select!`.
 - TTS-предупреждения живут только в `TtsView.warning` (не в `WidgetState.warning`).
 - Тексты UI — русские, в `src/lib/i18n/ru.ts`. `SCOPES` += `user:read:chat`.
+- Все команды `cargo` выполняются из `src-tauri/`. Интеграционные тесты Voice Lab требуют `cargo build --examples`.
 
 ## Review Focus
 
@@ -45,7 +46,7 @@
 - `#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)] pub struct Roles { pub everyone: bool, pub subscribers: bool, pub vips: bool, pub moderators: bool }`, `Default` — все `true`.
 - `pub fn role_allowed(r: &Roles, badges: &[String]) -> bool` — `broadcaster` всегда; `everyone`; `subscriber`/`founder` при `subscribers`; `vip`; `moderator`/`lead_moderator` при `moderators`.
 - `tts/mod.rs`: `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)] #[serde(default)] pub struct TtsSettings { pub reward_enabled: bool /*false*/, pub chat_enabled: bool /*false*/, pub profile_id: Option<i64>, pub lang: String /*"ru"*/, pub speed: f32 /*1.0*/, pub reward_title: String /*"Озвучить текст"*/, pub reward_cost: u32 /*300*/, pub reward_cooldown_s: u32 /*0*/, pub reward_id: Option<String>, pub marker: String /*"%"*/, pub roles: filter::Roles, pub global_cooldown_s: u32 /*10*/, pub user_cooldown_s: u32 /*60*/, pub strip_links: bool /*true*/, pub stop_words: Vec<String> }` + `Default`.
-- `#[derive(Default)] pub struct Gate { last_global: Option<Instant>, last_user: HashMap<String, Instant> }`: `pub fn allowed(&self, user: &str, global_s: u32, user_s: u32, now: Instant) -> bool` и `pub fn mark(&mut self, user: &str, now: Instant, keep_s: u32)` — ключ — логин в нижнем регистре; `mark` удаляет записи старше `keep_s`. Стримера движок не проверяет и не отмечает.
+- `#[derive(Default)] pub struct Gate { last_global: Option<tokio::time::Instant>, last_user: HashMap<String, tokio::time::Instant> }` (именно `tokio::time::Instant` — тесты движка идут с `start_paused`; движок передаёт `tokio::time::Instant::now()`): `pub fn allowed(&self, user: &str, global_s: u32, user_s: u32, now: Instant) -> bool` и `pub fn mark(&mut self, user: &str, now: Instant, keep_s: u32)` — ключ — логин в нижнем регистре; `mark` удаляет записи старше `keep_s`. Стримера движок не проверяет и не отмечает.
 - [ ] **Step 1: Тесты** (`mod tests` в `filter.rs`; `tts_settings_from_empty_json` — в `tts/mod.rs`: `{}` → `TtsSettings::default()`): `marker_basic` («привет всем % лол» → «привет всем»; без метки → None; «%» → None; «  %x» → None), `marker_after_digit_ignored` («на 100% согласен» → None; «скидка 50% а потом привет %» → «скидка 50% а потом привет»), `marker_multichar` (`"!!"`), `emotes_stripped`, `links_removed` (`https://x.y/z`, `www.Site.com`, `twitch.tv/abc`, `пример.рф` вырезаны; «т.е.», «3.14», «ok.» остаются), `repeats_collapsed` («ааааааа!!!!!» → «ааа!!!»), `stop_word_rejects`, `truncate_on_word`, `roles` (каждая роль, `founder`, `lead_moderator`, стример), `gate_cooldowns` (общий, личный, 0 = выкл, `allowed` не отмечает).
 - [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo test --lib tts::filter`). **Step 5:** Commit `feat(tts): marker, filters and chat gate`.
 
@@ -62,13 +63,13 @@
   - всегда `TtsMsg::Settings(new.tts)` движку;
   - если есть `helix` и `reward_id`: `tts_reward_patch(old, &new.tts)` → `update_reward`;
   - если `reward_enabled` стало `true` и `reward_id` нет → `spawn_tts_reward(helix, &new.tts, tx)`.
-- `fn spawn_tts_reward(helix: Arc<Helix>, tts: &TtsSettings, tx: &mpsc::UnboundedSender<Internal>)` — `find_manageable_reward(tts.reward_id, &tts.reward_title)` → иначе `create_reward(title, cost, "Текст для озвучки")` → `Internal::TtsReward(Result<String>)` (тексты ошибок как у музыки). Обработчик `TtsReward(Ok(id))`: сохранить id в настройки (БД), `update_reward(id, reward_body(true))`, `TtsMsg::Settings` (сбрасывает это предупреждение), запустить TTS-reconcile (Task 7). `Err` → `TtsMsg::Warning(text)`.
+- `fn spawn_tts_reward(helix: Arc<Helix>, tts: &TtsSettings, tx: &mpsc::UnboundedSender<Internal>)` — `find_manageable_reward(tts.reward_id, &tts.reward_title)` → иначе `create_reward(title, cost, "Текст для озвучки")` → `Internal::TtsReward(Result<String>)` (тексты ошибок как у музыки). Обработчик `TtsReward(Ok(id))`: сохранить id в настройки (БД), `update_reward(id, reward_body(ctx.settings.tts.reward_enabled))` (режим могли выключить, пока награда создавалась), `TtsMsg::Settings` (сбрасывает это предупреждение), запустить TTS-reconcile (Task 7). `Err` → `TtsMsg::Warning(text)`.
 - `connect_twitch`: если `tts.reward_enabled` → `spawn_tts_reward`; иначе если `tts.reward_id` есть → `update_reward(id, {"is_enabled": false})`.
 - `app::exit` и `DriverMsg::TwitchLogout` ставят на паузу и TTS-награду (`{"is_paused": true}`), если id есть.
 - `app::SCOPES` += ` user:read:chat`.
-- Задача выполняется после Task 6: `tts_settings_changed` шлёт `TtsMsg::Settings` в канал движка (`mpsc::UnboundedSender<TtsMsg>`, создаётся в Task 7; до Task 7 — параметр функции, в тестах — тестовый канал).
+- Задача выполняется после Task 6. Task 2 сама добавляет `DriverCtx.tts: mpsc::UnboundedSender<TtsMsg>`; в `app::start` создаёт `let (tts_tx, tts_rx) = mpsc::unbounded_channel::<TtsMsg>();`, передаёт `tts_tx` в `DriverCtx`, а `tts_rx` держит (не роняет) до Task 7, которая запускает с ним движок. Task 2 **не** вызывает `tts_reconcile`: в обработчике `TtsReward(Ok)` — маркер `// TODO(Task 7): tts_reconcile`, вызов добавляет Task 7.
 - [ ] **Step 1: Тесты:** `settings_without_tts_from_old_json` (старый JSON `driver::Settings` без `tts` → `tts == TtsSettings::default()`), `route_tts`, `validate_rejects_bad_tts` (метка "" и "abcd", скорость 2.0, кулдаун 3601, одинаковые названия наград, язык "xx"), `settings_change_keeps_tts_reward_id`, `tts_reward_body` (enabled/disabled), `tts_reward_patch_cases` (без изменений → None; выключение → `{"is_enabled":false}`; включение и смена цены → тело с `is_paused:false`).
-- [ ] **Step 2–4:** FAIL → реализовать → PASS. **Step 5:** Commit `feat(tts): settings and reward lifecycle`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo test --lib -- driver:: router:: app:: tts::`). **Step 5:** Commit `feat(tts): settings and reward lifecycle`.
 
 ### Task 3: EventSub — сообщения чата
 
@@ -80,8 +81,8 @@
 - `Helix::subscribe_chat(&self, session_id: &str) -> Result<bool>` — `Ok(true)` успех, `Ok(false)` на 403, другой неуспех → `Err`.
 - `pub enum ChatStatus { Ok, Forbidden, Failed }` (в `eventsub.rs`), `EsSignal::ChatStatus(ChatStatus)`, `EsSignal::Chat(ChatMessage)`. Тело: `{"type":"channel.chat.message","version":"1","condition":{"broadcaster_user_id":b,"user_id":b},"transport":{"method":"websocket","session_id":…}}`.
 - `eventsub::run` (сигнатура не меняется): после `subscribe_redemptions` → `subscribe_chat` (таймаут 10 с); `Ok(true)` → `ChatStatus::Ok`, `Ok(false)` → `Forbidden`, `Err`/таймаут → `Failed`; во всех случаях сессия продолжается. `EsMsg::Chat` (только после welcome) → `EsSignal::Chat(ChatMessage)`; `Ignored` → продолжить.
-- [ ] **Step 1: Тесты:** `parse_chat_message` (фикстура → логин, 2 фрагмента, badges `["subscriber"]`, `source_broadcaster_id == None`), `unknown_notification_ignored` (`channel.follow` → `Ignored`), `malformed_chat_ignored` (`channel.chat.message` без `message` → `Ignored`), `eventsub_chat_forbidden_keeps_session` (wiremock: redemptions 202, chat 403 → `ChatStatus(Forbidden)`, затем погашение доходит как `Redemption`), `eventsub_chat_500_keeps_session` (chat 500 → `Failed`, погашение доходит), `eventsub_chat_ok_signals_status`; существующие тесты EventSub обновить под второй POST (мок chat 202).
-- [ ] **Step 2–4:** FAIL → реализовать → PASS. **Step 5:** Commit `feat(twitch): chat messages over EventSub`.
+- [ ] **Step 1: Тесты:** `parse_chat_message` (фикстура → логин, 2 фрагмента, badges `["subscriber"]`, `source_broadcaster_id == None`), `unknown_notification_ignored` (`channel.follow` → `Ignored`), `malformed_chat_ignored` (`channel.chat.message` без `message` → `Ignored`), `eventsub_chat_forbidden_keeps_session` (wiremock: redemptions 202, chat 403 → `ChatStatus(Forbidden)`, затем погашение доходит как `Redemption`), `eventsub_chat_500_keeps_session` (chat 500 → `Failed`, погашение доходит), `eventsub_chat_ok_signals_status`. Существующие тесты EventSub: в обоих добавить мок подписки на чат (`body_partial_json({"type":"channel.chat.message"})` → 202), в `eventsub_disconnect_subscribes_and_resyncs` общий счётчик POST — 4; хелпер `async fn next_signal(rx) -> EsSignal`, пропускающий `EsSignal::ChatStatus(_)`, во всех прежних проверках. `ChatStatus` отправляется сразу после попытки подписки на чат и **до** `Resync`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo test --lib twitch::`). **Step 5:** Commit `feat(twitch): chat messages over EventSub`.
 
 ### Task 4: `Runner::synth_file` — синтез без «Рендеров»
 
@@ -92,7 +93,7 @@
 - `pub async fn synth_file(&self, root: &Path, style_path: PathBuf, params: RenderParams, out: &Path) -> Result<i64, VlError>` — `emit = None`; при ошибке `out` не остаётся.
 - `commands.rs`: `pub(crate) async fn tts_synth(lab: Arc<VoiceLab>, profile_id: i64, params: RenderParams, out: PathBuf) -> Result<i64, VlError>` — `validate_params`, `require_model` (→ `MODEL_MISSING` или существующий код), стиль профиля (нет профиля → существующий код ошибки профиля), затем `synth_file`. Футура должна быть `Send`: в тестах `fn assert_send<T: Send>(_: &T)` на `tts_synth(...)`. Если не `Send` — обернуть как `vl_render` (`spawn_blocking` + `Handle::block_on`), это допустимо: движок не прерывает синтез, а ждёт его.
 - [ ] **Step 1: Тесты** (фейковый воркер, `cargo build --examples`): `synth_file_writes_without_render` (файл есть, `renders()` пуст, `jobs()` пуст), `synth_file_busy` (`JOB_BUSY`), `synth_file_failure_leaves_no_file`, `tts_synth_is_send` (компиляция); существующие тесты `synth` зелёные.
-- [ ] **Step 2–4:** FAIL → реализовать → PASS. **Step 5:** Commit `feat(voice-lab): synth to file for tts`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo build --examples && cargo test voice_lab`). **Step 5:** Commit `feat(voice-lab): synth to file for tts`.
 
 ### Task 5: сервер — `/widget/tts`, `/tts/{file}`, роль `tts`
 
@@ -102,9 +103,9 @@
 - `WsOut::TtsPlay { id: u64 }`, `WsOut::TtsStop`. Сессия `role=tts`: без начального `State`, получает только `TtsPlay`/`TtsStop`/`Reload`; остальные роли `Tts*` не получают.
 - `pub enum TtsWidgetEvent { Connected, Ended(u64), Error(u64), Disconnected }`; `ServerChannels.tts_rx: Option<mpsc::Receiver<TtsWidgetEvent>>` (забирается `take()` в `app::start` до передачи `ws` в `DriverCtx`). Сообщение виджета `{"type":"tts","id":N,"event":"ended"|"error"}`. Одна активная `tts`-сессия (отдельный слот, как `player`; вытесненная закрывается 4001, её события игнорируются); `Connected` при захвате слота, `Disconnected` — только активной при выходе.
 - `build`/`serve`/`start_or_disabled` получают `tts_dir: PathBuf` (обновить все вызовы, включая тесты). `GET /tts/{file}`: `file` строго `^[0-9]{1,20}\.wav$`, иначе 404; заголовки `Content-Type: audio/wav`, `Cache-Control: no-store`.
-- `GET /widget/tts` → `include_str!("../../assets/widget/tts.html")`: без внешних ресурсов, прозрачный фон; WebSocket `ws://${location.host}/ws?role=tts`, переподключение раз в 2 с; `TtsPlay` → `new Audio('/tts/'+id+'.wav')`, `ended`/`error` → событие; `TtsStop` → пауза и сброс.
+- `GET /widget/tts` → `include_str!("../../assets/widget/tts.html")`: без внешних ресурсов, прозрачный фон; WebSocket `ws://${location.host}/ws?role=tts`, переподключение раз в 2 с; `TtsPlay` → `new Audio('/tts/'+id+'.wav')`, `ended`/`error` → событие; `TtsStop` → пауза и сброс. Формат: `WsOut` сериализуется serde по умолчанию (externally tagged): `onmessage`: `m = JSON.parse(data)`; `m === 'Reload'` → `location.reload()`; `m === 'TtsStop'` → пауза и сброс; `m.TtsPlay` → играть `/tts/${m.TtsPlay.id}.wav`. Ответ: `{"type":"tts","id":N,"event":"ended"|"error"}`. Сервер в `tts`-сессию пересылает только `TtsPlay|TtsStop|Reload`; тест `tts_role_receives_only_tts` проверяет точные сериализованные формы.
 - [ ] **Step 1: Тесты:** `tts_wav_served_and_name_checked` (200 + оба заголовка; `a.wav`, `..%2Fx.wav` → 404), `tts_role_receives_only_tts` (нет начального `State`; `player` не получает `TtsPlay`; `tts` не получает `YtPlay`), `tts_events_forwarded`, `second_tts_widget_evicts_first`.
-- [ ] **Step 2–4:** FAIL → реализовать → PASS. **Step 5:** Commit `feat(server): tts widget and audio route`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo test --lib server::`). **Step 5:** Commit `feat(server): tts widget and audio route`.
 
 ### Task 6: очередь и движок озвучки
 
@@ -131,14 +132,14 @@
   - **`Settings`:** заменить настройки, сбросить `voice_broken` и `warning` (кроме `chat_warning`).
   - После каждого изменения — `view(&view)`; `State(tx)` → ответить текущим видом.
 - [ ] **Step 1: Тесты** (`#[tokio::test(start_paused = true)]`, фейковый `SynthFn` пишет пустой файл и отдаёт 1000 мс, считает вызовы): `chat_marked_message_plays`, `chat_cooldown_marks_only_accepted` (стоп-слово не тратит кулдаун), `chat_roles_and_broadcaster_bypass`, `shared_chat_ignored`, `chat_disabled_ignored`, `reward_rejected_refunds`, `reward_disabled_refunds`, `reward_played_fulfills`, `reward_duplicate_ignored`, `reconcile_then_late_event_ignored`, `queue_full_refunds_reward`, `skip_fulfills_clear_refunds`, `skip_during_synth_drops_result` (WAV удалён, `TtsPlay` не отправлен, следующий синтез — только после возврата прошлого), `skip_during_busy_wait_is_immediate` (фейк отвечает `JOB_BUSY`; Skip → следующий элемент стартует < 2 с, и его синтез не возвращает `CANCELLED`), `stale_result_does_not_break_voice`, `widget_missing_waits`, `safety_timeout_advances`, `synth_busy_retries_then_fails` (61 × `JOB_BUSY` → `(ref,false)`), `missing_voice_rejects_at_intake`, `wav_deleted_after_play`, `chat_relogin_warning_only_when_enabled`, `settings_clears_warning`.
-- [ ] **Step 2–4:** FAIL → реализовать → PASS. **Step 5:** Commit `feat(tts): queue and playback engine`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS (`cargo test --lib tts::`). **Step 5:** Commit `feat(tts): queue and playback engine`.
 
 ### Task 7: связка в приложении и драйвере, команды панели
 
 **Files:** Modify `src-tauri/src/app.rs`, `src-tauri/src/driver.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/obs.rs`
 
 **Interfaces — Produces:**
-- `app::start`: `create_dir_all(voice-lab/tmp/tts)` (сам `tmp` чистит `Store::open`); канал `mpsc::unbounded_channel::<TtsMsg>()`; `handle.manage(TtsHandle(UnboundedSender<TtsMsg>))`; `mpsc::unbounded_channel` исходов; `SynthFn` поверх `VlState` (`commands::tts_synth`, качество 8; `VlState(None)` → `"VOICE_LAB_UNAVAILABLE"`); `view` → `emit("tts", view)`; задача-переходник `ws.tts_rx.take()` → `TtsMsg::Widget`; `tokio::spawn(engine::run(deps, settings.tts.clone(), rx))`. `DriverCtx` += `tts: mpsc::UnboundedSender<TtsMsg>`, `tts_outcomes: mpsc::UnboundedReceiver<(RedemptionRef,bool)>` (или передать в `run` отдельно).
+- `app::start`: `let tts_dir = dir.join("voice-lab/tmp/tts")` вычисляется один раз **до** `start_or_disabled` и передаётся в `start_or_disabled`, `EngineDeps.dir` и `create_dir_all` (сам `tmp` чистит `Store::open`); канал уже создан в Task 2 — здесь только запуск движка с его приёмником; `handle.manage(TtsHandle(UnboundedSender<TtsMsg>))`; `mpsc::unbounded_channel` исходов; `SynthFn` поверх `VlState` (`commands::tts_synth`, качество 8; `VlState(None)` → `"VOICE_LAB_UNAVAILABLE"`); `view` → `emit("tts", view)`; задача-переходник `ws.tts_rx.take()` → `TtsMsg::Widget`; `tokio::spawn(engine::run(deps, settings.tts.clone(), rx))`. `DriverCtx` += `tts: mpsc::UnboundedSender<TtsMsg>`, `tts_outcomes: mpsc::UnboundedReceiver<(RedemptionRef,bool)>` (или передать в `run` отдельно).
 - Драйвер (`select!` += ветка исходов → `status(ref, ok)`):
   - `EsSignal::Chat(m)` → `TtsMsg::Chat(m)`; `EsSignal::ChatStatus(s)` → `TtsMsg::ChatStatus(s)`; `TwitchLogout` → `TtsMsg::ChatStatus(ChatStatus::Ok)` (сброс предупреждения чата).
   - `redeem`: `route(...) == Some(Tts)` → `TtsMsg::Reward(r)` (без БД музыки и `inflight`); `Music` — как раньше.
@@ -147,11 +148,11 @@
 - Команды Tauri (`try_state::<TtsHandle>()`, нет → `"starting"`): `tts_state() -> TtsView` (через `TtsMsg::State`), `tts_skip()`, `tts_clear()`, `tts_test(text: String)` (1–300 символов после `trim`), `obs_add_tts()`; регистрация в `lib.rs`.
 - `obs.rs`: вынести «создать или обновить источник + добавить в сцену + мониторинг» из `add_widget_to_current_scene` в `async fn upsert_browser_source(client, scene, name, settings, monitor: bool)`; `pub async fn add_tts_source(cfg, url)` — «Stream Assist — Озвучка», 400×100, `reroute_audio: true`, мониторинг и вывод. Музыкальный путь использует ту же функцию, поведение прежнее.
 - [ ] **Step 1: Тесты:** `tts_target_routes_by_reward_id` (музыка/TTS/чужая), `tts_test_text_bounds`; ручная проверка в Task 8.
-- [ ] **Step 2–4:** FAIL → реализовать → PASS; `cargo clippy --all-targets` без новых предупреждений; `cargo test` целиком зелёный. **Step 5:** Commit `feat(tts): wire engine into driver and panel commands`.
+- [ ] **Step 2–4:** FAIL → реализовать → PASS; `cargo build --examples && cargo test` целиком зелёный; `cargo clippy --all-targets` без новых предупреждений. **Step 5:** Commit `feat(tts): wire engine into driver and panel commands`.
 
 ### Task 8: вкладка «Озвучка», документация
 
-**Files:** Create `src/lib/views/Tts.svelte`, `src/lib/ttsApi.ts`; Modify `src/routes/+page.svelte`, `src/lib/api.ts` (`Settings.tts`, `defaultSettings.tts`), `src/lib/i18n/ru.ts`, `docs/user-guide.md`, `docs/architecture.md`
+**Files:** Create `src/lib/views/Tts.svelte`, `src/lib/ttsApi.ts` (сам импортирует `invoke` из `@tauri-apps/api/core` и `listen` из `@tauri-apps/api/event`, как `voiceApi.ts`); Modify `src/routes/+page.svelte`, `src/lib/api.ts` (`Settings.tts`, `defaultSettings.tts`), `src/lib/i18n/ru.ts`, `docs/user-guide.md`, `docs/architecture.md`
 
 **Interfaces — Consumes:** команды Task 7, событие `tts` (`TtsView`), `voiceApi.vl_profiles()`.
 - Вкладка `tts` («Озвучка») после «Голосовой лаборатории»: форма настроек (общий `save`), голос из профилей, язык, скорость (0.7–1.5), блоки «Награда», «Чат» (метка с подсказкой «Озвучивается текст до метки. „100%“ не считается», роли, кулдауны), «Фильтры» (ссылки, стоп-слова построчно); адрес `http://127.0.0.1:<port>/widget/tts` + «Добавить в OBS»; очередь (текущий с пометкой «синтез…», список, «Пропустить», «Очистить очередь»); поле + «Проверить». Предупреждения: `tts_no_voice`, `tts_voice_missing`, `tts_model_missing`, `tts_unavailable`, `tts_chat_failed`, `tts_chat_relogin` (подсказка: «Подключения» → выйти и войти в Twitch), «Источник OBS не подключён» при `widget == false` и непустой очереди. Примечание: «Пока идёт озвучка, рендер в Голосовой лаборатории может ответить „занято“».
