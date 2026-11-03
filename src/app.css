@@ -47,13 +47,15 @@ p + p { margin-top: var(--s2); }
 strong, b { font-weight: 500; }
 a { color: var(--t1); text-underline-offset: var(--s1); }
 button, input, select, textarea { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--raised); padding: var(--s2) var(--s3); min-width: 0; }
-button { cursor: pointer; min-height: var(--control-height); transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
-button:hover { background: var(--card); border-color: var(--line-strong); }
+button, input, select { height: var(--control-height); padding-block: 0; }
+input:hover, select:hover, textarea:hover, input:focus, select:focus, textarea:focus { border-color: var(--line-strong); }
+button { cursor: pointer; transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+button:hover { background: var(--raised); border-color: var(--line-strong); color: var(--t1); }
 button:active:not(:disabled) { transform: scale(.98); }
 button:disabled { opacity: .45; cursor: default; }
 :where(button, input, select, textarea, a, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .primary { background: var(--primary-bg); color: var(--primary-ink); box-shadow: var(--primary-highlight); }
-.primary:hover { background: var(--primary-bg); border-color: var(--t2); }
+.primary:hover { background: var(--primary-bg); border-color: var(--t2); color: var(--primary-ink); }
 label { display: flex; flex-direction: column; gap: var(--s2); margin-block: var(--s4); max-width: 560px; }
 .check { flex-direction: row; align-items: center; }
 input[type=checkbox], input[type=radio], input[type=range], progress { accent-color: var(--accent); }

@@ -21,6 +21,16 @@ const tabs = ['now', 'rules', 'widget', 'connections', 'voice'] as const;
 const serviceIds = ['twitch', 'spotify', 'obs'] as const;
 let services = $state({ twitch: false, spotify: false, obs: false });
 const activeRules = $derived([settings.rules.music, settings.rules.tts].some(action => action.enabled && action.triggers.some(trigger => trigger.enabled)));
+let updateServices: () => Promise<void> = async () => {};
+function selectTab(next: string) {
+  const leavingConnections = tab === 'connections' && next !== tab;
+  tab = next;
+  if (leavingConnections) void updateServices();
+}
+function serviceStatus(service: typeof serviceIds[number]) {
+  return service === 'twitch' && services.twitch && ready && activeRules
+    ? ru.live : services[service] ? ru.connected : ru.disconnected;
+}
 async function refreshServices() {
   const results = await Promise.allSettled([api.twitch_status(), api.spotify_status(), api.obs_check()]);
   return {
@@ -38,7 +48,17 @@ onMount(() => {
   let unlisten = () => {};
   void run(async () => { const cleanup = await api.onState(s => { snapshot = s; }); if (disposed) cleanup(); else unlisten = cleanup; snapshot = await api.get_state(); });
   void load();
-  const updateServices = async () => { const next = await refreshServices(); if (!disposed) services = next; };
+  let polling = false;
+  updateServices = async () => {
+    if (disposed || polling) return;
+    polling = true;
+    try {
+      const next = await refreshServices();
+      if (!disposed) services = next;
+    } finally {
+      polling = false;
+    }
+  };
   void updateServices();
   const servicePoll = setInterval(() => { void updateServices(); }, 30_000);
   return () => { disposed = true; unlisten(); clearInterval(servicePoll); };
@@ -49,11 +69,11 @@ onMount(() => {
 <aside class="sidebar">
   <div class="brand" title={ru.appName}><span class="brand-mark" aria-hidden="true"></span><span class="nav-label">{ru.appName}</span></div>
   <nav aria-label={ru.navigation}>
-    {#each tabs as id}<button class:active={tab === id} aria-current={tab === id ? 'page' : undefined} aria-label={id === 'voice' ? ru.voiceLab : ru[id]} title={id === 'voice' ? ru.voiceLab : ru[id]} onclick={() => tab = id}><Icon name={id} /><span class="nav-label">{id === 'voice' ? ru.voiceLab : ru[id]}</span></button>{/each}
+    {#each tabs as id}<button class:active={tab === id} aria-current={tab === id ? 'page' : undefined} aria-label={id === 'voice' ? ru.voiceLab : ru[id]} title={id === 'voice' ? ru.voiceLab : ru[id]} onclick={() => selectTab(id)}><Icon name={id} /><span class="nav-label">{id === 'voice' ? ru.voiceLab : ru[id]}</span></button>{/each}
   </nav>
-  <div class="services" aria-label={ru.serviceStatus}>
+  <div class="services" role="group" aria-label={ru.serviceStatus}>
     {#each serviceIds as service}
-      <button onclick={() => tab = 'connections'} aria-label={`${ru[service]}: ${services[service] ? ru.connected : ru.disconnected}`} title={`${ru[service]}: ${services[service] ? ru.connected : ru.disconnected}`}>
+      <button onclick={() => selectTab('connections')} aria-label={`${ru[service]}: ${serviceStatus(service)}`} title={`${ru[service]}: ${serviceStatus(service)}`}>
         <span class="tally" class:connected={services[service]} class:live={service === 'twitch' && services.twitch && ready && activeRules}></span><span class="nav-label">{ru[service]}</span>
       </button>
     {/each}
@@ -85,11 +105,11 @@ nav { display: flex; flex-direction: column; gap: var(--nav-gap); }
 nav button, .services button { display: flex; align-items: center; gap: var(--s2); width: 100%; padding: 0 var(--s2); min-height: 0; height: var(--nav-height); border: 0; background: transparent; color: var(--t2); text-align: left; }
 nav button:hover, .services button:hover { background: var(--raised); color: var(--t1); }
 nav button.active { background: var(--raised); color: var(--t1); box-shadow: var(--active-highlight); }
-.services { margin-top: auto; padding-bottom: var(--s3); padding-top: var(--s6); border-bottom: 1px solid var(--line); }
+.services { margin-top: auto; padding-bottom: var(--s3); padding-top: var(--s6); border-top: 1px solid var(--line); }
 .services button { height: var(--status-height); font-size: var(--type-secondary); }
 main { width: 100%; max-width: var(--content-max); min-width: 0; padding: var(--s6) var(--s8); }
 main > :global(section:first-of-type > h2:first-child) { margin-top: 0; }
-@media (width < 900px) {
+@media (max-width: 899.98px) {
   .shell { grid-template-columns: var(--sidebar-compact) minmax(0, 1fr); }
   .sidebar { padding-inline: var(--s2); }
   .nav-label { display: none; }
