@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, BufReader},
     sync::oneshot,
 };
 
@@ -164,48 +164,20 @@ impl Runner {
         let mut error = None;
         let result = async {
             loop {
-                // Bound memory even if the worker never sends a newline.
-                let chunk = tokio::select! {
+                let line = tokio::select! {
                     biased;
-                    _ = async {
-                        match cancel.as_mut() {
-                            Some(rx) => { let _ = rx.await; }
-                            None => std::future::pending::<()>().await,
-                        }
-                    } => return Err(err("JOB_CANCELLED")),
-                    data = stdout.fill_buf() => data.map_err(|_| err("WORKER_CRASHED"))?,
+                    _ = async { match cancel.as_mut() { Some(rx) => { let _ = rx.await; }, None => std::future::pending::<()>().await } } => return Err(err("JOB_CANCELLED")),
+                    line = next_line(&mut stdout, &mut buffer) => line?,
                 };
-                if chunk.is_empty() {
-                    break;
-                }
-                let end = chunk.iter().position(|b| *b == b'\n');
-                let n = end.map_or(chunk.len(), |i| i + 1);
-                if buffer.len() + n > 65536 {
-                    return Err(err("WORKER_CRASHED"));
-                }
-                buffer.extend_from_slice(&chunk[..n]);
-                stdout.consume(n);
-                if end.is_some() {
-                    if let Ok(e) = serde_json::from_slice::<WorkerEvent>(&buffer) {
-                        match &e {
-                            WorkerEvent::Done { .. } => done = Some(e.clone()),
-                            WorkerEvent::Error { code } => error = Some(known(code)),
-                            _ => {}
-                        }
-                        on_event(e);
+                let Some(line) = line else { break; };
+                if let Ok(e) = serde_json::from_slice::<WorkerEvent>(&line) {
+                    match &e {
+                        WorkerEvent::Done { .. } => done = Some(e.clone()),
+                        WorkerEvent::Error { code } => error = Some(known(code)),
+                        _ => {}
                     }
-                    buffer.clear();
+                    on_event(e);
                 }
-            }
-            if !buffer.is_empty()
-                && let Ok(e) = serde_json::from_slice::<WorkerEvent>(&buffer)
-            {
-                match &e {
-                    WorkerEvent::Done { .. } => done = Some(e.clone()),
-                    WorkerEvent::Error { code } => error = Some(known(code)),
-                    _ => {}
-                }
-                on_event(e);
             }
             let status = tokio::select! {
                 biased;
@@ -475,6 +447,32 @@ impl Runner {
     }
 }
 
+pub(super) async fn next_line<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>, VlError> {
+    loop {
+        let chunk = r.fill_buf().await.map_err(|_| err("WORKER_CRASHED"))?;
+        if chunk.is_empty() {
+            return Ok(if buf.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(buf))
+            });
+        }
+        let end = chunk.iter().position(|b| *b == b'\n');
+        let n = end.map_or(chunk.len(), |i| i + 1);
+        if buf.len() + n > 65536 {
+            return Err(err("WORKER_CRASHED"));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        r.consume(n);
+        if end.is_some() {
+            return Ok(Some(std::mem::take(buf)));
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -525,5 +523,24 @@ mod tests {
             std::fs::read_dir(root.path().join("tmp")).unwrap().count(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::*;
+    #[tokio::test]
+    async fn next_line_returns_trailing_partial() {
+        let mut r = BufReader::new(&b"first\nlast"[..]);
+        let mut b = Vec::new();
+        assert_eq!(
+            next_line(&mut r, &mut b).await.unwrap(),
+            Some(b"first\n".to_vec())
+        );
+        assert_eq!(
+            next_line(&mut r, &mut b).await.unwrap(),
+            Some(b"last".to_vec())
+        );
+        assert_eq!(next_line(&mut r, &mut b).await.unwrap(), None);
     }
 }

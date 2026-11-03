@@ -6,6 +6,7 @@ pub mod runner;
 pub mod store;
 pub mod style;
 pub mod trainer;
+pub mod train_runner;
 pub mod worker;
 
 #[derive(Debug, thiserror::Error)]
