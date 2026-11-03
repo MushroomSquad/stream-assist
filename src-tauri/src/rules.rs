@@ -510,21 +510,20 @@ pub fn plan_save(current: &Rules, mut incoming: Rules) -> (Rules, Vec<RewardOp>)
     }
     let mut ops = Vec::new();
     for (action, t) in current.triggers() {
-        if incoming.trigger(&t.id).is_none() {
-            if let TriggerKind::Reward {
+        if incoming.trigger(&t.id).is_none()
+            && let TriggerKind::Reward {
                 reward_id: Some(id),
                 ..
             } = &t.kind
-            {
-                incoming.retiring.push(Retiring {
-                    action,
-                    reward_id: id.clone(),
-                });
-                ops.push(RewardOp::Retire {
-                    action,
-                    reward_id: id.clone(),
-                });
-            }
+        {
+            incoming.retiring.push(Retiring {
+                action,
+                reward_id: id.clone(),
+            });
+            ops.push(RewardOp::Retire {
+                action,
+                reward_id: id.clone(),
+            });
         }
     }
     for (action, t) in incoming.triggers() {
@@ -1004,16 +1003,30 @@ mod routing_tests {
                 create: true
             }]
         );
-        let ops = connect_ops(&known());
-        assert!(
-            matches!(&ops[1], RewardOp::Ensure { known_id: Some(id), create: false, .. } if id == "t1")
-        );
         assert_eq!(
-            ops[2],
-            RewardOp::Retire {
-                action: ActionKind::Music,
-                reward_id: "old".into()
-            }
+            connect_ops(&known()),
+            vec![
+                RewardOp::Ensure {
+                    action: ActionKind::Music,
+                    trigger_id: "music-reward".into(),
+                    known_id: Some("m1".into()),
+                    title: "Заказать трек".into(),
+                    cost: 500,
+                    create: true
+                },
+                RewardOp::Ensure {
+                    action: ActionKind::Tts,
+                    trigger_id: "tts-reward".into(),
+                    known_id: Some("t1".into()),
+                    title: "Озвучить текст".into(),
+                    cost: 300,
+                    create: false
+                },
+                RewardOp::Retire {
+                    action: ActionKind::Music,
+                    reward_id: "old".into()
+                }
+            ]
         );
     }
     #[test]
@@ -1061,6 +1074,26 @@ mod routing_tests {
                 }]
             );
         }
+        let mut incoming = r.clone();
+        incoming.tts.triggers[0].enabled = true;
+        assert_eq!(
+            plan_save(&r, incoming).1,
+            vec![RewardOp::Patch {
+                reward_id: "t1".into(),
+                body: reward_body("Озвучить текст", 300, 0, true)
+            }]
+        );
+        let mut incoming = r.clone();
+        if let TriggerKind::Reward { title, .. } = &mut incoming.tts.triggers[0].kind {
+            *title = "Новое".into();
+        }
+        assert_eq!(
+            plan_save(&r, incoming).1,
+            vec![RewardOp::Patch {
+                reward_id: "t1".into(),
+                body: reward_body("Новое", 300, 0, false)
+            }]
+        );
         let mut multiple = r.clone();
         multiple.music.triggers.push(reward("second"));
         let mut incoming = multiple.clone();
@@ -1088,7 +1121,19 @@ mod routing_tests {
                 reward_id: "m1".into()
             }]
         );
-        assert_eq!(saved.retiring.len(), 2);
+        assert_eq!(
+            saved.retiring,
+            vec![
+                Retiring {
+                    action: ActionKind::Music,
+                    reward_id: "old".into()
+                },
+                Retiring {
+                    action: ActionKind::Music,
+                    reward_id: "m1".into()
+                }
+            ]
+        );
         let r = Rules::default();
         assert!(plan_save(&r, r.clone()).1.is_empty());
         let mut incoming = r.clone();
@@ -1133,13 +1178,15 @@ mod routing_tests {
         assert_eq!(saved.tts.triggers[2].id, "t1");
         assert_eq!(saved.tts.triggers[3].id, "t2");
         assert_eq!(saved.next_id, 3);
-        assert!(matches!(
-            saved.tts.triggers[2].kind,
-            TriggerKind::Reward {
-                reward_id: None,
-                ..
-            }
-        ));
+        for trigger in &saved.tts.triggers[2..4] {
+            assert!(matches!(
+                trigger.kind,
+                TriggerKind::Reward {
+                    reward_id: None,
+                    ..
+                }
+            ));
+        }
     }
     #[test]
     fn assign_ids_unknown_id_is_new() {
