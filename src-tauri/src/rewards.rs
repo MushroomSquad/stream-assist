@@ -139,6 +139,9 @@ impl Lifecycle {
                             reward_id: id,
                         });
                         changed = true;
+                    } else {
+                        self.errors
+                            .insert(format!("retire:{id}"), "orphan_reward".into());
                     }
                 }
             }
@@ -167,32 +170,30 @@ impl Lifecycle {
             }
         }
         // Both completion and dirty state use one snapshot and emit at most one update.
-        if refresh {
-            if let Some((action, trigger)) = rules.trigger(trigger_id) {
-                if let TriggerKind::Reward {
-                    title,
-                    cost,
-                    cooldown_s,
-                    reward_id,
-                } = &trigger.kind
-                {
-                    let active = rules.is_active(action, trigger);
-                    if let Some(id) = reward_id {
-                        ops.push(RewardOp::Patch {
-                            reward_id: id.clone(),
-                            body: reward_body(title, *cost, *cooldown_s, active),
-                        });
-                    } else if active {
-                        ops.push(RewardOp::Ensure {
-                            action,
-                            trigger_id: trigger_id.into(),
-                            known_id: None,
-                            title: title.clone(),
-                            cost: *cost,
-                            create: true,
-                        });
-                    }
-                }
+        if refresh
+            && let Some((action, trigger)) = rules.trigger(trigger_id)
+            && let TriggerKind::Reward {
+                title,
+                cost,
+                cooldown_s,
+                reward_id,
+            } = &trigger.kind
+        {
+            let active = rules.is_active(action, trigger);
+            if let Some(id) = reward_id {
+                ops.push(RewardOp::Patch {
+                    reward_id: id.clone(),
+                    body: reward_body(title, *cost, *cooldown_s, active),
+                });
+            } else if active {
+                ops.push(RewardOp::Ensure {
+                    action,
+                    trigger_id: trigger_id.into(),
+                    known_id: None,
+                    title: title.clone(),
+                    cost: *cost,
+                    create: true,
+                });
             }
         }
         (changed, self.admit(ops))
@@ -271,6 +272,74 @@ mod tests {
     }
 
     #[test]
+    fn dirty_ensure_error_reissues_with_new_title() {
+        let mut l = Lifecycle::default();
+        let r = Rules::default();
+        assert_eq!(id(&r), None);
+        assert!(matches!(
+            &l.on_connect(&r)[..],
+            [RewardOp::Ensure { known_id: None, .. }]
+        ));
+        let mut incoming = r.clone();
+        title(&mut incoming, "Новое название");
+        let (mut r, ops) = l.on_save(&r, incoming);
+        assert!(ops.is_empty());
+        assert_eq!(l.ensuring.get("music-reward"), Some(&true));
+
+        let (changed, ops) = l.on_ready(&mut r, "music-reward", None, Err("x".into()));
+        assert!(!changed);
+        assert_eq!(id(&r), None);
+        assert_eq!(
+            ops,
+            vec![RewardOp::Ensure {
+                action: ActionKind::Music,
+                trigger_id: "music-reward".into(),
+                known_id: None,
+                title: "Новое название".into(),
+                cost: 500,
+                create: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn dirty_ensure_none_keeps_foreign_id_and_patches() {
+        let mut l = Lifecycle::default();
+        let mut r = Rules::default();
+        r.set_reward_id("music-reward", Some("r1".into()));
+        assert!(matches!(
+            &l.on_connect(&r)[..],
+            [RewardOp::Ensure { known_id: Some(id), .. }] if id == "r1"
+        ));
+        assert!(l.on_connect(&r).is_empty());
+        assert_eq!(l.ensuring.get("music-reward"), Some(&true));
+        r.set_reward_id("music-reward", Some("r2".into()));
+        title(&mut r, "Новое название");
+
+        let (changed, ops) = l.on_ready(&mut r, "music-reward", Some("r1".into()), Ok(None));
+        assert!(!changed);
+        assert_eq!(id(&r), Some("r2"));
+        assert_eq!(
+            ops,
+            vec![RewardOp::Patch {
+                reward_id: "r2".into(),
+                body: reward_body("Новое название", 500, 0, true),
+            }]
+        );
+    }
+
+    #[test]
+    fn unknown_orphan_records_retire_error() {
+        let mut l = Lifecycle::default();
+        let mut r = Rules::default();
+        let (changed, ops) = l.on_ready(&mut r, "unknown-trigger", None, Ok(Some("r9".into())));
+        assert!(!changed);
+        assert!(ops.is_empty());
+        assert!(r.retiring.is_empty());
+        assert_eq!(l.errors["retire:r9"], "orphan_reward");
+    }
+
+    #[test]
     fn ready_for_deleted_trigger_retires() {
         for action in [ActionKind::Music, ActionKind::Tts] {
             let mut l = Lifecycle::default();
@@ -287,7 +356,6 @@ mod tests {
             incoming.music.triggers.clear();
             incoming.tts.triggers.clear();
             let (mut r, _) = l.on_save(&r, incoming);
-            l.errors.insert("arbitrary-id".into(), "stale".into());
             let (changed, ops) = l.on_ready(&mut r, "arbitrary-id", None, Ok(Some("r9".into())));
             assert!(changed);
             assert_eq!(
