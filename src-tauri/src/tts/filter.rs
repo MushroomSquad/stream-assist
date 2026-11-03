@@ -214,7 +214,10 @@ mod tests {
     fn links_removed() {
         let text = "https://x.y/z www.Site.com twitch.tv/abc пример.рф т.е. 3.14 ok.";
         assert_eq!(clean(text, true, &[]), Ok("т.е. 3.14 ok.".into()));
-        assert_eq!(clean("смотри site.com! (x.ru)", true, &[]), Ok("смотри".into()));
+        assert_eq!(
+            clean("смотри site.com! (x.ru)", true, &[]),
+            Ok("смотри".into())
+        );
         assert_eq!(
             clean("WWW.site.com ПРИМЕР.РФ a-b.example/path", true, &[]),
             Err(Reject::Empty)
