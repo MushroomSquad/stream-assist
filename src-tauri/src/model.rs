@@ -62,3 +62,9 @@ pub enum PlayError {
     Api(u16),
     Net,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Fragment {
+    pub kind: String,
+    pub text: String,
+}

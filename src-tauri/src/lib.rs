@@ -13,6 +13,7 @@ pub mod router;
 pub mod secrets;
 pub mod server;
 pub mod spotify;
+pub mod tts;
 pub mod twitch;
 pub mod voice_lab;
 pub mod youtube;
