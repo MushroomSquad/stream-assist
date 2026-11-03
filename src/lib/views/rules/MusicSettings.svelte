@@ -10,7 +10,7 @@ let { settings }: { settings: Settings } = $props();
 <label>{ru.blocklist}<textarea rows="5" value={settings.rules.music.cfg.limits.blocklist.join('\n')} oninput={e => settings.rules.music.cfg.limits.blocklist = e.currentTarget.value.split('\n')}></textarea></label>
 </div>
 <style>
-.fields { display: grid; gap: var(--s4); }
+.fields { display: grid; align-items: start; gap: var(--s4); }
 label { margin: 0; max-width: none; }
 p { margin: 0; grid-column: 1 / -1; }
 @media (min-width: 1100px) { .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

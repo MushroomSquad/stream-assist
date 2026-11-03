@@ -10,6 +10,9 @@ export async function mockCall<T>(name: string, args?: Record<string, unknown>):
   const currentSettings = () => settings ??= structuredClone(defaultSettings);
   let result: unknown;
   switch (name) {
+    case 'twitch_status': result = false; break;
+    case 'spotify_status': result = { connected: false, premium: null }; break;
+    case 'obs_check': result = ''; break;
     case 'get_settings': result = currentSettings(); break;
     case 'save_settings': {
       const saved = structuredClone(args?.s as Settings);

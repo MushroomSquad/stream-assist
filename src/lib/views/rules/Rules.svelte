@@ -1,6 +1,8 @@
 <script lang="ts">
 import { onMount } from 'svelte';
 import { watchRuleErrors, type Settings, type Trigger } from '$lib/api';
+import * as ttsApi from '$lib/ttsApi';
+import { vl_profiles, type Profile } from '$lib/voiceApi';
 import { ru } from '$lib/i18n/ru';
 import ActionCard from './ActionCard.svelte';
 import MusicSettings from './MusicSettings.svelte';
@@ -11,6 +13,26 @@ let errors = $state<Record<string, string>>({});
 let formError = $state('');
 let root: HTMLDivElement;
 onMount(() => watchRuleErrors(e => errors = e));
+let musicEditing = $state(false), ttsEditing = $state(false);
+let profiles = $state<Profile[]>([]);
+let view = $state<ttsApi.TtsView>({ current: null, queue: [], widget: false, warning: null });
+onMount(() => {
+  let disposed = false, updated = false;
+  let unlisten = () => {};
+  void run(async () => { const loaded = await vl_profiles(); if (!disposed) profiles = loaded; });
+  void run(async () => {
+    const cleanup = await ttsApi.onTts(v => { updated = true; if (!disposed) view = v; });
+    if (disposed) { cleanup(); return; }
+    unlisten = cleanup;
+    const initial = await ttsApi.tts_state();
+    if (!disposed && !updated) view = initial;
+  });
+  return () => { disposed = true; unlisten(); };
+});
+const limits = $derived(settings.rules.music.cfg.limits);
+const musicSummary = $derived(`${limits.max_duration_ms === null ? 'длительность без лимита' : `до ${Math.floor(limits.max_duration_ms / 60000)}:${String(Math.floor(limits.max_duration_ms / 1000) % 60).padStart(2, '0')}`} · повтор ${limits.no_repeat_last_n} · ${limits.max_per_user_in_queue === null ? 'без лимита на зрителя' : `${limits.max_per_user_in_queue} на зрителя`}`);
+const ttsSummary = $derived(`${profiles.find(p => p.id === settings.rules.tts.cfg.profile_id)?.name ?? ru.noVoiceSelected} · ${settings.rules.tts.cfg.lang} · ${settings.rules.tts.cfg.speed.toFixed(1)}×`);
+const orphanRetiring = $derived(Object.keys(errors).some(key => key.startsWith('retire:') && !settings.rules.retiring.some(r => key === `retire:${r.reward_id}`)));
 const all = $derived([...settings.rules.music.triggers, ...settings.rules.tts.triggers]);
 function integer(n: number, min: number, max: number) { return Number.isInteger(n) && n >= min && n <= max; }
 function validate(t: Trigger, skip?: Trigger) {
@@ -27,6 +49,7 @@ function validate(t: Trigger, skip?: Trigger) {
   return '';
 }
 function submit() {
+  if (musicEditing || ttsEditing) return;
   formError = '';
   for (const field of root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('.settings input, .settings select, .settings textarea')) {
     if (!field.checkValidity()) {
@@ -47,15 +70,20 @@ function submit() {
 }
 </script>
 <div class="rules" bind:this={root}>
-<ActionCard kind="music" action={settings.rules.music} {errors} {validate} retiring={settings.rules.retiring.some(r => r.action === 'music' && errors[`retire:${r.reward_id}`])}>
+<ActionCard bind:editorOpen={musicEditing} summary={musicSummary} kind="music" action={settings.rules.music} {errors} {validate} retiring={settings.rules.retiring.some(r => r.action === 'music' && errors[`retire:${r.reward_id}`])}>
+{#snippet warningsContent()}{#if orphanRetiring}<p class="muted">{ru.retireFailed}</p>{/if}{/snippet}
 {#snippet settingsContent()}<div class="settings"><MusicSettings {settings} /></div>{/snippet}
 </ActionCard>
-<ActionCard kind="tts" action={settings.rules.tts} {errors} {validate} retiring={settings.rules.retiring.some(r => r.action === 'tts' && errors[`retire:${r.reward_id}`])}>
-{#snippet settingsContent()}<div class="settings"><TtsSettings {settings} {run} /></div>{/snippet}
-{#snippet runtimeContent()}<Tts {runningPort} {run} />{/snippet}
+<ActionCard bind:editorOpen={ttsEditing} summary={ttsSummary} kind="tts" action={settings.rules.tts} {errors} {validate} retiring={settings.rules.retiring.some(r => r.action === 'tts' && errors[`retire:${r.reward_id}`])}>
+{#snippet settingsContent()}<div class="settings"><TtsSettings {settings} {profiles} /></div>{/snippet}
+{#snippet warningsContent()}
+{#if view.warning}<p class="notice" role="alert">{ru.ttsWarnings[view.warning] ?? view.warning}</p>{/if}
+{#if !view.widget && (view.current || view.queue.length > 0)}<p class="notice" role="alert">{ru.ttsWidgetMissing}</p>{/if}
+{/snippet}
+{#snippet runtimeContent()}<Tts {runningPort} {run} {view} />{/snippet}
 </ActionCard>
 {#if formError}<p role="alert">{formError}</p>{/if}
-<div><button class="primary" onclick={submit}>{ru.save}</button></div>
+<div><button class="primary" disabled={musicEditing || ttsEditing} onclick={submit}>{ru.save}</button>{#if musicEditing || ttsEditing}<p class="muted">{ru.finishTriggerEdit}</p>{/if}</div>
 </div>
 <style>
 .rules { display: grid; gap: var(--s8); padding-top: var(--s6); }

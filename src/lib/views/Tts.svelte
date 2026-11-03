@@ -1,32 +1,15 @@
 <script lang="ts">
-import { onMount } from 'svelte';
 import * as api from '$lib/ttsApi';
 import { ru } from '$lib/i18n/ru';
-let { runningPort, run }: { runningPort: number; run: (f: () => Promise<unknown>) => Promise<void> } = $props();
-let view = $state<api.TtsView>({ current: null, queue: [], widget: false, warning: null });
-
+let { runningPort, run, view }: { view: api.TtsView; runningPort: number; run: (f: () => Promise<unknown>) => Promise<void> } = $props();
 let text = $state('');
 let testing = $state(false);
-onMount(() => {
-  let disposed = false, updated = false;
-  let unlisten = () => {};
-  void run(async () => {
-    const cleanup = await api.onTts(v => { updated = true; if (!disposed) view = v; });
-    if (disposed) { cleanup(); return; }
-    unlisten = cleanup;
-    const initial = await api.tts_state();
-    if (!disposed && !updated) view = initial;
-  });
-  return () => { disposed = true; unlisten(); };
-});
 async function test() {
   testing = true;
   try { await run(() => api.tts_test(text.trim())); } finally { testing = false; }
 }
 </script>
 <section>
-{#if view.warning}<p class="notice" role="alert">{ru.ttsWarnings[view.warning] ?? view.warning}</p>{/if}
-{#if !view.widget && (view.current || view.queue.length > 0)}<p class="notice" role="alert">{ru.ttsWidgetMissing}</p>{/if}
 <p class="muted">{ru.ttsBusyNote}</p>
 <div class="card">
 <label>{ru.url}<input readonly value={`http://127.0.0.1:${runningPort}/widget/tts`} /></label>

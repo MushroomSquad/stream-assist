@@ -32,8 +32,8 @@ function serviceStatus(service: typeof serviceIds[number]) {
 async function refreshServices() {
   const results = await Promise.allSettled([api.twitch_status(), api.spotify_status(), api.obs_check()]);
   return {
-    twitch: results[0].status === 'fulfilled' && results[0].value,
-    spotify: results[1].status === 'fulfilled' && results[1].value.connected,
+    twitch: results[0].status === 'fulfilled' && Boolean(results[0].value),
+    spotify: results[1].status === 'fulfilled' && Boolean(results[1].value?.connected),
     obs: results[2].status === 'fulfilled' && Boolean(results[2].value)
   };
 }
@@ -53,6 +53,8 @@ onMount(() => {
     try {
       const next = await refreshServices();
       if (!disposed) services = next;
+    } catch {
+      if (!disposed) services = { twitch: false, spotify: false, obs: false };
     } finally {
       polling = false;
     }

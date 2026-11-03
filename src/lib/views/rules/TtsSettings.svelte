@@ -1,12 +1,9 @@
 <script lang="ts">
-import { onMount } from 'svelte';
 import type { Settings } from '$lib/api';
-import { vl_profiles, type Profile } from '$lib/voiceApi';
+import { type Profile } from '$lib/voiceApi';
 import { ru } from '$lib/i18n/ru';
-let { settings, run }: { settings: Settings; run: (f: () => Promise<unknown>) => Promise<void> } = $props();
-let profiles = $state<Profile[]>([]);
+let { settings, profiles }: { settings: Settings; profiles: Profile[] } = $props();
 const languages = ['en', 'ko', 'ja', 'ar', 'bg', 'cs', 'da', 'de', 'el', 'es', 'et', 'fi', 'fr', 'hi', 'hr', 'hu', 'id', 'it', 'lt', 'lv', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'tr', 'uk', 'vi', 'na'];
-onMount(() => { let disposed = false; void run(async () => { const loaded = await vl_profiles(); if (!disposed) profiles = loaded; }); return () => { disposed = true; }; });
 </script>
 <div class="fields"><label>{ru.ttsVoice}<select bind:value={settings.rules.tts.cfg.profile_id}>
 <option value={null}>{ru.ttsSelectVoice}</option>
@@ -31,7 +28,7 @@ onMount(() => { let disposed = false; void run(async () => { const loaded = awai
 
 </div>
 <style>
-.fields { display: grid; gap: var(--s4); }
+.fields { display: grid; align-items: start; gap: var(--s4); }
 label { margin: 0; max-width: none; }
 h3, p { grid-column: 1 / -1; margin: 0; }
 @media (min-width: 1100px) { .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
