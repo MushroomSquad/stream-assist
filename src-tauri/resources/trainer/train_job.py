@@ -97,7 +97,7 @@ def acquire_lock(path):
             handle.flush()
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
+    except (BlockingIOError, PermissionError):
         handle.close()
         raise WorkerError('JOB_BUSY') from None
     return handle
@@ -105,7 +105,7 @@ def acquire_lock(path):
 
 def watch_stdin(stream, stop_event, proto, lock, phase):
     def watch():
-        while stream.read(1):
+        while getattr(stream, 'buffer', stream).read(1):
             pass
         stop_event.set()
         timer = threading.Timer(60, os._exit, (1,))
@@ -249,6 +249,8 @@ def train(req, torch, proto, lock, phase, stop_event):
                     raise ValueError('invalid style')
             if not math.isfinite(best_loss) or noisy.shape[0] != 1 or lmask.shape[0] != 1:
                 raise ValueError('invalid state')
+        except torch.cuda.OutOfMemoryError:
+            raise
         except Exception:
             raise WorkerError('TRAINING_STATE_CORRUPTED') from None
     del tts
@@ -259,6 +261,8 @@ def train(req, torch, proto, lock, phase, stop_event):
         try:
             optimizer.load_state_dict(state['optimizer_state'])
             scheduler.load_state_dict(state['scheduler_state'])
+        except torch.cuda.OutOfMemoryError:
+            raise
         except Exception:
             raise WorkerError('TRAINING_STATE_CORRUPTED') from None
     del state
@@ -309,6 +313,8 @@ def train(req, torch, proto, lock, phase, stop_event):
         torch.nn.utils.clip_grad_norm_([ttl], 1.0)
         optimizer.step()
         value = loss.item()
+        if not math.isfinite(value):
+            raise WorkerError('WORKER_FAILED')
         if value < best_loss:
             best_loss, best_ttl = value, ttl.detach().clone()
         scheduler.step(best_loss)
@@ -328,13 +334,13 @@ def main(argv) -> int:
     lock = threading.Lock()
     torch = None
     run_lock = None
+    phase = dict(loop_started=False, step=0)
     try:
         req = parse_request(argv[0])
         sys.path[:0] = [os.path.dirname(os.path.abspath(__file__)), req['upstreamDir']]
         if os.name == 'posix':
             os.nice(10)
         run_lock = acquire_lock(Path(req['runDir']) / 'lock')
-        phase = dict(loop_started=False, step=0)
         stop_event = threading.Event()
         watch_stdin(sys.stdin, stop_event, proto, lock, phase)
         torch = check_gpu()
@@ -344,6 +350,7 @@ def main(argv) -> int:
         # Never dump request contents, transcripts, tensors or exception payloads.
         traceback.print_tb(exc.__traceback__, file=sys.stderr)
         with lock:
+            phase['loop_started'] = True  # watcher must not follow error with stopped
             emit(proto, 'error', code=error_code(exc, torch))
         return 1
     finally:
