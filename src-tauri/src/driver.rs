@@ -470,13 +470,12 @@ fn connect_twitch(
     c: &DriverCtx,
     player: &mut Player,
     polls: &mut PollGate,
-    inflight: &mut HashSet<String>,
     lifecycle: &mut Lifecycle,
     tx: &mpsc::UnboundedSender<Internal>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let h = c.helix.clone()?;
     for op in lifecycle.on_connect(&c.settings.rules) {
-        exec(op, c, player, polls, inflight, lifecycle, tx);
+        exec(op, c, player, polls, lifecycle, tx);
     }
     let (out, mut rx) = mpsc::channel(64);
     let forward = tx.clone();
@@ -511,14 +510,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
         actions(&ctx, &player, aa, &tx, &mut polls);
     }
     let mut lifecycle = Lifecycle::default();
-    let mut es = connect_twitch(
-        &ctx,
-        &mut player,
-        &mut polls,
-        &mut inflight,
-        &mut lifecycle,
-        &tx,
-    );
+    let mut es = connect_twitch(&ctx, &mut player, &mut polls, &mut lifecycle, &tx);
     reconcile(&ctx, &tx);
     let mut tick = tokio::time::interval(Duration::from_millis(player::POLL_MS));
     loop {
@@ -756,15 +748,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     reconcile_reward(&ctx, action, id, &tx);
                 }
                 for op in ops {
-                    exec(
-                        op,
-                        &ctx,
-                        &mut player,
-                        &mut polls,
-                        &mut inflight,
-                        &mut lifecycle,
-                        &tx,
-                    );
+                    exec(op, &ctx, &mut player, &mut polls, &mut lifecycle, &tx);
                 }
                 publish_errors(&ctx, &lifecycle, &errors);
             }
@@ -855,15 +839,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     );
                     actions(&ctx, &player, aa, &tx, &mut polls);
                     for op in ops.clone() {
-                        exec(
-                            op,
-                            &ctx,
-                            &mut player,
-                            &mut polls,
-                            &mut inflight,
-                            &mut lifecycle,
-                            &tx,
-                        );
+                        exec(op, &ctx, &mut player, &mut polls, &mut lifecycle, &tx);
                     }
                 }
                 publish_errors(&ctx, &lifecycle, &errors);
@@ -879,14 +855,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     old.abort();
                 }
                 ctx.helix = Some(crate::app::twitch_client(t, ctx.app.clone()));
-                es = connect_twitch(
-                    &ctx,
-                    &mut player,
-                    &mut polls,
-                    &mut inflight,
-                    &mut lifecycle,
-                    &tx,
-                );
+                es = connect_twitch(&ctx, &mut player, &mut polls, &mut lifecycle, &tx);
                 reconcile(&ctx, &tx);
             }
             Internal::Msg(DriverMsg::TwitchLogout) => {
@@ -946,9 +915,20 @@ async fn apply_settings(
     let old = current.clone();
     let (rules, ops) = lifecycle.on_save(&current.rules, incoming.rules);
     incoming.rules = rules;
-    db.lock()
+    if let Err(error) = db
+        .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .set_setting("settings", &incoming)?;
+        .set_setting("settings", &incoming)
+    {
+        for op in &ops {
+            match op {
+                RewardOp::Ensure { trigger_id, .. } => lifecycle.release_ensure(trigger_id),
+                RewardOp::Retire { reward_id, .. } => lifecycle.release_retire(reward_id),
+                RewardOp::Patch { .. } => {}
+            }
+        }
+        return Err(error.into());
+    }
     if incoming.active_theme != current.active_theme {
         *active_theme.write().unwrap_or_else(|e| e.into_inner()) = incoming.active_theme.clone();
         let _ = ws.out_tx.send(WsOut::Reload);
@@ -976,7 +956,6 @@ fn exec(
     ctx: &DriverCtx,
     player: &mut Player,
     polls: &mut PollGate,
-    _inflight: &mut HashSet<String>,
     lifecycle: &mut Lifecycle,
     tx: &mpsc::UnboundedSender<Internal>,
 ) {
@@ -1036,6 +1015,7 @@ fn exec(
                         }
                     }
                     if let Some(r) = current
+                        .filter(|item| item.started)
                         .and_then(|i| i.redemption)
                         .filter(|r| r.reward_id == reward_id)
                     {
@@ -1062,15 +1042,14 @@ fn exec(
             };
             let tx = tx.clone();
             tokio::spawn(async move {
-                if let Some(rx) = tts_reply
-                    && let Ok(Some(id)) = rx.await
-                {
-                    keep.insert(id);
-                }
-                let result = tokio::time::timeout(
-                    Duration::from_secs(30),
-                    retire_reward(&h, &reward_id, &keep),
-                )
+                let result = tokio::time::timeout(Duration::from_secs(30), async {
+                    if let Some(rx) = tts_reply
+                        && let Ok(Some(id)) = rx.await
+                    {
+                        keep.insert(id);
+                    }
+                    retire_reward(&h, &reward_id, &keep).await
+                })
                 .await
                 .map_err(|_| "service timeout".to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
@@ -1191,6 +1170,73 @@ mod tests {
             let port = ws.running_port;
             (current, db, theme, ws, port)
         }
+    }
+    #[tokio::test]
+    async fn apply_settings_failed_write_releases_reward_ops() {
+        let (mut current, db, theme, ws, _) = settings_fixture().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.db");
+        *db.lock().unwrap() = Db::open(&path).unwrap();
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_settings BEFORE INSERT ON settings
+                 BEGIN SELECT RAISE(FAIL, 'test write failure'); END;",
+            )
+            .unwrap();
+        current
+            .rules
+            .set_reward_id("music-reward", Some("owned".into()));
+        let original = current.clone();
+        let mut incoming = current.clone();
+        incoming.rules.music.triggers.clear();
+        incoming.rules.tts.triggers[0].enabled = true;
+        incoming.active_theme = "glass".into();
+        let mut events = ws.out_tx.subscribe();
+        let mut lifecycle = Lifecycle::default();
+        let (_, expected_ops) =
+            Lifecycle::default().on_save(&current.rules, incoming.rules.clone());
+        assert!(
+            expected_ops
+                .iter()
+                .any(|op| matches!(op, RewardOp::Ensure { .. }))
+        );
+        assert!(
+            expected_ops
+                .iter()
+                .any(|op| matches!(op, RewardOp::Retire { .. }))
+        );
+
+        assert!(
+            apply_settings(
+                &mut current,
+                &db,
+                &theme,
+                &ws,
+                &mut lifecycle,
+                incoming.clone(),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(current.rules, original.rules);
+        assert_eq!(current.active_theme, original.active_theme);
+        assert_eq!(*theme.read().unwrap(), original.active_theme);
+        assert!(events.try_recv().is_err());
+
+        connection
+            .execute_batch("DROP TRIGGER fail_settings;")
+            .unwrap();
+        let (_, retry_ops) =
+            apply_settings(&mut current, &db, &theme, &ws, &mut lifecycle, incoming)
+                .await
+                .unwrap();
+        assert_eq!(retry_ops, expected_ops);
+        assert_eq!(
+            load_settings(&db.lock().unwrap()).unwrap().0.rules,
+            current.rules
+        );
+        ws.task.unwrap().abort();
     }
     #[tokio::test]
     async fn apply_settings_theme_change_sends_reload() {
