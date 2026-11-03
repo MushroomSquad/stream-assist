@@ -35,7 +35,7 @@ export const ru = {
   vlSeed: 'Seed', vlCancel: 'Отменить',
   vlStages: { 'select-preset': 'Выбор исходного голоса', 'mix-presets': 'Смешивание голосов', 'mix-rows': 'Настройка строк', refine: 'Уточнение' },
   vlStage: 'Стадия', vlIteration: 'Итерация', vlLoss: 'Ошибка (loss)', vlImportJson: 'Импорт JSON', vlTags: 'Теги через запятую',
-  vlDeleteConfirm: 'Удалить голос? Удалятся и рендеры этого голоса.', vlListen: 'Прослушать', vlExportJson: 'Экспорт JSON', vlExportRecipe: 'Экспорт рецепта',
+  vlDeleteConfirm: 'Удалить голос? Удалятся и рендеры этого голоса.', vlListen: 'Прослушать', vlListening: 'Синтезирую… При первом запуске сначала скачивается модель, это может занять несколько минут.', vlExportJson: 'Экспорт JSON', vlExportRecipe: 'Экспорт рецепта',
   vlSamplePhrase: 'Привет! Это проверка русского синтеза.', vlMix: 'Микс', vlAdd: 'Добавить голос', vlWeight: 'Вес', vlShare: 'Доля',
   vlDp: 'Темп и произношение (DP)', vlDominant: 'По основному голосу', vlWeighted: 'Взвешенный — экспериментально', vlSelect: 'Выбрать голос',
   vlUndo: 'Отменить веса', vlRedo: 'Вернуть веса', vlText: 'Текст', vlSpeed: 'Скорость', vlQuality: 'Качество',
