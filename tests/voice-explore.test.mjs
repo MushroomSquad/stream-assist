@@ -1,0 +1,41 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import vm from 'node:vm';
+const read = p => readFileSync(`src/lib/${p}`, 'utf8');
+test('explore and project API forward command arguments', async () => {
+  const calls = [];
+  const source = read('voiceApi.ts').replace(/^import .*;$/gm, '');
+  const js = ts.transpile(source, { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 });
+  const context = { exports: {}, isTauri: () => true, invoke: async (...args) => { calls.push(args); }, listen: () => {} };
+  vm.runInNewContext(js, context);
+  const explore = { mode: 'interp', a: 1, b: 2, points: 5 }, params = { text: 'тест', lang: 'ru', speed: 1, quality: 8 };
+  await context.exports.vl_explore(explore, params, null);
+  await context.exports.vl_export_project('/tmp/a.svlab');
+  await context.exports.vl_import_project('/tmp/a.svlab');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['vl_explore', { explore, params, reference: null }], ['vl_export_project', { path: '/tmp/a.svlab' }], ['vl_import_project', { path: '/tmp/a.svlab' }]]);
+});
+test('ribbon sorts similarity without changing original indices and resolves snapshot hashes', () => {
+  const source = read('views/voice/Explore.svelte');
+  const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
+  const sort = script.match(/function ranked[\s\S]*?\n}/)[0];
+  const resolve = script.match(/function snapshotInputs[\s\S]*?\n}/)[0];
+  const context = { profiles: [{ id: 9, styleSha256: 'a' }, { id: 4, styleSha256: 'b' }] };
+  vm.createContext(context);
+  vm.runInContext(ts.transpile(`${sort}\n${resolve}`, { target: ts.ScriptTarget.ES2022 }), context);
+  const items = [{ similarity: null }, { similarity: .2 }, { similarity: .8 }];
+  assert.deepEqual(Array.from(context.ranked(items), x => x.index), [2, 1, 0]);
+  assert.equal(items[0].similarity, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.snapshotInputs({ inputs: [{ profileSha256: 'b', weight: 25 }, { profileSha256: 'a', weight: 75 }] }))), [[4, 25], [9, 75]]);
+  assert.throws(() => context.snapshotInputs({ inputs: [{ profileSha256: 'missing', weight: 100 }] }));
+});
+test('UI exposes experimental tab, batch cancellation, endpoints and project report', () => {
+  const ui = read('views/voice/Explore.svelte');
+  for (const pattern of [/kind !== 'batch'/, /vl_cancel_job\(job.id\)/, /result.cancelled/, /index === 0/, /index === .*points - 1/, /profileSha256/, /revokeObjectURL/, /2\s*\*\*\s*32/]) assert.match(ui, pattern);
+  assert.match(read('views/voice/VoiceLab.svelte'), /vlExplore/);
+  const voices = read('views/voice/Voices.svelte');
+  for (const word of ['vl_export_project', 'vl_import_project', 'revisionMismatch', 'report.profiles', 'report.renders', 'report.skipped']) assert.ok(voices.includes(word), word);
+  const ru = read('i18n/ru.ts');
+  for (const word of ['BATCH_INVALID', 'ENCODER_MISSING', 'PROJECT_INVALID', 'PROJECT_TOO_LARGE', 't — вес смеси, а не доля пути']) assert.ok(ru.includes(word), word);
+});

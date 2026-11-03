@@ -8,7 +8,7 @@ export interface Recipe { schemaVersion: number; kind: string; engine: { id: str
 export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix' | 'train'; recipe: Recipe | null; meta: unknown; createdAt: number }
 export interface RenderParams { text: string; lang: string; speed: number; quality: number }
 export interface Render extends RenderParams { id: number; profileId: number | null; recipe: Recipe | null; durationMs: number; wallMs: number; favorite: boolean; createdAt: number }
-export interface JobState { id: number; kind: string; status: string; progress: { event: string; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
+export interface JobState { id: number; kind: string; status: string; progress: { event: string; index?: number; similarity?: number | null; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
 function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : Promise.reject(new Error('browser')); }
 export const vl_status = () => call<ModelStatus>('vl_status');
 export const vl_install = (withEncoder: boolean) => call<void>('vl_install', { withEncoder });
@@ -54,3 +54,12 @@ export const vl_train_runs = () => call<TrainRun[]>('vl_train_runs');
 export const vl_train_delete = (runId: number) => call<void>('vl_train_delete', { runId });
 export const onTrain = (cb: (run: TrainRun) => void) => listen<TrainRun>('vl-train', e => cb(e.payload));
 export const onTrainInstall = (cb: (progress: TrainInstallProgress) => void) => listen<TrainInstallProgress>('vl-train-install', e => cb(e.payload));
+
+export type Explore = { mode: 'interp'; a: number; b: number; points: number } | { mode: 'random'; ids: number[]; k: number; seed: number; dp: Exclude<DpStrategy, 'select'> };
+export interface RefRegion { sourceId: number; startMs: number; endMs: number }
+export interface ExploreItem { render: Render; similarity: number | null }
+export interface ExploreResult { items: ExploreItem[]; cancelled: boolean }
+export interface ImportReport { profiles: number; renders: number; skipped: number; revisionMismatch: boolean }
+export const vl_explore = (explore: Explore, params: RenderParams, reference: RefRegion | null) => call<ExploreResult>('vl_explore', { explore, params, reference });
+export const vl_export_project = (path: string) => call<void>('vl_export_project', { path });
+export const vl_import_project = (path: string) => call<ImportReport>('vl_import_project', { path });

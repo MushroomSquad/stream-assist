@@ -6,12 +6,13 @@ import Setup from './Setup.svelte';
 import Sources from './Sources.svelte';
 import Voices from './Voices.svelte';
 import Mixer from './Mixer.svelte';
+import Explore from './Explore.svelte';
 import Train from './Train.svelte';
 import Renders from './Renders.svelte';
 let status = $state<api.ModelStatus | null>(null);
 let message = $state('');
 let tab = $state('vlSources');
-const tabs = ['vlSources', 'vlVoices', 'vlMixer', 'vlRenders', 'vlTrain'] as const;
+const tabs = ['vlSources', 'vlVoices', 'vlMixer', 'vlExplore', 'vlRenders', 'vlTrain'] as const;
 async function load() { try { status = await api.vl_status(); message = ''; } catch (e) { message = errorText(e); } }
 onMount(() => { void load(); });
 </script>
@@ -22,5 +23,5 @@ onMount(() => { void load(); });
 {:else}
 {#if !status.ffmpeg}<p class="notice">{ru.vlWavOnly}</p>{/if}
 <div class="actions">{#each tabs as id}<button class:primary={tab === id} onclick={() => tab = id}>{ru[id]}</button>{/each}</div>
-{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlTrain'}<Train />{:else}<Renders />{/if}
+{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlExplore'}<Explore />{:else if tab === 'vlTrain'}<Train />{:else}<Renders />{/if}
 {/if}{/if}</section>

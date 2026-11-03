@@ -1,4 +1,13 @@
 export const ru = {
+  vlExplore: 'Исследование · экспериментально', vlInterp: 'Интерполяция', vlRandom: 'Случайные смеси',
+  vlPoints: 'Точек', vlCount: 'Смесей', vlNewSeed: 'Новый', vlSeedNote: 'Одинаковый seed повторяет веса, но не звук',
+  vlTNote: 't — вес смеси, а не доля пути', vlReference: 'Сравнить с записью', vlSimilarity: 'Сходство',
+  vlSimilarityNote: 'Сходство — подсказка, а не оценка качества', vlCancelledPartial: 'Отменено, показаны готовые',
+  vlEndpointA: 'это профиль A', vlEndpointB: 'это профиль B', vlSaveSnapshot: 'Сохранить снимком',
+  vlExportProject: 'Экспорт проекта', vlImportProject: 'Импорт проекта', vlProject: 'Проект Voice Lab',
+  vlImportedProfiles: 'Профилей', vlImportedRenders: 'Рендеров', vlSkipped: 'Пропущено',
+  vlRevisionMismatch: 'Проект создан с другой ревизией модели',
+
   vlMinutes: 'мин', vlTrain: 'Обучение', vlTrainWarning: 'Обучение загружает GPU полностью — не запускайте во время стрима',
   vlTrainLowVram: 'Свободно меньше 6 ГБ VRAM — обучение может завершиться из-за нехватки памяти.',
   vlTrainInstall: 'Установить пакет обучения (≈ 8 ГБ)', vlTrainUpdate: 'Обновить пакет', vlTrainUninstall: 'Удалить пакет',
@@ -45,6 +54,11 @@ export const ru = {
 };
 
 export const errorMessages: Record<string, string> = {
+  BATCH_INVALID: 'Проверьте параметры пачки: текст от 1 до 300 символов, количество точек или смесей и профили',
+  ENCODER_MISSING: 'Для сравнения с записью установите энкодер голоса',
+  PROJECT_INVALID: 'Проект повреждён или имеет неподдерживаемый формат',
+  PROJECT_TOO_LARGE: 'Проект превышает допустимые размеры или количество записей',
+
   UV_MISSING: 'Установите uv и добавьте его в PATH или ~/.local/bin',
   UV_TOO_OLD: 'Обновите uv до поддерживаемой версии',
   TRAIN_INVALID: 'Неверные параметры обучения',
@@ -70,7 +84,7 @@ export const errorMessages: Record<string, string> = {
   REGION_INVALID: 'Проверьте границы и длину региона',
   TRANSCRIPT_REQUIRED: 'Для этого языка нужен транскрипт',
   ZERO_MIX_WEIGHTS: 'Сумма весов должна быть больше нуля',
-  MIX_INVALID: 'Проверьте голоса и веса микса',
+  MIX_INVALID: 'Выберите разные профили и проверьте веса смеси',
   PROFILE_HASH_MISMATCH: 'Файл профиля изменён или повреждён',
   TEXT_INVALID: 'Введите от 1 до 1000 символов',
   JOB_BUSY: 'Задача уже выполняется',
