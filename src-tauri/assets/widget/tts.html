@@ -33,8 +33,9 @@ function connect() {
     current.play().catch(() => report('error'));
   };
   ws.onclose = ({ code }) => {
-    stop();
-    if (code !== 4001) setTimeout(connect, 2000);
+    // A brief drop lets the current clip finish; the engine's deadline covers the lost report.
+    if (code === 4001) stop();
+    else setTimeout(connect, 2000);
   };
 }
 connect();

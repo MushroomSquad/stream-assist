@@ -62,7 +62,9 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
         if let Some(old) = guard.replace(tx) {
             let _ = old.send(true);
         }
-        let _ = a.tts.send(TtsWidgetEvent::Connected).await;
+        if let Err(error) = a.tts.try_send(TtsWidgetEvent::Connected) {
+            eprintln!("Could not signal TTS widget connection: {error}");
+        }
         Some(rx)
     } else {
         None
@@ -106,7 +108,9 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
                         let _guard = a.tts_player.lock().await;
                         if evicted.as_ref().is_some_and(|rx| *rx.borrow()) { continue; }
                         if let Some(event) = parse_tts_event(&text)
-                            && a.tts.send(event).await.is_err() { break; }
+                            && let Err(error) = a.tts.try_send(event) {
+                            eprintln!("Could not forward TTS widget event: {error}");
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
@@ -134,7 +138,9 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
         let mut guard = a.tts_player.lock().await;
         if evicted.as_ref().is_some_and(|rx| !*rx.borrow()) {
             *guard = None;
-            let _ = a.tts.send(TtsWidgetEvent::Disconnected).await;
+            if let Err(error) = a.tts.try_send(TtsWidgetEvent::Disconnected) {
+                eprintln!("Could not signal TTS widget disconnection: {error}");
+            }
         }
     }
 }
