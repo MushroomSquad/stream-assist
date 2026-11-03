@@ -9,6 +9,7 @@ use crate::{
     request, router,
     server::{ServerChannels, WsOut},
     spotify::{self, Pkce, Spotify},
+    tts::{TtsSettings, engine::TtsMsg, tts_reward_patch},
     twitch::{
         eventsub::{self, EsSignal},
         helix::{Helix, RewardError},
@@ -26,6 +27,8 @@ use tauri::Emitter;
 use tokio::sync::{mpsc, watch};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub tts: TtsSettings,
     pub limits: Limits,
     pub reward_title: String,
     pub reward_cost: u32,
@@ -40,6 +43,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            tts: TtsSettings::default(),
             limits: Limits::default(),
             reward_title: "Заказать трек".into(),
             reward_cost: 500,
@@ -73,6 +77,7 @@ pub enum DriverMsg {
     SpotifyStatus(tokio::sync::oneshot::Sender<crate::app::SpotifyStatus>),
 }
 pub struct DriverCtx {
+    pub tts: mpsc::UnboundedSender<TtsMsg>,
     pub db: Arc<Mutex<Db>>,
     pub active_theme: Arc<std::sync::RwLock<String>>,
     pub state_tx: watch::Sender<WidgetState>,
@@ -152,6 +157,7 @@ impl PollGate {
 }
 fn keep_reward_id(current: &Settings, mut incoming: Settings) -> Settings {
     incoming.music_reward_id = current.music_reward_id.clone();
+    incoming.tts.reward_id = current.tts.reward_id.clone();
     incoming
 }
 fn prepare_actions(
@@ -358,6 +364,7 @@ enum Internal {
     Msg(DriverMsg),
     Reconcile(Vec<Redemption>),
     Reward(Result<String>),
+    TtsReward(Result<String>),
     Spotify(Result<Tokens>),
 }
 fn redeem(
@@ -366,7 +373,12 @@ fn redeem(
     inflight: &mut HashSet<String>,
     tx: &mpsc::UnboundedSender<Internal>,
 ) {
-    if router::route(&r.r.reward_id, c.settings.music_reward_id.as_deref()).is_none() {
+    if router::route(
+        &r.r.reward_id,
+        c.settings.music_reward_id.as_deref(),
+        c.settings.tts.reward_id.as_deref(),
+    ) != Some(router::FeatureKind::Music)
+    {
         return;
     }
     if c.db
@@ -409,6 +421,15 @@ fn connect_twitch(
     tx: &mpsc::UnboundedSender<Internal>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let h = c.helix.clone()?;
+    if c.settings.tts.reward_enabled {
+        spawn_tts_reward(h.clone(), &c.settings.tts, tx);
+    } else if let Some(id) = c.settings.tts.reward_id.clone() {
+        let h = h.clone();
+        background(async move {
+            h.update_reward(&id, &serde_json::json!({"is_enabled":false}))
+                .await
+        });
+    }
     let (out, mut rx) = mpsc::channel(64);
     let forward = tx.clone();
     let eventsub_helix = h.clone();
@@ -664,6 +685,27 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 reconcile(&ctx, &tx);
             }
             Internal::Reward(Err(e)) => warn(&ctx, Some(e.to_string())),
+            Internal::TtsReward(Ok(id)) => {
+                ctx.settings.tts.reward_id = Some(id.clone());
+                let _ = ctx
+                    .db
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_setting("settings", &ctx.settings);
+                if let Some(h) = ctx.helix.clone() {
+                    let body = ctx
+                        .settings
+                        .tts
+                        .reward_body(ctx.settings.tts.reward_enabled);
+                    background(async move { h.update_reward(&id, &body).await });
+                }
+                let _ = ctx.tts.send(TtsMsg::Settings(ctx.settings.tts.clone()));
+                // TODO(Task 7): tts_reconcile
+            }
+            Internal::TtsReward(Err(e)) => {
+                let _ = ctx.tts.send(TtsMsg::Warning(e.to_string()));
+            }
+
             Internal::Spotify(result) => match result {
                 Ok(t) => {
                     crate::app::save_tokens("spotify", &t, ctx.app.clone());
@@ -729,17 +771,22 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     s,
                 )
                 .await;
-                if result.is_ok() {
+                if let Ok(old) = &result {
+                    tts_settings_changed(old, &ctx.settings, ctx.helix.clone(), &ctx.tts, &tx);
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
                         now(),
                     );
                     actions(&ctx, &player, aa, &tx, &mut polls);
                 }
-                let _ = reply.send(result.map_err(|_| "settings_save_failed".into()));
+                let _ = reply.send(
+                    result
+                        .map(|_| ())
+                        .map_err(|_| "settings_save_failed".into()),
+                );
             }
             Internal::Msg(DriverMsg::SettingsChanged(s)) => {
-                if apply_settings(
+                if let Ok(old) = apply_settings(
                     &mut ctx.settings,
                     &ctx.db,
                     &ctx.active_theme,
@@ -748,8 +795,8 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     s,
                 )
                 .await
-                .is_ok()
                 {
+                    tts_settings_changed(&old, &ctx.settings, ctx.helix.clone(), &ctx.tts, &tx);
                     let aa = player.step(
                         Input::SetMaxDuration(ctx.settings.limits.max_duration_ms),
                         now(),
@@ -771,13 +818,20 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 if let Some(old) = es.take() {
                     old.abort();
                 }
-                if let (Some(h), Some(id)) =
-                    (ctx.helix.take(), ctx.settings.music_reward_id.clone())
-                {
-                    background(async move {
-                        h.update_reward(&id, &serde_json::json!({"is_paused":true}))
-                            .await
-                    });
+                if let Some(h) = ctx.helix.take() {
+                    for id in [
+                        ctx.settings.music_reward_id.clone(),
+                        ctx.settings.tts.reward_id.clone(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        let h = h.clone();
+                        background(async move {
+                            h.update_reward(&id, &serde_json::json!({"is_paused":true}))
+                                .await
+                        });
+                    }
                 }
                 let _ = crate::secrets::write("twitch", None);
             }
@@ -814,7 +868,8 @@ async fn apply_settings(
     ws: &ServerChannels,
     helix: Option<Arc<Helix>>,
     incoming: Settings,
-) -> Result<()> {
+) -> Result<TtsSettings> {
+    let old = current.tts.clone();
     let s = keep_reward_id(current, incoming);
     db.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -836,12 +891,72 @@ async fn apply_settings(
         }
     }
     *current = s;
-    Ok(())
+    Ok(old)
+}
+
+fn tts_settings_changed(
+    old: &TtsSettings,
+    new: &Settings,
+    helix: Option<Arc<Helix>>,
+    tts_tx: &mpsc::UnboundedSender<TtsMsg>,
+    tx: &mpsc::UnboundedSender<Internal>,
+) {
+    let _ = tts_tx.send(TtsMsg::Settings(new.tts.clone()));
+    if let Some(h) = helix {
+        if let Some(id) = new.tts.reward_id.clone() {
+            if let Some(body) = tts_reward_patch(old, &new.tts) {
+                background(async move { h.update_reward(&id, &body).await });
+            }
+        } else if !old.reward_enabled && new.tts.reward_enabled {
+            spawn_tts_reward(h, &new.tts, tx);
+        }
+    }
+}
+fn spawn_tts_reward(helix: Arc<Helix>, tts: &TtsSettings, tx: &mpsc::UnboundedSender<Internal>) {
+    let tts = tts.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = bounded(async {
+            match helix.find_manageable_reward(tts.reward_id.as_deref(), &tts.reward_title).await? {
+                Some(id) => Ok(id),
+                None => helix.create_reward(&tts.reward_title, tts.reward_cost, "Текст для озвучки").await.map_err(|error| anyhow!(match error {
+                    RewardError::NotAffiliate => "нужен статус компаньона/партнёра",
+                    RewardError::DuplicateTitle => "награда с таким названием уже есть, но создана не этой программой — переименуйте её или удалите",
+                    RewardError::Other(_) => "Не удалось создать награду",
+                })),
+            }
+        }).await;
+        let _ = tx.send(Internal::TtsReward(result));
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_without_tts_from_old_json() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("tts");
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(settings.tts, crate::tts::TtsSettings::default());
+    }
+    #[tokio::test]
+    async fn settings_change_keeps_tts_reward_id() {
+        let (mut current, db, theme, ws, _) = settings_fixture().await;
+        current.tts.reward_id = Some("owned".into());
+        let old = current.tts.clone();
+        let mut incoming = current.clone();
+        incoming.tts.reward_id = Some("stale".into());
+        incoming.tts.reward_cost = 123;
+        let previous = apply_settings(&mut current, &db, &theme, &ws, None, incoming)
+            .await
+            .unwrap();
+        assert_eq!(previous, old);
+        assert_eq!(current.tts.reward_id.as_deref(), Some("owned"));
+        let saved: Settings = db.lock().unwrap().get_setting("settings").unwrap().unwrap();
+        assert_eq!(saved.tts, current.tts);
+        ws.task.unwrap().abort();
+    }
     async fn settings_fixture() -> (
         Settings,
         Arc<Mutex<Db>>,

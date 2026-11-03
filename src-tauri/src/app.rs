@@ -155,9 +155,11 @@ async fn start(
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
     // TODO(Task 7): forward these events to the TTS engine.
-    let _tts_rx = ws.tts_rx.take();
+    let _tts_widget_rx = ws.tts_rx.take();
+    let (tts_tx, _tts_rx) = mpsc::unbounded_channel::<crate::tts::engine::TtsMsg>();
     crate::driver::run(
         DriverCtx {
+            tts: tts_tx,
             db,
             active_theme,
             state_tx,
@@ -180,10 +182,19 @@ pub fn exit(app: &tauri::AppHandle) {
             let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
             let settings = db.get_setting::<Settings>("settings")?.unwrap_or_default();
             drop(db);
-            if let (Some(t), Some(id)) = (load("twitch").await?, settings.music_reward_id) {
-                twitch_client(t, app.clone())
-                    .update_reward(&id, &serde_json::json!({"is_paused":true}))
-                    .await?;
+            if let Some(t) = load("twitch").await? {
+                let helix = twitch_client(t, app.clone());
+                let mut result = Ok(());
+                for id in [settings.music_reward_id, settings.tts.reward_id]
+                    .into_iter()
+                    .flatten()
+                {
+                    let paused = helix
+                        .update_reward(&id, &serde_json::json!({"is_paused":true}))
+                        .await;
+                    result = result.and(paused);
+                }
+                result?;
             }
             Ok::<_, anyhow::Error>(())
         };
@@ -195,6 +206,68 @@ pub fn exit(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validate_rejects_bad_tts() {
+        let base = Settings::default();
+        assert!(validate_settings(&base).is_ok());
+        let mut invalid = Vec::new();
+        for marker in ["", "abcd", "a b"] {
+            let mut s = base.clone();
+            s.tts.marker = marker.into();
+            invalid.push(s);
+        }
+        for speed in [2.0, 0.6, f32::NAN] {
+            let mut s = base.clone();
+            s.tts.speed = speed;
+            invalid.push(s);
+        }
+        let mut s = base.clone();
+        s.tts.global_cooldown_s = 3601;
+        invalid.push(s);
+        let mut s = base.clone();
+        s.tts.user_cooldown_s = 3601;
+        invalid.push(s);
+        let mut s = base.clone();
+        s.tts.reward_title = s.reward_title.clone();
+        invalid.push(s);
+        let mut s = base.clone();
+        s.tts.lang = "xx".into();
+        invalid.push(s);
+        for title in ["".to_string(), "я".repeat(46)] {
+            let mut s = base.clone();
+            s.tts.reward_title = title;
+            invalid.push(s);
+        }
+        for cost in [0, 2147483648] {
+            let mut s = base.clone();
+            s.tts.reward_cost = cost;
+            invalid.push(s);
+        }
+        let mut s = base.clone();
+        s.tts.reward_cooldown_s = 604801;
+        invalid.push(s);
+        let mut s = base.clone();
+        s.tts.stop_words = vec!["a".into(); 201];
+        invalid.push(s);
+        let mut s = base.clone();
+        s.tts.stop_words = vec!["я".repeat(51)];
+        invalid.push(s);
+        for s in invalid {
+            assert!(validate_settings(&s).is_err());
+        }
+        let mut s = base;
+        s.tts.marker = "я!?".into();
+        s.tts.reward_title = "я".repeat(45);
+        s.tts.reward_cost = 2147483647;
+        s.tts.reward_cooldown_s = 604800;
+        s.tts.global_cooldown_s = 3600;
+        s.tts.user_cooldown_s = 3600;
+        s.tts.stop_words = vec!["я".repeat(50); 200];
+        for speed in [0.7, 1.5] {
+            s.tts.speed = speed;
+            assert!(validate_settings(&s).is_ok());
+        }
+    }
     #[test]
     fn panel_rejects_invalid_settings() {
         let mut s = Settings::default();
@@ -304,7 +377,8 @@ pub struct DeviceFlow(
         )>,
     >,
 );
-const SCOPES: &str = "channel:read:redemptions channel:manage:redemptions user:write:chat";
+const SCOPES: &str =
+    "channel:read:redemptions channel:manage:redemptions user:write:chat user:read:chat";
 fn twitch_id() -> Result<&'static str, String> {
     option_env!("TWITCH_CLIENT_ID")
         .filter(|s| !s.is_empty())
@@ -481,7 +555,25 @@ fn validate_volume(pct: u8) -> Result<(), String> {
     }
 }
 fn validate_settings(s: &Settings) -> Result<(), String> {
-    if s.port == 0 || s.obs.port == 0 || s.reward_cost == 0 || s.reward_title.trim().is_empty() {
+    let t = &s.tts;
+    if s.port == 0
+        || s.obs.port == 0
+        || s.reward_cost == 0
+        || s.reward_title.trim().is_empty()
+        || !(1..=3).contains(&t.marker.chars().count())
+        || t.marker.chars().any(char::is_whitespace)
+        || !(0.7..=1.5).contains(&t.speed)
+        || t.global_cooldown_s > 3600
+        || t.user_cooldown_s > 3600
+        || t.stop_words.len() > 200
+        || t.stop_words.iter().any(|w| w.chars().count() > 50)
+        || t.reward_title.trim().is_empty()
+        || t.reward_title.chars().count() > 45
+        || t.reward_title == s.reward_title
+        || !(1..=2147483647).contains(&t.reward_cost)
+        || t.reward_cooldown_s > 604800
+        || !supertonic3_tts::AVAILABLE_LANGS.contains(&t.lang.as_str())
+    {
         Err("settings_invalid".into())
     } else {
         Ok(())

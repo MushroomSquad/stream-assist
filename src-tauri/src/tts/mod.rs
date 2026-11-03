@@ -46,6 +46,31 @@ impl Default for TtsSettings {
     }
 }
 
+impl TtsSettings {
+    pub fn reward_body(&self, enabled: bool) -> serde_json::Value {
+        serde_json::json!({"title":self.reward_title,"cost":self.reward_cost,"is_enabled":enabled,"is_paused":false,"global_cooldown_setting":{"is_enabled":self.reward_cooldown_s > 0,"global_cooldown_seconds":self.reward_cooldown_s}})
+    }
+}
+pub fn tts_reward_patch(old: &TtsSettings, new: &TtsSettings) -> Option<serde_json::Value> {
+    if (
+        old.reward_title.as_str(),
+        old.reward_cost,
+        old.reward_cooldown_s,
+        old.reward_enabled,
+    ) == (
+        new.reward_title.as_str(),
+        new.reward_cost,
+        new.reward_cooldown_s,
+        new.reward_enabled,
+    ) {
+        None
+    } else if old.reward_enabled && !new.reward_enabled {
+        Some(serde_json::json!({"is_enabled":false}))
+    } else {
+        Some(new.reward_body(new.reward_enabled))
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ItemView {
     pub id: u64,
@@ -86,5 +111,48 @@ mod tests {
         assert_eq!(settings.user_cooldown_s, 60);
         assert!(settings.strip_links);
         assert!(settings.stop_words.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod reward_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn tts_reward_body() {
+        let s = TtsSettings::default();
+        for enabled in [false, true] {
+            assert_eq!(
+                s.reward_body(enabled),
+                json!({"title":"Озвучить текст","cost":300,"is_enabled":enabled,"is_paused":false,"global_cooldown_setting":{"is_enabled":false,"global_cooldown_seconds":0}})
+            );
+        }
+    }
+    #[test]
+    fn tts_reward_patch_cases() {
+        let old = TtsSettings::default();
+        assert_eq!(tts_reward_patch(&old, &old), None);
+        let mut new = old.clone();
+        new.reward_enabled = true;
+        assert_eq!(tts_reward_patch(&old, &new), Some(new.reward_body(true)));
+        let enabled = new.clone();
+        new.reward_enabled = false;
+        assert_eq!(
+            tts_reward_patch(&enabled, &new),
+            Some(json!({"is_enabled":false}))
+        );
+        new = enabled.clone();
+        new.reward_cost += 1;
+        assert_eq!(
+            tts_reward_patch(&enabled, &new),
+            Some(new.reward_body(true))
+        );
+        new = enabled.clone();
+        new.reward_title = "Другое".into();
+        new.reward_cooldown_s = 60;
+        assert_eq!(
+            tts_reward_patch(&enabled, &new),
+            Some(new.reward_body(true))
+        );
     }
 }
