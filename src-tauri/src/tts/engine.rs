@@ -622,12 +622,16 @@ mod tests {
     }
     #[tokio::test(start_paused = true)]
     async fn current_model_missing_breaks_voice() {
-        let synth: SynthFn = Arc::new(|_, _, _, _, _| Box::pin(async { Err("MODEL_MISSING".into()) }));
+        let synth: SynthFn =
+            Arc::new(|_, _, _, _, _| Box::pin(async { Err("MODEL_MISSING".into()) }));
         let mut h = Harness::custom(settings(), Some(synth));
         h.connect().await;
         h.send(reward("1", "текст"));
         h.outcome("1", false).await;
-        assert_eq!(h.state().await.warning.as_deref(), Some("tts_model_missing"));
+        assert_eq!(
+            h.state().await.warning.as_deref(),
+            Some("tts_model_missing")
+        );
         h.send(reward("2", "ещё"));
         h.outcome("2", false).await;
         h.send(TtsMsg::Settings(settings()));
@@ -654,7 +658,10 @@ mod tests {
         h.connect().await;
         assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsPlay { id: got }) if got == id));
         tokio::time::advance(Duration::from_secs(9)).await;
-        assert!(h.state().await.current.is_some(), "deadline restarted on replay");
+        assert!(
+            h.state().await.current.is_some(),
+            "deadline restarted on replay"
+        );
         h.send(TtsMsg::Widget(TtsWidgetEvent::Ended(id)));
         h.outcome("1", true).await;
     }

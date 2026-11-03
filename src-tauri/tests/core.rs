@@ -20,7 +20,10 @@ fn source_roundtrip_json() {
 
 #[test]
 fn route_music() {
-    assert_eq!(route("music", Some("music"), None), Some(FeatureKind::Music));
+    assert_eq!(
+        route("music", Some("music"), None),
+        Some(FeatureKind::Music)
+    );
     assert_eq!(route("other", Some("music"), None), None);
     assert_eq!(route("music", None, None), None);
 }

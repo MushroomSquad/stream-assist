@@ -184,17 +184,18 @@ pub fn exit(app: &tauri::AppHandle) {
             drop(db);
             if let Some(t) = load("twitch").await? {
                 let helix = twitch_client(t, app.clone());
-                let mut result = Ok(());
-                for id in [settings.music_reward_id, settings.tts.reward_id]
+                // Both rewards are paused concurrently to fit the 2 s exit budget.
+                let ids: Vec<String> = [settings.music_reward_id, settings.tts.reward_id]
                     .into_iter()
                     .flatten()
-                {
-                    let paused = helix
-                        .update_reward(&id, &serde_json::json!({"is_paused":true}))
-                        .await;
-                    result = result.and(paused);
-                }
-                result?;
+                    .collect();
+                let pause = serde_json::json!({"is_paused":true});
+                futures_util::future::join_all(
+                    ids.iter().map(|id| helix.update_reward(id, &pause)),
+                )
+                .await
+                .into_iter()
+                .collect::<anyhow::Result<Vec<()>>>()?;
             }
             Ok::<_, anyhow::Error>(())
         };
@@ -569,7 +570,7 @@ fn validate_settings(s: &Settings) -> Result<(), String> {
         || t.stop_words.iter().any(|w| w.chars().count() > 50)
         || t.reward_title.trim().is_empty()
         || t.reward_title.chars().count() > 45
-        || t.reward_title == s.reward_title
+        || t.reward_title.trim().to_lowercase() == s.reward_title.trim().to_lowercase()
         || !(1..=2147483647).contains(&t.reward_cost)
         || t.reward_cooldown_s > 604800
         || !supertonic3_tts::AVAILABLE_LANGS.contains(&t.lang.as_str())

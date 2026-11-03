@@ -703,7 +703,10 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 // TODO(Task 7): tts_reconcile
             }
             Internal::TtsReward(Err(e)) => {
-                let _ = ctx.tts.send(TtsMsg::Warning(e.to_string()));
+                // A concurrent lookup may already have stored the id; its error is stale then.
+                if ctx.settings.tts.reward_id.is_none() {
+                    let _ = ctx.tts.send(TtsMsg::Warning(e.to_string()));
+                }
             }
 
             Internal::Spotify(result) => match result {
@@ -907,7 +910,10 @@ fn tts_settings_changed(
             if let Some(body) = tts_reward_patch(old, &new.tts) {
                 background(async move { h.update_reward(&id, &body).await });
             }
-        } else if !old.reward_enabled && new.tts.reward_enabled {
+        } else if new.tts.reward_enabled
+            && (!old.reward_enabled || tts_reward_patch(old, &new.tts).is_some())
+        {
+            // Also retries after a failed creation once the user changes the title/cost.
             spawn_tts_reward(h, &new.tts, tx);
         }
     }
