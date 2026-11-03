@@ -138,11 +138,13 @@ async fn start(
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
     let active_theme = Arc::new(RwLock::new(settings.active_theme.clone()));
-    let (ws, server_warning) = crate::server::start_or_disabled(
+    let tts_dir = dir.join("voice-lab/tmp/tts");
+    let (mut ws, server_warning) = crate::server::start_or_disabled(
         settings.port,
         dir.join("themes"),
         active_theme.clone(),
         state,
+        tts_dir,
     )
     .await;
     handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
@@ -152,6 +154,8 @@ async fn start(
         state_tx.send_replace(s.clone());
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
+    // TODO(Task 7): forward these events to the TTS engine.
+    let _tts_rx = ws.tts_rx.take();
     crate::driver::run(
         DriverCtx {
             db,

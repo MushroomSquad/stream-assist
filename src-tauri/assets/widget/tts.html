@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Stream Assist — Озвучка</title>
+<style>html, body { margin: 0; background: transparent; }</style>
+<script>
+let audio = null;
+function stop() {
+  if (!audio) return;
+  audio.onended = audio.onerror = null;
+  audio.pause();
+  audio.currentTime = 0;
+  audio = null;
+}
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws?role=tts`);
+  ws.onmessage = ({ data }) => {
+    const m = JSON.parse(data);
+    if (m === 'Reload') { location.reload(); return; }
+    if (m === 'TtsStop') { stop(); return; }
+    if (!m.TtsPlay) return;
+    stop();
+    const id = m.TtsPlay.id;
+    const current = audio = new Audio('/tts/' + id + '.wav');
+    let reported = false;
+    function report(event) {
+      if (reported || audio !== current || ws.readyState !== WebSocket.OPEN) return;
+      reported = true;
+      ws.send(JSON.stringify({ type: 'tts', id, event }));
+    }
+    current.onended = () => report('ended');
+    current.onerror = () => report('error');
+    current.play().catch(() => report('error'));
+  };
+  ws.onclose = ({ code }) => {
+    stop();
+    if (code !== 4001) setTimeout(connect, 2000);
+  };
+}
+connect();
+</script>
+</html>

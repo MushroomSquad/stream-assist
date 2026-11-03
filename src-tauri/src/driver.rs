@@ -862,9 +862,15 @@ mod tests {
             mode: "Idle".into(),
             warning: None,
         });
-        let ws = crate::server::serve(0, std::env::temp_dir(), theme.clone(), state)
-            .await
-            .unwrap();
+        let ws = crate::server::serve(
+            0,
+            std::env::temp_dir(),
+            theme.clone(),
+            state,
+            std::env::temp_dir(),
+        )
+        .await
+        .unwrap();
         // The server remains reachable throughout settings changes.
         {
             let port = ws.running_port;

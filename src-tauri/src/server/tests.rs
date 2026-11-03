@@ -76,6 +76,7 @@ async fn setup() -> (u16, ServerChannels) {
         PathBuf::from("/nonexistent"),
         Arc::new(RwLock::new("underground".into())),
         rx,
+        PathBuf::new(),
     );
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -357,6 +358,7 @@ async fn widget_survives_poisoned_theme_lock() {
     let (out, _) = broadcast::channel(1);
     let (yt, _) = mpsc::channel(1);
     let (oauth, _) = mpsc::channel(1);
+    let (tts, _) = mpsc::channel(1);
     let response = music(State(App {
         port: 0,
         themes: PathBuf::new(),
@@ -366,7 +368,209 @@ async fn widget_survives_poisoned_theme_lock() {
         yt,
         oauth,
         player: Arc::default(),
+        tts_dir: PathBuf::new(),
+        tts,
+        tts_player: Arc::default(),
     }))
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn tts_wav_served_and_name_checked() {
+    let dir = temp();
+    for name in [
+        "1.wav",
+        "12345678901234567890.wav",
+        "a.wav",
+        "123456789012345678901.wav",
+    ] {
+        std::fs::write(dir.join(name), b"wav").unwrap();
+    }
+    let (_, rx) = watch::channel(state());
+    let mut c = serve(
+        0,
+        PathBuf::new(),
+        Arc::new(RwLock::new("underground".into())),
+        rx,
+        dir.clone(),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://127.0.0.1:{}", c.running_port);
+    for name in ["1.wav", "12345678901234567890.wav"] {
+        let r = reqwest::get(format!("{base}/tts/{name}")).await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "audio/wav");
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(r.bytes().await.unwrap().as_ref(), b"wav");
+    }
+    for name in [
+        "a.wav",
+        "..%2Fx.wav",
+        "123456789012345678901.wav",
+        ".wav",
+        "2.wav",
+        "1.WAV",
+    ] {
+        assert_eq!(
+            reqwest::get(format!("{base}/tts/{name}"))
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    let r = reqwest::get(format!("{base}/widget/tts")).await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.text().await.unwrap().contains("role=tts"));
+    c.task.take().unwrap().abort();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tts_role_receives_only_tts() {
+    let (p, mut c) = setup().await;
+    let mut t = ws(p, "tts").await;
+    let mut events = c.tts_rx.take().unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Connected)
+    ));
+    let mut player = ws(p, "player").await;
+    player.next().await.unwrap().unwrap();
+    let mut view = ws(p, "view").await;
+    view.next().await.unwrap().unwrap();
+    assert!(timeout(Duration::from_millis(80), t.next()).await.is_err());
+    c.out_tx.send(WsOut::State(state())).unwrap();
+    c.out_tx
+        .send(WsOut::YtPlay {
+            item_id: 1,
+            video_id: "x".into(),
+            start_ms: 0,
+        })
+        .unwrap();
+    c.out_tx.send(WsOut::TtsPlay { id: 7 }).unwrap();
+    c.out_tx.send(WsOut::TtsStop).unwrap();
+    c.out_tx.send(WsOut::Reload).unwrap();
+    for expected in [r#"{"TtsPlay":{"id":7}}"#, r#""TtsStop""#, r#""Reload""#] {
+        assert_eq!(
+            t.next().await.unwrap().unwrap().to_text().unwrap(),
+            expected
+        );
+    }
+    for (socket, count) in [(&mut player, 3), (&mut view, 2)] {
+        for _ in 0..count {
+            let m = socket.next().await.unwrap().unwrap();
+            assert!(!m.to_text().unwrap().contains("Tts"));
+        }
+        assert!(
+            timeout(Duration::from_millis(80), socket.next())
+                .await
+                .is_err()
+        );
+    }
+    assert!(timeout(Duration::from_millis(80), t.next()).await.is_err());
+}
+
+#[tokio::test]
+async fn tts_events_forwarded() {
+    let (p, mut c) = setup().await;
+    let mut events = c.tts_rx.take().unwrap();
+    let mut t = ws(p, "tts").await;
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Connected)
+    ));
+    for text in [
+        r#"{"type":"tts","id":7,"event":"ended"}"#,
+        r#"{"type":"tts","id":8,"event":"error"}"#,
+    ] {
+        t.send(Message::Text(text.into())).await.unwrap();
+    }
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Ended(7))
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Error(8))
+    ));
+    let mut v = ws(p, "view").await;
+    v.next().await.unwrap().unwrap();
+    v.send(Message::Text(
+        r#"{"type":"tts","id":9,"event":"ended"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    t.send(Message::Text(
+        r#"{"type":"yt","id":9,"event":"ended"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    t.send(Message::Text(
+        r#"{"type":"tts","id":9,"event":"started"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        timeout(Duration::from_millis(80), events.recv())
+            .await
+            .is_err()
+    );
+    t.close(None).await.unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Disconnected)
+    ));
+}
+
+#[tokio::test]
+async fn second_tts_widget_evicts_first() {
+    let (p, mut c) = setup().await;
+    let mut events = c.tts_rx.take().unwrap();
+    let mut a = ws(p, "tts").await;
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Connected)
+    ));
+    let mut player = ws(p, "player").await;
+    player.next().await.unwrap().unwrap();
+    let mut b = ws(p, "tts").await;
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Connected)
+    ));
+    let _ = a
+        .send(Message::Text(
+            r#"{"type":"tts","id":1,"event":"ended"}"#.into(),
+        ))
+        .await;
+    assert!(
+        matches!(a.next().await.unwrap().unwrap(), Message::Close(Some(f)) if u16::from(f.code) == 4001)
+    );
+    assert!(
+        timeout(Duration::from_millis(80), events.recv())
+            .await
+            .is_err()
+    );
+    b.send(Message::Text(
+        r#"{"type":"tts","id":2,"event":"ended"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Ended(2))
+    ));
+    b.close(None).await.unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(TtsWidgetEvent::Disconnected)
+    ));
+    c.out_tx.send(WsOut::YtStop).unwrap();
+    assert_eq!(
+        player.next().await.unwrap().unwrap().to_text().unwrap(),
+        r#""YtStop""#
+    );
 }

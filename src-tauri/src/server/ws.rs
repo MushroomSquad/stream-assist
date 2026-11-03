@@ -27,8 +27,14 @@ pub(super) async fn upgrade(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    ws.max_message_size(64 * 1024)
-        .on_upgrade(move |socket| session(socket, a, q.role.as_deref() == Some("player")))
+    ws.max_message_size(64 * 1024).on_upgrade(move |socket| {
+        session(
+            socket,
+            a,
+            q.role.as_deref() == Some("player"),
+            q.role.as_deref() == Some("tts"),
+        )
+    })
 }
 #[derive(Deserialize)]
 struct YtMessage {
@@ -37,7 +43,7 @@ struct YtMessage {
     event: String,
     duration_ms: Option<u64>,
 }
-async fn session(mut socket: WebSocket, a: App, is_player: bool) {
+async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
     let mut out = a.out.subscribe();
     // Serializing acquisition and the connected signal keeps replay commands ordered.
     let mut evicted = if is_player {
@@ -50,16 +56,25 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool) {
             eprintln!("Could not signal YouTube player connection: {error}");
         }
         Some(rx)
+    } else if is_tts {
+        let mut guard = a.tts_player.lock().await;
+        let (tx, rx) = watch::channel(false);
+        if let Some(old) = guard.replace(tx) {
+            let _ = old.send(true);
+        }
+        let _ = a.tts.send(TtsWidgetEvent::Connected).await;
+        Some(rx)
     } else {
         None
     };
     let initial = WsOut::State(a.last.borrow().clone());
-    if socket
-        .send(Message::Text(
-            serde_json::to_string(&initial).unwrap().into(),
-        ))
-        .await
-        .is_err()
+    if !is_tts
+        && socket
+            .send(Message::Text(
+                serde_json::to_string(&initial).unwrap().into(),
+            ))
+            .await
+            .is_err()
     {
         return;
     }
@@ -87,13 +102,25 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool) {
                             if a.yt.send(input).await.is_err() { break; }
                         }
                     }
+                    Some(Ok(Message::Text(text))) if is_tts => {
+                        let _guard = a.tts_player.lock().await;
+                        if evicted.as_ref().is_some_and(|rx| *rx.borrow()) { continue; }
+                        if let Some(event) = parse_tts_event(&text)
+                            && a.tts.send(event).await.is_err() { break; }
+                    }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
                 }
             }
             message = out.recv() => match message {
                 Ok(m) => {
-                    if is_player || matches!(m, WsOut::State(_) | WsOut::Reload) {
+                    let tts_message = matches!(m, WsOut::TtsPlay { .. } | WsOut::TtsStop);
+                    let forward = if is_tts {
+                        tts_message || matches!(m, WsOut::Reload)
+                    } else {
+                        !tts_message && (is_player || matches!(m, WsOut::State(_) | WsOut::Reload))
+                    };
+                    if forward {
                         let text = serde_json::to_string(&m).unwrap();
                         if socket.send(Message::Text(text.into())).await.is_err() { break; }
                     }
@@ -102,6 +129,30 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool) {
                 Err(_) => break,
             }
         }
+    }
+    if is_tts {
+        let mut guard = a.tts_player.lock().await;
+        if evicted.as_ref().is_some_and(|rx| !*rx.borrow()) {
+            *guard = None;
+            let _ = a.tts.send(TtsWidgetEvent::Disconnected).await;
+        }
+    }
+}
+#[derive(Deserialize)]
+struct TtsMessage {
+    r#type: String,
+    id: u64,
+    event: String,
+}
+fn parse_tts_event(text: &str) -> Option<TtsWidgetEvent> {
+    let m: TtsMessage = serde_json::from_str(text).ok()?;
+    if m.r#type != "tts" {
+        return None;
+    }
+    match m.event.as_str() {
+        "ended" => Some(TtsWidgetEvent::Ended(m.id)),
+        "error" => Some(TtsWidgetEvent::Error(m.id)),
+        _ => None,
     }
 }
 fn parse_event(text: &str) -> Option<Input> {
