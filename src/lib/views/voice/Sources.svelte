@@ -57,8 +57,8 @@ $effect(() => {
   const c = canvas, p = peaks, start = startMs, end = endMs, duration = selected?.durationMs ?? 1;
   const ctx = c?.getContext('2d'); if (!c || !ctx) return;
   ctx.clearRect(0, 0, c.width, c.height);
-  ctx.fillStyle = '#246b55'; p.forEach((v, i) => ctx.fillRect(i * c.width / p.length, c.height * (1 - v) / 2, Math.max(1, c.width / p.length), Math.max(1, v * c.height)));
-  ctx.fillStyle = '#6495ed55'; ctx.fillRect(start / duration * c.width, 0, (end - start) / duration * c.width, c.height);
+  ctx.fillStyle = getComputedStyle(c).getPropertyValue('--accent').trim(); p.forEach((v, i) => ctx.fillRect(i * c.width / p.length, c.height * (1 - v) / 2, Math.max(1, c.width / p.length), Math.max(1, v * c.height)));
+  ctx.fillStyle = getComputedStyle(c).getPropertyValue('--warn-bg').trim(); ctx.fillRect(start / duration * c.width, 0, (end - start) / duration * c.width, c.height);
 });
 function position(e: PointerEvent) { const rect = e.currentTarget instanceof HTMLCanvasElement ? e.currentTarget.getBoundingClientRect() : null; return rect ? Math.round(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)) * (selected?.durationMs ?? 0)) : 0; }
 async function importAudio() { const path = await open({ multiple: false, filters: [{ name: ru.vlAudio, extensions: ['wav','mp3','flac','ogg','m4a'] }] }); if (typeof path === 'string') { const s = await api.vl_import_audio(path, consent); await load(); await choose(s); } }
@@ -67,10 +67,11 @@ async function clone() {
   busy = true; try { const id = await api.vl_clone(selected.id, startMs, endMs, transcript, lang, name, preset, seed); const jobs = await api.vl_jobs(); const current = jobs.find(j => j.id === id); if (current) updateJob(current); } finally { busy = false; }
 }
 </script>
+<div class="voice-screen">
 <label class="check"><input type="checkbox" bind:checked={consent} />{ru.vlConsent}</label>
 <button onclick={() => run(importAudio)}>{ru.vlImportAudio}</button>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
-<div class="actions">{#each sources as source}<button onclick={() => run(() => choose(source))}>{source.name}</button>{/each}</div>
+<div class="actions">{#each sources as source}<button aria-pressed={selected?.id === source.id} onclick={() => run(() => choose(source))}>{source.name}</button>{/each}</div>
 {#if selected}<div class="card"><h3>{selected.name}</h3>
 <label class="check"><input type="checkbox" checked={selected.consent} onchange={e => { const s = selected!; const checkbox = e.currentTarget, previous = s.consent, checked = checkbox.checked; void run(async () => { try { await api.vl_set_consent(s.id, checked); } catch (e) { checkbox.checked = previous; throw e; } s.consent = checked; await load(); }); }} />{ru.vlConsent}</label>
 <p class="muted">{ru.vlRegion}</p>
@@ -88,7 +89,9 @@ async function clone() {
 <label>{ru.vlSeed}<input type="number" min="0" max={Number.MAX_SAFE_INTEGER} step="1" required bind:value={seed} /></label>
 <button class="primary" disabled={!cloneValid || busy || !listening || job?.status === 'running' || (lang === 'ru' && !transcript.trim())}>{ru.vlClone}</button>
 </form></div>{/if}
-{#if job}<div class="card"><p>{ru.vlJobStatus[job.status as keyof typeof ru.vlJobStatus]}</p>
-{#if job.progress?.event === 'progress'}<p>{ru.vlStage}: {ru.vlStages[job.progress.stage as keyof typeof ru.vlStages] ?? ru.vlClone} · {ru.vlIteration}: {job.progress.iteration}/{job.progress.total} · {ru.vlLoss}: {typeof job.progress.loss === 'number' ? job.progress.loss.toFixed(4) : '—'} · {ru.vlLoss} (best): {typeof job.progress.bestLoss === 'number' ? job.progress.bestLoss.toFixed(4) : '—'}</p><progress value={job.progress.iteration} max={job.progress.total}></progress>{/if}
+{#if job}<div class="card"><p class="job-status"><span class="tally" class:live={job.status === 'running'} class:connected={job.status === 'completed'} class:failed={job.status === 'failed'} aria-hidden="true"></span>{ru.vlJobStatus[job.status as keyof typeof ru.vlJobStatus]}</p>
+{#if job.progress?.event === 'progress'}<p class="metrics">{ru.vlStage}: {ru.vlStages[job.progress.stage as keyof typeof ru.vlStages] ?? ru.vlClone} · {ru.vlIteration}: {job.progress.iteration}/{job.progress.total} · {ru.vlLoss}: {typeof job.progress.loss === 'number' ? job.progress.loss.toFixed(4) : '—'} · {ru.vlTrainBest}: {typeof job.progress.bestLoss === 'number' ? job.progress.bestLoss.toFixed(4) : '—'}</p><progress aria-label={ru.vlClone} value={job.progress.iteration} max={job.progress.total}></progress>{/if}
 {#if job.status === 'running'}<p>{ru.vlElapsed}: {duration(elapsed)} · {ru.vlEta}: {eta === null ? ru.vlEtaPending : `≈ ${duration(eta)}`}</p><button onclick={() => run(() => api.vl_cancel_job(job!.id))}>{ru.vlCancel}</button>{/if}</div>{/if}
-<style>canvas{width:100%;touch-action:none;border:1px solid var(--border)}audio{display:block;margin:16px 0;max-width:100%}</style>
+
+</div>
+<style>canvas{width:100%;touch-action:none;border:1px solid var(--line);border-radius:var(--r-control);background:var(--card);margin-block:var(--s4)}audio{display:block;margin:var(--s4) 0;max-width:100%}</style>

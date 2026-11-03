@@ -90,6 +90,7 @@ async function snapshot(item: api.ExploreItem) {
   } finally { saving[id] = false; }
 }
 </script>
+<div class="voice-screen">
 <h3>{ru.vlExplore}</h3>
 <p class="muted">{ru.vlSeedNote}</p>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
@@ -123,7 +124,7 @@ async function snapshot(item: api.ExploreItem) {
 {/if}
 <button class="primary" disabled={!valid || busy || !listening}>{ru.vlGenerate}</button>
 </fieldset></form>
-{#if busy}<p role="status">{done}{total ? `/${total}` : ''}</p><progress aria-label={ru.vlBatchProgress} value={total ? done : undefined} max={total || 1}></progress>
+{#if busy}<p class="job-status metrics" role="status"><span class="tally live" aria-hidden="true"></span>{done}{total ? `/${total}` : ''}</p><progress aria-label={ru.vlBatchProgress} value={total ? done : undefined} max={total || 1}></progress>
 {#if job && job.status === 'running'}<button onclick={() => run(async () => { if (job) await api.vl_cancel_job(job.id); })}>{ru.vlCancel}</button>{/if}{/if}
 {#if restored && !busy}<p role="status">{ru.vlResultsInRenders}</p>{/if}
 {#if cancelled}<p role="status">{ru.vlCancelledPartial}</p>{/if}
@@ -132,8 +133,8 @@ async function snapshot(item: api.ExploreItem) {
 {@const endpoint = lastExplore?.mode === 'interp' && recipe?.inputs.some(input => input.weight === 0)}
 {@const label = lastExplore?.mode === 'interp' ? `t=${Number(interpolation(item).toFixed(3))}` : `#${item.index + 1} · seed ${lastExplore?.mode === 'random' ? lastExplore.seed : ''}`}
 <div class="card">
-<p title={lastExplore?.mode === 'interp' ? ru.vlTNote : undefined}>{label}</p>
-{#if recipe}{#each recipe.inputs as input}<p>{input.name}: {input.weight.toFixed(2)}%</p>{/each}{/if}
+<p class="metrics" title={lastExplore?.mode === 'interp' ? ru.vlTNote : undefined}>{label}</p>
+{#if recipe}{#each recipe.inputs as input}<p class="metrics">{input.name}: {input.weight.toFixed(2)}%</p>{/each}{/if}
 {#if item.similarity !== null}<p title={ru.vlSimilarityNote}>{ru.vlSimilarity}: {item.similarity.toFixed(3)}</p>{/if}
 <button aria-label={`${ru.vlListen}: ${label}`} onclick={() => run(() => audio(item.render.id))}>{ru.vlListen}</button>
 {#if urls[item.render.id]}<audio controls src={urls[item.render.id]}></audio>{/if}
@@ -142,4 +143,6 @@ async function snapshot(item: api.ExploreItem) {
 <label>{ru.vlName}<input required maxlength="200" bind:value={names[item.render.id]} /></label><button disabled={saving[item.render.id]}>{ru.vlSaveSnapshot}</button>
 {#if saved[item.render.id]}<span role="status">{ru.vlSaved}</span>{/if}</form>{/if}
 </div>{/each}</div>
-<style>fieldset{border:0;padding:0;min-width:0}.ribbon{display:flex;gap:16px;overflow-x:auto;align-items:flex-start}.ribbon>.card{min-width:260px}audio{display:block;max-width:100%;margin:16px 0}</style>
+
+</div>
+<style>fieldset{border:0;padding:0;min-width:0}.ribbon{display:flex;gap:var(--s4);overflow-x:auto;align-items:flex-start}.ribbon>.card{min-width:260px}audio{display:block;max-width:100%;margin:var(--s4) 0}</style>

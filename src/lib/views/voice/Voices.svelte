@@ -31,6 +31,7 @@ async function listen(id: number) {
 }
 async function exportJson(p: api.Profile, recipe = false) { const path = await save({ defaultPath: recipe ? 'recipe.json' : 'voice.json', filters: [{ name: recipe ? ru.vlExportRecipe : ru.vlExportJson, extensions: ['json'] }] }); if (path) await (recipe ? api.vl_export_recipe(p.id, path) : api.vl_export_profile(p.id, path)); }
 </script>
+<div class="voice-screen">
 <div class="actions"><button disabled={projectBusy} onclick={() => project(exportProject)}>{ru.vlExportProject}</button><button disabled={projectBusy} onclick={() => project(importProject)}>{ru.vlImportProject}</button></div>
 <button onclick={() => run(importJson)}>{ru.vlImportJson}</button>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
@@ -45,3 +46,5 @@ async function exportJson(p: api.Profile, recipe = false) { const path = await s
 {#if p.origin === 'mix'}<button onclick={() => run(() => exportJson(p, true))}>{ru.vlExportRecipe}</button>{/if}
 {#if p.origin !== 'builtin'}<button onclick={() => { if (confirm(ru.vlDeleteConfirm)) void run(async () => { await api.vl_delete_profile(p.id); await load(); }); }}>{ru.remove}</button>{/if}</div>
 {#if active === p.id}{#if busy}<p class="muted" role="status">{ru.vlListening}</p>{:else if listenError}<p class="notice" role="alert">{listenError}</p>{:else if url}<audio controls autoplay src={url}></audio>{/if}{/if}</div>{/each}
+
+</div>

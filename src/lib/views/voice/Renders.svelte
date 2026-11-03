@@ -25,14 +25,18 @@ async function audio(id: number, compare = false) {
 async function favorite(r: api.Render, fav: boolean) { await api.vl_set_favorite(r.id, fav); r.favorite = fav; }
 async function exportWav(id: number) { const path = await save({ defaultPath: 'render.wav', filters: [{ name: ru.vlExportWav, extensions: ['wav'] }] }); if (path) await api.vl_export_render(id, path); }
 </script>
+<div class="voice-screen">
 <button onclick={() => run(load)}>{ru.reload}</button>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
 {#if selected.length === 2}<h3>{ru.vlCompare}</h3><div class="comparison">{#each selected as id, i}{@const r = renders.find(r => r.id === id)!}
 <div class="card"><p>{i === 0 ? 'A' : 'B'}: {r.text}</p><button onclick={() => run(() => audio(id, true))}>{ru.vlListen}</button>
 {#if urls[id]}<audio controls src={urls[id]}></audio>{/if}<button onclick={() => run(() => favorite(r, true))}>{i === 0 ? ru.vlABetter : ru.vlBBetter}</button></div>{/each}</div>{/if}
 {#if !renders.length}<p class="muted">{ru.vlEmpty}</p>{/if}
-{#each renders as r (r.id)}<div class="card"><p>{r.text}</p><p class="muted">{profiles.find(p => p.id === r.profileId)?.name ?? ru.vlMix} · {ru.vlDuration}: {(r.durationMs / 1000).toFixed(2)} · {ru.vlRtf}: {r.durationMs > 0 ? (r.wallMs / r.durationMs).toFixed(2) : '—'}</p>
+{#each renders as r (r.id)}<div class="card"><p>{r.text}</p><p class="muted metrics">{profiles.find(p => p.id === r.profileId)?.name ?? ru.vlMix} · {ru.vlDuration}: {(r.durationMs / 1000).toFixed(2)} · {ru.vlRtf}: {r.durationMs > 0 ? (r.wallMs / r.durationMs).toFixed(2) : '—'}</p>
 <label class="check"><input type="checkbox" checked={selected.includes(r.id)} disabled={selected.length === 2 && !selected.includes(r.id)} onchange={e => selected = e.currentTarget.checked ? [...selected, r.id] : selected.filter(id => id !== r.id)} />{ru.vlCompare}</label>
-<div class="actions"><button onclick={() => run(() => audio(r.id))}>{ru.vlListen}</button><button aria-label={ru.vlFavorite} aria-pressed={r.favorite} onclick={() => run(() => favorite(r, !r.favorite))}>{r.favorite ? '★' : '☆'}</button><button onclick={() => run(() => exportWav(r.id))}>{ru.vlExportWav}</button></div>
+<div class="actions"><button onclick={() => run(() => audio(r.id))}>{ru.vlListen}</button><button aria-label={ru.vlFavorite} aria-pressed={r.favorite} onclick={() => run(() => favorite(r, !r.favorite))}>{ru.vlFavorite}</button><button onclick={() => run(() => exportWav(r.id))}>{ru.vlExportWav}</button></div>
 {#if player?.id === r.id}<audio controls src={player.url}></audio>{/if}</div>{/each}
-<style>.comparison{display:flex;gap:16px;flex-wrap:wrap}.comparison>.card{flex:1;min-width:240px}audio{max-width:100%;display:block;margin:16px 0}</style>
+
+</div>
+<style>.comparison{display:flex;gap:var(--s4);flex-wrap:wrap}.comparison>.card{flex:1;min-width:240px}audio{max-width:100%;display:block;margin:var(--s4) 0}
+button[aria-pressed=true] { color:var(--accent); border-color:var(--line-strong); }</style>

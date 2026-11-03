@@ -63,6 +63,7 @@ onMount(() => {
   return () => { disposed = true; stops.forEach(stop => stop()); };
 });
 </script>
+<div class="voice-screen">
 <p class="notice">{ru.vlTrainWarning}</p>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
 <button disabled={busy || installing} onclick={() => action(() => load(true))}>{ru.status}</button>
@@ -104,11 +105,11 @@ onMount(() => {
 {#if runs.length === 0}<p>{ru.vlEmpty}</p>{/if}
 {#each runs as run (run.id)}
 <div class="card">
-<h4>#{run.id} · {sources.find(s => s.id === run.sourceId)?.name ?? '—'} · {ru.vlTrainStatus[run.status as keyof typeof ru.vlTrainStatus]}</h4>
-<p>{ru.vlTrainStep}: {run.step}/{run.total} · {ru.vlLoss}: {number(run.history.at(-1)?.[1])} · {ru.vlTrainBest}: {number(run.bestLoss)} · {ru.vlTrainLr}: {number(run.lr)}</p>
+<h4 class="job-status"><span class="tally" class:live={run.status === 'running'} class:connected={run.status === 'completed'} class:failed={run.status === 'failed'} aria-hidden="true"></span>#{run.id} · {sources.find(s => s.id === run.sourceId)?.name ?? '—'} · {ru.vlTrainStatus[run.status as keyof typeof ru.vlTrainStatus]}</h4>
+<p class="metrics">{ru.vlTrainStep}: {run.step}/{run.total} · {ru.vlLoss}: {number(run.history.at(-1)?.[1])} · {ru.vlTrainBest}: {number(run.bestLoss)} · {ru.vlTrainLr}: {number(run.lr)}</p>
 {#if run.error}<p class="notice">{errorText(run.error)}</p>{/if}
 {#if run.history.length}
-<svg viewBox="0 0 600 160" role="img" aria-label={`${ru.vlLoss} / ${ru.vlTrainBest}`}><polyline points={chart(run, 1)} fill="none" stroke="currentColor" stroke-width="2" /><polyline points={chart(run, 2)} fill="none" stroke="#47b58b" stroke-width="2" /></svg>
+<svg viewBox="0 0 600 160" role="img" aria-label={`${ru.vlLoss} / ${ru.vlTrainBest}`}><polyline points={chart(run, 1)} fill="none" stroke="var(--t2)" stroke-width="2" /><polyline points={chart(run, 2)} fill="none" stroke="var(--accent)" stroke-width="2" /></svg>
 <p>{ru.vlLoss} · <span class="best">{ru.vlTrainBest}</span></p>
 {/if}
 {#if run.status === 'running'}
@@ -122,6 +123,12 @@ onMount(() => {
 {/if}
 </div>
 {/each}
+
+</div>
 <style>
-dl{display:grid;grid-template-columns:minmax(120px,1fr) 2fr;gap:8px}dd{margin:0;overflow-wrap:anywhere}svg{width:100%;max-height:220px}.vram-warning{color:#f6c453;background:#493b1a;padding:12px}.best{color:#47b58b}
+dl { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:var(--s2) var(--s4); margin-block:var(--s4); }
+dt { color:var(--t2); } dd { margin:0; overflow-wrap:anywhere; font-family:var(--font-mono); font-size:var(--type-meta); font-variant-numeric:tabular-nums; }
+svg { width:100%; max-height:220px; background:var(--card); margin-top:var(--s4); }
+.vram-warning { color:var(--accent); background:var(--warn-bg); padding:var(--s3); border:1px solid var(--line); border-radius:var(--r-control); }
+.best { color:var(--accent); }
 </style>
