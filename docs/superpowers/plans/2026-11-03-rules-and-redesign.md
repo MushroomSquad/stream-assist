@@ -106,7 +106,7 @@
   - `plan_save_ops` — без изменений → `[]`; смена цены у награды с id → `Patch(reward_body(..,true))`; выключение триггера с id → `Patch({"is_enabled":false})`; выключение действия → `Patch` для всех его наград с id; включение без id → `Ensure`; смена названия у активной без id → `Ensure`; удаление триггера с id → `Retire` + запись в `retiring`; удаление без id → `[]`.
   - `assign_ids_keeps_owned_reward_id` — incoming подменил `reward_id` → из current.
   - `assign_ids_two_new_triggers_distinct` — два пустых id → `t{n}`, `t{n+1}`, `next_id` вырос на 2.
-  - `assign_ids_delete_and_add_same_save_no_reuse` — current `t4` с id удалён, новый триггер в той же отправке **с id `"t4"`** (подделка) → получает новый id, старый `t4` → `Retire`.
+  - `assign_ids_unknown_id_is_new` — incoming id, которого нет в current (`"t99"`, ≥ `next_id`) → новый id, `reward_id: None`; current `t4` с id отсутствует в incoming → `Retire`. Удалённый id никогда не выдаётся повторно (персистентный `next_id`).
   - `assign_ids_kind_change_is_new` — `tts-chat` пришёл как `Reward` → новый id; нет `Patch` по старому id.
   - `assign_ids_duplicate_incoming` — два триггера с одним известным id → второй получает новый id и `reward_id: None`.
 - [ ] **Step 2–4:** FAIL → реализовать → `cargo test --lib rules` PASS.
@@ -122,14 +122,14 @@
 - `Helix::delete_reward(&self, id: &str) -> Result<()>` — `DELETE /channel_points/custom_rewards?broadcaster_id&id`; 404 → `Ok`.
 - `rewards.rs`:
   - `pub async fn ensure_reward(h: &Helix, action: ActionKind, known_id: Option<&str>, title: &str, cost: u32, create: bool, exclude: &[String]) -> Result<Option<String>>` — `find_manageable_reward(known_id, title, exclude)`; найдено → `Some(id)`; не найдено и `create` → `create_reward(title, cost, reward_prompt(action))` (тексты ошибок `RewardError` — как сейчас в `driver.rs`); иначе `None`.
-  - `pub async fn retire_reward(h: &Helix, id: &str, keep: &HashSet<String>) -> Result<()>` — `update_reward(id, {"is_enabled":false})` → `unfulfilled(id)` → для каждой строки, чей `redemption_id` ∉ `keep`, `set_redemption_status(&r.r, false).await?` последовательно → `delete_reward(id)`. Любая ошибка → `Err` (награда уже выключена первым шагом).
+  - `pub async fn retire_reward(h: &Helix, id: &str, keep: &HashSet<String>) -> Result<()>` — `update_reward(id, {"is_enabled":false})` (404 → награды уже нет, вернуть `Ok(())`; для этого `update_reward` получает вариант ошибки/проверку статуса 404) → `unfulfilled(id)` → для каждой строки, чей `redemption_id` ∉ `keep`, `set_redemption_status(&r.r, false).await?` последовательно → `delete_reward(id)`. Любая ошибка → `Err` (награда уже выключена первым шагом).
 - `TtsMsg`: `Settings(TtsRuntime)`, `Reward { r: Redemption, active: bool }`, `Chat { msg: ChatMessage, text: String }`, новое `ChatSeen` (сообщение чата без метки — только сбрасывает `tts_chat_failed`), новое `DropReward { reward_id: String, reply: oneshot::Sender<Option<String>> }` (ответ — `redemption_id` текущего элемента этой награды, если он есть); остальные варианты без изменений. `engine::run(deps, settings: TtsRuntime, rx)`.
 - `Queue::remove_pending(&mut self, pred: impl Fn(&Item) -> bool) -> Vec<Item>` — удаляет совпавшие из ожидающих (не текущий).
 
 Поведение движка: `Chat` — маркер и источник проверены маршрутизатором; игнор при `!chat_active`; сбрасывает `tts_chat_failed`; дальше как сейчас (стример обходит роли/кулдауны, `clean`, голос). `ChatSeen` — только сброс `tts_chat_failed`. `Reward` — `!active` → `Outcome::Disabled`, дальше как сейчас. `tts_no_voice` при `profile_id.is_none() && in_use`; `chat_warning` показывается при `chat_active`. `DropReward` → `remove_pending` элементов `Origin::Reward(r)` с `r.reward_id == reward_id` → `report(.., Outcome::Cleared)`; ответ — id текущего, если он этой награды.
 
 - [ ] **Step 1: Тесты:**
-  - `twitch/tests.rs` (wiremock): `delete_reward_ok_and_404`; `find_reward_excludes` — строка из `exclude` не находится ни по id, ни по названию; `ensure_known_found_no_post` — найдено по id → `Some`, ни одного `POST`; `ensure_missing_no_create` — не найдено, `create:false` → `None`, нет `POST`; `ensure_creates_when_missing` — `POST` с `prompt` по действию; `retire_order` — порядок в `received_requests()`: `PATCH is_enabled:false` → `GET` выкупов → `PATCH status=CANCELED` (по одному на строку не из `keep`; строка из `keep` не трогается) → `DELETE`; `retire_delete_failure_errs` — `DELETE` 500 → `Err`, отключение уже отправлено.
+  - `twitch/tests.rs` (wiremock): `delete_reward_ok_and_404`; `find_reward_excludes` — строка из `exclude` не находится ни по id, ни по названию; `ensure_known_found_no_post` — найдено по id → `Some`, ни одного `POST`; `ensure_missing_no_create` — не найдено, `create:false` → `None`, нет `POST`; `ensure_creates_when_missing` — `POST` с `prompt` по действию; `retire_order` — порядок в `received_requests()`: `PATCH is_enabled:false` → `GET` выкупов → `PATCH status=CANCELED` (по одному на строку не из `keep`; строка из `keep` не трогается) → `DELETE`; `retire_delete_failure_errs` — `DELETE` 500 → `Err`, отключение уже отправлено; `retire_missing_reward_ok` — `PATCH` отключения 404 → `Ok(())`, больше запросов нет.
   - `engine.rs`: адаптировать существующие тесты к новым сообщениям, смысл тот же; `chat_relogin_warning_only_when_enabled` сбрасывает предупреждение через `ChatSeen`; новые `drop_reward_cancels_pending_only` (текущий элемент этой награды доигрывает и возвращается в `reply`; ожидающие этой награды → `CANCELED`; чужие и чатовые остаются), `inactive_reward_disabled`, `chat_ignored_when_chat_inactive`.
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3:** Реализовать. Временный адаптер до Task 5, помечен `// TODO(Task 5)`: драйвер и `app.rs` строят `TtsRuntime` через `rules::from_legacy(&serde_json::to_value(&settings)?).tts_runtime()`; `Reward{active: settings.tts.reward_enabled}`; чат — `route_chat` на `from_legacy(..)`, без маршрута → `ChatSeen`.
@@ -148,6 +148,7 @@
 - `pub fn exclude(&self, rules: &Rules) -> Vec<String>` — id из `rules.retiring` (передаётся в `ensure_reward`).
 - `pub fn on_ready(&mut self, rules: &mut Rules, trigger_id: &str, known_id: Option<String>, result: Result<Option<String>, String>) -> (bool /* rules changed */, Vec<RewardOp>)`:
   - снять `ensuring[trigger_id]`, запомнить `dirty`;
+  - `Ok(Some(id))` и `id` в `rules.retiring` → как `Ok(None)` (не привязывать; если триггер активен — новый `Ensure{create:true}`).
   - `Ok(Some(id))`: если триггер существует, это `Reward`, а его `reward_id` `None` или == `known_id` → `set_reward_id(Some(id))`, убрать ошибку, выпустить `Patch(reward_body(текущие параметры, is_active))`. Иначе, если `id` не принадлежит никакому триггеру и не в `retiring` → добавить `Retiring{action, id}` и выпустить `Retire` (сирота).
   - `Ok(None)`: только если `reward_id == known_id` → `set_reward_id(None)`; если триггер теперь активен → выпустить `Ensure{create:true}`.
   - `Err(e)`: если у триггера `reward_id` уже есть → игнор; иначе `errors[trigger_id] = e`.
@@ -163,6 +164,7 @@
   - `ready_err_sets_error_unless_id` — ошибка → в `errors`; если id уже есть → игнор.
   - `retiring_survives_failure` — `on_retired(Err)` → остаётся в `retiring`, ошибка `retire:<id>`; повторный `on_connect` выпускает `Retire`; `on_retired(Ok)` → убран.
   - `retire_not_duplicated_in_flight` — два `on_connect` подряд → один `Retire`.
+  - `ready_with_retiring_id_not_assigned` — `Ok(Some(id))`, где `id` в `retiring` → не привязан; активный триггер → новый `Ensure`.
 - [ ] **Step 2–4:** FAIL → реализовать → `cargo test --lib rewards` PASS.
 - [ ] **Step 5:** Commit `feat(rewards): reward lifecycle bookkeeping`.
 
@@ -173,13 +175,15 @@
 **Interfaces — Consumes:** Task 1–4.
 **Produces:**
 - `driver::Settings { #[serde(default)] pub rules: Rules, pub port, pub active_theme, pub youtube_api_key, pub obs, pub spotify_client_id }` (без `reward_*`, `music_reward_id`, `limits`, `tts`).
+- `driver::Settings` получает `#[serde(default)]` на структуре (как `TtsSettings`), чтобы отсутствие любого общего поля в старом JSON не ломало старт.
 - `pub fn load_settings(db: &Db) -> Result<(Settings, bool /* migrated */)>` (в `driver.rs`): нет записи → `(default, false)`; есть ключ `"rules"` → `from_value`; иначе общие поля через `from_value` (serde-default) + `rules = from_legacy(&v)`, `migrated = true`. Используется во **всех** местах чтения `"settings"` (bootstrap, `exit`, `get_settings`, тесты). Bootstrap при `migrated`: `set_setting("settings_legacy", &raw)`, затем `set_setting("settings", &new)`.
 - `app::validate_settings`: `port`, `obs.port` как сейчас + `rules::validate(&s.rules)`.
-- `apply_settings(...) -> Result<(Settings /* old */, Vec<RewardOp>)>`: `let (rules, ops) = lifecycle.on_save(&current.rules, incoming.rules)`; сохранить; вернуть ops. Исполняет их `run` (у него есть `player`, `polls`, `inflight`).
+- `apply_settings(...) -> Result<(Settings /* old */, Vec<RewardOp>)>`: `let (rules, ops) = lifecycle.on_save(&current.rules, incoming.rules)`; сохранить; вернуть ops. В `run` после успешного `apply_settings`, по порядку: `TtsMsg::Settings(ctx.settings.rules.tts_runtime())`; `player.step(Input::SetMaxDuration(rules.music.cfg.limits.max_duration_ms))` + `actions`; исполнить ops (у `run` есть `player`, `polls`, `inflight`).
+- `DriverMsg::SaveSettings` отвечает **сохранёнными** настройками: `oneshot::Sender<Result<Settings, String>>` (с назначенными id, `reward_id`, `retiring`, `next_id`); команда `app::save_settings` возвращает `Settings`. Остальные отправители `SaveSettings` (`spotify_login`) игнорируют значение.
 - `async`-склейка в `run`: `fn exec(op, ctx, player, polls, inflight, lifecycle, tx)`:
   - `Ensure` → если `helix` нет — снять из `lifecycle.ensuring` (ничего не делать); иначе `tokio::spawn` `bounded(ensure_reward(.., lifecycle.exclude(&rules)))` → `Internal::RewardReady { trigger_id, known_id, result: Result<Option<String>, String> }`.
   - `Patch` → `background(update_reward)` при наличии `helix`.
-  - `Retire{Music, id}` → для элементов `player.snapshot().1` (очередь, не текущий) с `redemption.reward_id == id` → `player.step(Input::Remove(item.id))` + `actions`; `keep` = `redemption_id` текущего элемента музыки, если он этой награды. `Retire{Tts, id}` → `TtsMsg::DropReward{reward_id:id, reply}`; `keep` из `reply`. Затем, если `helix` есть, — `tokio::spawn`: дождаться `reply` (для Tts), `timeout(30 s, retire_reward(h, id, &keep))` → `Internal::Retired { reward_id, result }`; если `helix` нет — снять из `retiring_now` (повтор при подключении).
+  - `Retire{Music, id}` → для элементов `player.snapshot().1` (очередь, не текущий) с `redemption.reward_id == id` → `player.step(Input::Remove(item.id))` + `actions`; `keep` = `redemption_id` текущего элемента музыки, если он этой награды. `Retire{Tts, id}` → `TtsMsg::DropReward{reward_id:id, reply}`; `keep` из `reply` (движок остановлен или `reply` закрыт → `keep = ∅`, без ошибки и ожидания). Затем, если `helix` есть, — `tokio::spawn`: дождаться `reply` (для Tts), `timeout(30 s, retire_reward(h, id, &keep))` → `Internal::Retired { reward_id, result }`; если `helix` нет — снять из `retiring_now` (повтор при подключении).
   - `RewardReady` → `lifecycle.on_ready` → при изменении сохранить настройки, `TtsMsg::Settings(rules.tts_runtime())`, если `Ok(Some(id))` применён — reconcile этой награды; исполнить выпущенные ops; опубликовать ошибки.
   - `Retired` → `lifecycle.on_retired` → сохранить, опубликовать ошибки.
 - Публикация ошибок: при изменении `lifecycle.errors` — событие Tauri `"rule_errors"` (карта); `DriverMsg::RuleErrors(oneshot::Sender<BTreeMap<String,String>>)` и команда `app::rule_errors` (регистрация в `lib.rs`). Ошибки наград больше не пишутся в `WidgetState.warning` и `TtsMsg::Warning`.
@@ -219,12 +223,14 @@ export const rule_errors = () => call<Record<string, string>>('rule_errors');
 export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri() ? listen<Record<string, string>>('rule_errors', e => cb(e.payload)) : Promise.resolve(() => {});
 ```
 `TtsSettings` → `TtsCfg` в `ttsApi.ts`; `defaultSettings` повторяет `Rules::default()`.
+- `save_settings(s): Promise<Settings>` — возвращает сохранённые настройки; **каждый** путь сохранения (`+page.svelte` `save()`, сохранение в `Connections.svelte`) делает `settings = result`. После события `rule_errors` панель перечитывает `get_settings()` (жизненный цикл меняет `reward_id`/`retiring`). Иначе новый триггер с `id: ''` получал бы новый id на каждом сохранении, а его награда удалялась и создавалась заново.
+- Обёртки с браузерным фолбэком (`get_state`, `get_settings`, `running_port`, `spotify_volume`, `list_themes`): `isTauri() || mockEnabled ? call(..) : fallback`.
 - `src/lib/mock.ts`: `export const mockEnabled = !isTauri() && import.meta.env.DEV;` `export function mockCall<T>(name: string, args?: Record<string, unknown>): Promise<T>` — фикстуры: `get_state` (текущий трек + 3 в очереди), `get_settings`/`save_settings` (в памяти), `rule_errors` (`{}`; ошибка у `tts-reward` при `?mock=errors` в URL), `tts_state` (текущий + 2 в очереди), `vl_*`, нужные для отрисовки Voice Lab (модель установлена, 3 профиля, 2 источника, 3 рендера, пустые задания), остальные — `Promise.resolve(undefined)`. Функции `call` в `api.ts`, `ttsApi.ts`, `voiceApi.ts`: `isTauri() ? invoke(..) : mockEnabled ? mockCall(..) : Promise.reject(new Error('browser'))`. В production-сборке (`import.meta.env.DEV === false`) моки не используются.
 
 - [ ] **Step 1:** Типы, `defaultSettings`, `mock.ts`, ветка `mockEnabled` в трёх `call`.
 - [ ] **Step 2:** Вкладки только перепривязать: «Награды» → первый `reward`-триггер музыки; «Лимиты» → `rules.music.cfg.limits`; «Озвучка» → `rules.tts.cfg`, первый `reward`- и первый `chat_marker`-триггер (их `enabled`). Под каждой формой наград — строка ошибки `rule_errors[trigger.id]` (подписка `onRuleErrors`), иначе ошибки создания награды не видны до фазы 2. Других изменений UI нет.
 - [ ] **Step 3:** `npm run check` → 0 ошибок; `node --test tests/` → PASS; `npm run build` проходит.
-- [ ] **Step 4:** `docs/architecture.md`: таблица модулей (`rules.rs`, `rewards.rs` вместо `router.rs`); «Как добавить новую награду» → «Как добавить вид триггера или действие» (вариант `TriggerKind`/`ActionKind`, строка в `allowed`, ветка в `route_*`, исполнение в драйвере); жизненный цикл наград (`retiring`, `ensuring`, порядок retire), миграция и `settings_legacy`; известное ограничение: если текущий не стартовавший трек удаляемой награды не запустится, его выкуп уже FULFILLED после `DELETE` — возврата не будет.
+- [ ] **Step 4:** `docs/architecture.md`: таблица модулей (`rules.rs`, `rewards.rs` вместо `router.rs`); «Как добавить новую награду» → «Как добавить вид триггера или действие» (вариант `TriggerKind`/`ActionKind`, строка в `allowed`, ветка в `route_*`, исполнение в драйвере); жизненный цикл наград (`retiring`, `ensuring`, порядок retire), миграция и `settings_legacy`; известное ограничение: текущий элемент удаляемой награды (трек или фраза озвучки) остаётся `UNFULFILLED` до конца и становится FULFILLED при `DELETE`; если он затем не запустится/не синтезируется, возврата не будет.
 - [ ] **Step 5:** Commit `feat(panel): settings.rules shape, dev mocks; docs: rules architecture`.
 
 ---
@@ -269,7 +275,7 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 
 - [ ] **Step 1:** Реализовать компоненты.
 - [ ] **Step 2:** `npm run check` → 0.
-- [ ] **Step 3:** Сценарий в браузере с моками (оркестратор): добавить метку к озвучке, изменить цену награды, выключить действие, удалить триггер (подтверждение), дубль метки — подсказка, `?mock=errors` — ошибка у строки; скриншоты → ревью.
+- [ ] **Step 3:** Сценарий в браузере с моками (оркестратор): добавить метку к озвучке, изменить цену награды, выключить действие, удалить триггер (подтверждение), дубль метки — подсказка, `?mock=errors` — ошибка у строки; добавить триггер и сохранить дважды — id стабилен, в `retiring` ничего не появилось; скриншоты → ревью.
 - [ ] **Step 4:** Commit `feat(panel): rules screen`.
 
 ### Task 10: «Сейчас», «Виджет», «Подключения»
