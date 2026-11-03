@@ -45,9 +45,11 @@ pub fn parse_message(text: &str) -> Result<EsMsg> {
                 .or_else(|| v["payload"]["subscription"]["type"].as_str());
             match kind {
                 Some("channel.channel_points_custom_reward_redemption.add") => {
-                    serde_json::from_value::<ApiRedemption>(v["payload"]["event"].clone())
-                        .map(|r| EsMsg::Notification(r.into()))
-                        .unwrap_or(EsMsg::Ignored)
+                    // A broken redemption keeps the old behaviour: reconnect, then reconcile picks it up.
+                    EsMsg::Notification(
+                        serde_json::from_value::<ApiRedemption>(v["payload"]["event"].clone())?
+                            .into(),
+                    )
                 }
                 Some("channel.chat.message") => {
                     serde_json::from_value::<ApiChatMessage>(v["payload"]["event"].clone())
