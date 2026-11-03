@@ -122,3 +122,6 @@ mod tests {
         assert_eq!(VlError::from(json_error).code(), "IO_FAILED");
     }
 }
+
+#[cfg(test)]
+mod acceptance_p2;
