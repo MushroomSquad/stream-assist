@@ -20,7 +20,7 @@ const tabs = ['now', 'rewards', 'limits', 'widget', 'connections', 'voice', 'tts
 async function run(f: () => Promise<unknown>, clear = true) { if (clear) message = ''; try { await f(); } catch (e) { if (clear || !message) message = errorText(e); } }
 async function refreshThemes() { themes = await api.list_themes(); }
 async function load() { await run(async () => { settings = await api.get_settings(); runningPort = (await api.running_port()) ?? settings.port; await refreshThemes(); ready = true; }); }
-function save() { void run(async () => { await api.save_settings($state.snapshot(settings)); message = ru.saved; if (settings.port !== runningPort) { message = ru.portWarning;  } }); }
+function save() { void run(async () => { settings = await api.save_settings($state.snapshot(settings)); message = ru.saved; if (settings.port !== runningPort) { message = ru.portWarning;  } }); }
 onMount(() => {
   let disposed = false;
   let unlisten = () => {};
@@ -42,7 +42,7 @@ onMount(() => {
 {:else if tab === 'rewards'}<Rewards {settings} {save} />
 {:else if tab === 'limits'}<Limits {settings} {save} />
 {:else if tab === 'widget'}<Widget {runningPort} {settings} {themes} {save} {run} {refreshThemes} />
-{:else}<Connections {runningPort} {settings} {save} {run} />{/if}
+{:else}<Connections {runningPort} bind:settings {save} {run} />{/if}
 </main>
 <style>
 :global(:root){font-family:system-ui,sans-serif;color:#24312e;background:#f5f6f5;font-synthesis:none;color-scheme:light dark;--surface:#fff;--border:#d8dfdc;--muted:#64716c;--accent:#246b55;--notice:#fff3d7}

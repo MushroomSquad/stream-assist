@@ -1,3 +1,4 @@
+import { mockEnabled, mockCall } from './mock';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 export interface ModelStatus { installed: boolean; encoderInstalled: boolean; ffmpeg: boolean }
@@ -9,7 +10,7 @@ export interface Profile { id: number; name: string; tags: string[]; styleSha256
 export interface RenderParams { text: string; lang: string; speed: number; quality: number }
 export interface Render extends RenderParams { id: number; profileId: number | null; recipe: Recipe | null; durationMs: number; wallMs: number; favorite: boolean; createdAt: number }
 export interface JobState { id: number; kind: string; status: string; progress: { event: string; index?: number; similarity?: number | null; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
-function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : Promise.reject(new Error('browser')); }
+function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : mockEnabled ? mockCall<T>(name, args) : Promise.reject(new Error('browser')); }
 export const vl_status = () => call<ModelStatus>('vl_status');
 export const vl_install = (withEncoder: boolean) => call<void>('vl_install', { withEncoder });
 export const vl_sources = () => call<Source[]>('vl_sources');
@@ -33,8 +34,8 @@ export const vl_set_favorite = (id: number, fav: boolean) => call<void>('vl_set_
 export const vl_export_profile = (id: number, path: string) => call<void>('vl_export_profile', { id, path });
 export const vl_export_recipe = (profileId: number, path: string) => call<void>('vl_export_recipe', { profileId, path });
 export const vl_export_render = (id: number, path: string) => call<void>('vl_export_render', { id, path });
-export const onJob = (cb: (job: JobState) => void) => listen<JobState>('vl-job', e => cb(e.payload));
-export const onInstall = (cb: (p: { done: number; total: number }) => void) => listen<{ done: number; total: number }>('vl-install', e => cb(e.payload));
+export const onJob = (cb: (job: JobState) => void) => isTauri() ? listen<JobState>('vl-job', e => cb(e.payload)) : Promise.resolve(() => {});
+export const onInstall = (cb: (p: { done: number; total: number }) => void) => isTauri() ? listen<{ done: number; total: number }>('vl-install', e => cb(e.payload)) : Promise.resolve(() => {});
 export const blobUrl = (buf: ArrayBuffer) => URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 
 export type TrainPreset = 'fast' | 'standard' | 'long';
@@ -52,8 +53,8 @@ export const vl_train_stop = (runId: number) => call<void>('vl_train_stop', { ru
 export const vl_train_kill = (runId: number) => call<void>('vl_train_kill', { runId });
 export const vl_train_runs = () => call<TrainRun[]>('vl_train_runs');
 export const vl_train_delete = (runId: number) => call<void>('vl_train_delete', { runId });
-export const onTrain = (cb: (run: TrainRun) => void) => listen<TrainRun>('vl-train', e => cb(e.payload));
-export const onTrainInstall = (cb: (progress: TrainInstallProgress) => void) => listen<TrainInstallProgress>('vl-train-install', e => cb(e.payload));
+export const onTrain = (cb: (run: TrainRun) => void) => isTauri() ? listen<TrainRun>('vl-train', e => cb(e.payload)) : Promise.resolve(() => {});
+export const onTrainInstall = (cb: (progress: TrainInstallProgress) => void) => isTauri() ? listen<TrainInstallProgress>('vl-train-install', e => cb(e.payload)) : Promise.resolve(() => {});
 
 export type Explore = { mode: 'interp'; a: number; b: number; points: number } | { mode: 'random'; ids: number[]; k: number; seed: number; dp: Exclude<DpStrategy, 'select'> };
 export interface RefRegion { sourceId: number; startMs: number; endMs: number }
