@@ -79,6 +79,9 @@ pub fn init(app: &tauri::App) {
             installing: tokio::sync::Mutex::new(()),
         })
     })();
+    if let Err(e) = &result {
+        eprintln!("Voice Lab unavailable: {e:?}");
+    }
     app.manage(VlState(result.ok().map(Arc::new)));
 }
 

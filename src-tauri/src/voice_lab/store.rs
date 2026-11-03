@@ -252,16 +252,15 @@ impl Store {
     }
 
     pub fn delete_run(&self, id: i64) -> Result<()> {
-        self.run(id)?;
-        match fs::remove_dir_all(self.run_dir(id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
+        // Row first: a failed DELETE must not leave a run without its state.pt.
         changed(
             self.conn
                 .execute("DELETE FROM training_runs WHERE id=?1", [id])?,
-        )
+        )?;
+        match fs::remove_dir_all(self.run_dir(id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
     pub fn run_dir(&self, id: i64) -> PathBuf {
