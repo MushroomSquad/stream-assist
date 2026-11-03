@@ -49,6 +49,9 @@ impl Queue {
         self.current = self.pending.pop_front();
         self.current.clone()
     }
+    pub fn current(&self) -> Option<&Item> {
+        self.current.as_ref()
+    }
     pub fn finish_current(&mut self) -> Option<Item> {
         self.current.take()
     }

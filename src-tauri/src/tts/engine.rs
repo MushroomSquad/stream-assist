@@ -57,6 +57,7 @@ pub async fn run(
     let mut voice_broken = false;
     let mut flight: Option<(u64, Arc<AtomicBool>, Arc<Notify>)> = None;
     let mut deadline = None;
+    let mut play_ms = Duration::ZERO;
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<(u64, Result<i64, String>)>();
     loop {
         // Drain unavailable items individually; never overlap synthesis workers.
@@ -139,7 +140,10 @@ pub async fn run(
                 };
                 match msg {
                     TtsMsg::State(tx) => { let _ = tx.send(view); }
-                    TtsMsg::Settings(new) => { settings = new; voice_broken = false; warning = None; }
+                    TtsMsg::Settings(new) => {
+                        settings = new; voice_broken = false;
+                        warning = (settings.profile_id.is_none() && (settings.reward_enabled || settings.chat_enabled)).then(|| "tts_no_voice".into());
+                    }
                     TtsMsg::Warning(text) => warning = Some(text),
                     TtsMsg::ChatStatus(status) => chat_warning = match status {
                         ChatStatus::Ok => None,
@@ -189,7 +193,7 @@ pub async fn run(
                     },
                     TtsMsg::Clear => for item in queue.clear() { report(&deps, item, Outcome::Cleared); },
                     TtsMsg::Skip => {
-                        if queue.view().0.is_some() {
+                        if queue.current().is_some() {
                             if let Some((_, cancel, wake)) = &flight { cancel.store(true, Ordering::SeqCst); wake.notify_one(); }
                             let _ = deps.ws.send(WsOut::TtsStop);
                             deadline = None;
@@ -197,10 +201,17 @@ pub async fn run(
                         }
                     }
                     TtsMsg::Widget(event) => match event {
-                        TtsWidgetEvent::Connected => widget = true,
+                        TtsWidgetEvent::Connected => {
+                            widget = true;
+                            // A reloaded OBS source (scene switch) replays the clip that was playing.
+                            if deadline.is_some() && let Some(item) = queue.current() {
+                                let _ = deps.ws.send(WsOut::TtsPlay { id: item.id });
+                                deadline = Some(Instant::now() + play_ms);
+                            }
+                        }
                         TtsWidgetEvent::Disconnected => widget = false,
                         TtsWidgetEvent::Ended(id) | TtsWidgetEvent::Error(id) => {
-                            if deadline.is_some() && queue.view().0.is_some_and(|item| item.id == id) {
+                            if deadline.is_some() && queue.current().is_some_and(|item| item.id == id) {
                                 let outcome = if matches!(event, TtsWidgetEvent::Ended(_)) { Outcome::Played } else { Outcome::SynthFailed };
                                 deadline = None;
                                 finish(&deps, &mut queue, outcome);
@@ -211,14 +222,15 @@ pub async fn run(
             }
             Some((id, result)) = done_rx.recv(), if flight.is_some() => {
                 flight = None;
-                if queue.view().0.is_none_or(|item| item.id != id) {
+                if queue.current().is_none_or(|item| item.id != id) {
                     let _ = std::fs::remove_file(deps.dir.join(format!("{id}.wav")));
                     continue;
                 }
                 match result {
                     Ok(duration) => {
                         let _ = deps.ws.send(WsOut::TtsPlay { id });
-                        deadline = Some(Instant::now() + Duration::from_millis(duration.max(0) as u64) + Duration::from_secs(10));
+                        play_ms = Duration::from_millis(duration.max(0) as u64) + Duration::from_secs(10);
+                        deadline = Some(Instant::now() + play_ms);
                     }
                     Err(code) => {
                         let broken = match code.as_str() {
@@ -551,7 +563,7 @@ mod tests {
         h.send(reward("2", "next"));
         h.send(TtsMsg::Skip);
         h.outcome("1", true).await;
-        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::time::advance(Duration::from_millis(10)).await;
         assert_eq!(h.state().await.current.unwrap().text, "next");
         assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsStop)));
         assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsPlay { .. })));
@@ -607,6 +619,53 @@ mod tests {
         let v = h.state().await;
         assert!(v.queue.is_empty());
         assert_eq!(v.warning.as_deref(), Some("tts_no_voice"));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn current_model_missing_breaks_voice() {
+        let synth: SynthFn = Arc::new(|_, _, _, _, _| Box::pin(async { Err("MODEL_MISSING".into()) }));
+        let mut h = Harness::custom(settings(), Some(synth));
+        h.connect().await;
+        h.send(reward("1", "текст"));
+        h.outcome("1", false).await;
+        assert_eq!(h.state().await.warning.as_deref(), Some("tts_model_missing"));
+        h.send(reward("2", "ещё"));
+        h.outcome("2", false).await;
+        h.send(TtsMsg::Settings(settings()));
+        assert_eq!(h.state().await.warning, None);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn widget_error_refunds() {
+        let mut h = Harness::new(settings());
+        h.connect().await;
+        h.send(reward("1", "текст"));
+        let id = h.state().await.current.unwrap().id;
+        h.send(TtsMsg::Widget(TtsWidgetEvent::Error(id)));
+        h.outcome("1", false).await;
+    }
+    #[tokio::test(start_paused = true)]
+    async fn widget_reconnect_replays_current() {
+        let mut h = Harness::new(settings());
+        h.connect().await;
+        h.send(reward("1", "текст"));
+        let id = h.state().await.current.unwrap().id;
+        assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsPlay { id: got }) if got == id));
+        h.send(TtsMsg::Widget(TtsWidgetEvent::Disconnected));
+        tokio::time::advance(Duration::from_secs(9)).await;
+        h.connect().await;
+        assert!(matches!(h.ws.try_recv(), Ok(WsOut::TtsPlay { id: got }) if got == id));
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(h.state().await.current.is_some(), "deadline restarted on replay");
+        h.send(TtsMsg::Widget(TtsWidgetEvent::Ended(id)));
+        h.outcome("1", true).await;
+    }
+    #[tokio::test(start_paused = true)]
+    async fn settings_without_voice_warns_immediately() {
+        let h = Harness::new(settings());
+        let mut s = settings();
+        s.profile_id = None;
+        s.chat_enabled = true;
+        h.send(TtsMsg::Settings(s));
+        assert_eq!(h.state().await.warning.as_deref(), Some("tts_no_voice"));
     }
     #[tokio::test(start_paused = true)]
     async fn wav_deleted_after_play() {
