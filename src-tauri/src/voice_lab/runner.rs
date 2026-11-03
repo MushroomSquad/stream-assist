@@ -385,6 +385,9 @@ impl Runner {
         };
         let result = self
             .run_worker(&req, &root.join("tmp"), Some(rx), |event| {
+                if invalid {
+                    return;
+                }
                 if let WorkerEvent::Item {
                     index,
                     duration_ms,
@@ -403,7 +406,9 @@ impl Runner {
                 }
             })
             .await;
-        let result = if invalid {
+        // A clean exit must have reported every item; anything else is a protocol break.
+        let short = result.is_ok() && completed.iter().any(Option::is_none);
+        let result = if invalid || short {
             Err(err("WORKER_CRASHED"))
         } else {
             result
