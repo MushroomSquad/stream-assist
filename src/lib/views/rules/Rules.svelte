@@ -1,4 +1,5 @@
 <script lang="ts">
+import { formatTime } from '$lib/time';
 import { onMount } from 'svelte';
 import { watchRuleErrors, type Settings, type Trigger } from '$lib/api';
 import * as ttsApi from '$lib/ttsApi';
@@ -30,7 +31,7 @@ onMount(() => {
   return () => { disposed = true; unlisten(); };
 });
 const limits = $derived(settings.rules.music.cfg.limits);
-const musicSummary = $derived(`${limits.max_duration_ms === null ? 'длительность без лимита' : `до ${Math.floor(limits.max_duration_ms / 60000)}:${String(Math.floor(limits.max_duration_ms / 1000) % 60).padStart(2, '0')}`} · повтор ${limits.no_repeat_last_n} · ${limits.max_per_user_in_queue === null ? 'без лимита на зрителя' : `${limits.max_per_user_in_queue} на зрителя`}`);
+const musicSummary = $derived(`${limits.max_duration_ms === null ? ru.durationUnlimited : `${ru.durationUpTo} ${formatTime(limits.max_duration_ms)}`} · ${ru.repeatSummary} ${limits.no_repeat_last_n} · ${limits.max_per_user_in_queue === null ? ru.viewerUnlimited : `${limits.max_per_user_in_queue} ${ru.perViewer}`}`);
 const ttsSummary = $derived(`${profiles.find(p => p.id === settings.rules.tts.cfg.profile_id)?.name ?? ru.noVoiceSelected} · ${settings.rules.tts.cfg.lang} · ${settings.rules.tts.cfg.speed.toFixed(1)}×`);
 const orphanRetiring = $derived(Object.keys(errors).some(key => key.startsWith('retire:') && !settings.rules.retiring.some(r => key === `retire:${r.reward_id}`)));
 const all = $derived([...settings.rules.music.triggers, ...settings.rules.tts.triggers]);

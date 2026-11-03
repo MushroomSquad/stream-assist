@@ -27,12 +27,14 @@ function apply(t: Trigger) {
   void close();
   return '';
 }
-function remove(t: Trigger) {
+async function remove(t: Trigger) {
   const index = action.triggers.indexOf(t);
   if (index < 0) return;
   action.triggers.splice(index, 1); deleting = null;
-  if (editing === index) void close();
+  if (editing === index) editing = undefined;
   else if (editing != null && editing > index) editing--;
+  await tick();
+  addButton?.focus();
 }
 function focusConfirm(node: HTMLButtonElement) { node.focus(); }
 </script>
@@ -45,7 +47,7 @@ function focusConfirm(node: HTMLButtonElement) { node.focus(); }
 <TriggerRow {trigger} active={action.enabled} error={errors[trigger.id]} edit={button => open(index, button)} remove={() => trigger.kind === 'reward' && trigger.reward_id ? deleting = trigger : remove(trigger)} />
 {#if deleting === trigger}<div class="confirm"><p>{ru.deleteRewardConfirm}</p><div class="actions"><button use:focusConfirm type="button" onclick={() => remove(trigger)}>{ru.remove}</button><button type="button" onclick={() => deleting = null}>{ru.cancel}</button></div></div>{/if}
 {/each}
-{#if editing !== undefined}{#key editing}<TriggerEditor action={kind} initial={editing === null ? null : action.triggers[editing]} {apply} cancel={() => void close()} />{/key}{:else}<button class="add" type="button" disabled={action.triggers.length >= 10} bind:this={addButton} onclick={e => open(null, e.currentTarget)}>{ru.addTrigger}</button>{/if}
+{#if editing !== undefined}{#key editing === null ? null : action.triggers[editing]}<TriggerEditor action={kind} initial={editing === null ? null : action.triggers[editing]} {apply} cancel={() => void close()} />{/key}{:else}<button class="add" type="button" disabled={action.triggers.length >= 10} bind:this={addButton} onclick={e => open(null, e.currentTarget)}>{ru.addTrigger}</button>{/if}
 {#if action.triggers.length >= 10}<p class="muted">{ru.triggerLimit}</p>{/if}
 </div>
 <details><summary>{ru.settingsLimits}<span class="mono">{summary}</span></summary><div class="contents">{@render settingsContent()}</div></details>

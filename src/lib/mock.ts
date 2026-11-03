@@ -28,8 +28,8 @@ export async function mockCall<T>(name: string, args?: Record<string, unknown>):
     case 'rule_errors': result = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mock') === 'errors'
       ? { 'tts-reward': 'reward_create_failed' } : {}; break;
     case 'get_state': result = {
-      visible: true, now: { id: 1, track: { title: 'Перемен', artist: 'Кино', duration_ms: 294000 }, requester: 'night_owl' },
-      queue: ['Спокойная ночь', 'Звезда по имени Солнце', 'Группа крови'].map((title, i) => ({ id: i + 2, track: { title, artist: 'Кино', duration_ms: 240000 }, requester: ['alice', 'boris', 'luna'][i] })),
+      visible: true, now: { id: 1, track: { source: { Spotify: { uri: 'spotify:track:mock-now' } }, title: 'Перемен', artist: 'Кино', duration_ms: 294000 }, requester: 'night_owl' },
+      queue: ['Спокойная ночь', 'Звезда по имени Солнце', 'Группа крови'].map((title, i) => ({ id: i + 2, track: { source: { Spotify: { uri: `spotify:track:mock-${i}` } }, title, artist: 'Кино', duration_ms: 240000 }, requester: ['alice', 'boris', 'luna'][i] })),
       progress_ms: 78000, mode: 'Playing', warning: null
     } satisfies WidgetState; break;
     case 'running_port': result = currentSettings().port; break;

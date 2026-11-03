@@ -1,5 +1,6 @@
 export const ru = {
-  requestedBy: 'Заказал', queueSuspended: 'Очередь приостановлена', newRequestsHere: 'Новые заказы появятся здесь', connectionUnchecked: 'Не проверено',
+  durationUnlimited: 'длительность без лимита', durationUpTo: 'до', repeatSummary: 'повтор', viewerUnlimited: 'без лимита на зрителя', perViewer: 'на зрителя',
+  requestedBy: 'Заказал', queueSuspended: 'Очередь приостановлена', newRequestsHere: 'новые заказы появятся здесь', connectionUnchecked: 'Не проверено',
   music: 'Заказ трека', triggerType: 'Вид триггера', addTrigger: '+ Триггер', edit: 'Изменить', cancel: 'Отмена',
   settingsLimits: 'Настройки и лимиты', queueWidget: 'Очередь и виджет', enabled: 'Включено',
   deleteRewardConfirm: 'Награда будет удалена на Twitch, не начатые заказы вернут баллы',

@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import type { TtsCfg } from './ttsApi';
 import { mockEnabled, mockCall } from './mock';
 import { ru } from './i18n/ru';
-export interface Track { title: string; artist: string; duration_ms: number | null }
+export interface Track { source?: { Spotify: { uri: string } } | { YouTube: { video_id: string } }; title: string; artist: string; duration_ms: number | null }
 export interface QueueItem { id: number; track: Track; requester: string }
 export interface WidgetState { visible: boolean; now: QueueItem | null; queue: QueueItem[]; progress_ms: number; mode: string; warning: string | null }
 export interface Limits { max_duration_ms: number | null; no_repeat_last_n: number; max_per_user_in_queue: number | null; block_explicit: boolean; blocklist: string[] }

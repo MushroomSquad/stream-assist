@@ -16,7 +16,7 @@
   color-scheme: dark;
   --bg-deep: #0f0f10; --bg: #141415; --card: #19191b; --raised: #232325;
   --line: rgba(237,237,237,.08); --line-strong: rgba(237,237,237,.16);
-  --t1: #ededed; --t2: #a1a1a6; --t3: #85858b;
+  --track: #2c2c2f; --t1: #ededed; --t2: #a1a1a6; --t3: #85858b;
   --accent: #f2a33a; --accent-ink: #1a1206; --tally-off: #3a3a3d;
   --ok: #4cc38a; --err: #e5484d; --warn-bg: rgba(242,163,58,.08);
   --primary-bg: #ededed; --primary-ink: #141415;
