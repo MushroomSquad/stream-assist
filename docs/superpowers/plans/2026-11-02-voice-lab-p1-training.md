@@ -111,10 +111,28 @@ Loss/градиенты конечны; best loss 1.06504. После выход
 10. Цикл (как `app.py::train_voice`, без ECAPA): `clip_grad_norm_(1.0)`, best по шагу, `scheduler.step(best_loss)`; каждые 8 — `progress`; каждые `saveEvery` — `ckpt_<step>.json` + `state.pt` (оба через `*.tmp` + `os.replace`) + `checkpoint`; `stop_event` → если `best_ttl is None` → `stopped{stylePath:null}` без записи, иначе state + `final.json` + `stopped`; `best_loss ≤ threshold` или конец → `final.json` + `done`.
 11. Исключения: `torch.cuda.OutOfMemoryError` → `GPU_OUT_OF_MEMORY`; прочее → `WORKER_FAILED` (трейсбек в stderr).
 
-- [ ] **Step 1: Тесты** (`python3 -m unittest discover -s src-tauri/resources/trainer -p 'test_*.py'`, без torch: торч-зависимые части импортируются внутри функций): `parse_request_rejects_bad_version`, `eof_triggers_stop` (поток-сторож на pipe, цикл уже начался → event, не выход; после `stopped` процесс завершается < 5 с — daemon-таймер не держит), `eof_before_loop_emits_stopped` (в подпроцессе с заглушкой `torch` в `sys.modules`, импорт которой спит 5 с: EOF до цикла → строка `stopped` с `step:0`, exit 0), `emit_sanitizes_nonfinite`, `write_atomic_replaces`, `trim_and_peak` (синтетический массив numpy: тишина–сигнал–тишина → обрезка, пик 0.95), `lock_rejects_second_process` (два `flock` на один файл в подпроцессах), `gpu_check_before_import` (подменённый `torch` в `sys.modules`: `cuda.is_available()=False` → `GPU_UNAVAILABLE`; пробное ядро бросает `RuntimeError` → `CUDA_DRIVER_MISMATCH`), `texts_16_each`, `error_code_mapping`.
-- [ ] **Step 2–4:** FAIL → реализовать → PASS.
-- [ ] **Step 5:** GPU вручную (venv из Task 1, офлайн): 60 шагов, `saveEvery=50` → `checkpoint` на 50; закрыть stdin на ~30 → `stopped`, `state.pt` есть; повтор с `resume:true` → `started.resumedFrom≈30`, `done`; подменить `state.pt` мусором → `TRAINING_STATE_CORRUPTED`. Записать вывод.
-- [ ] **Step 6:** Commit `feat(voice-lab): trainer adapter`.
+- [x] **Step 1: Тесты** (`python3 -m unittest discover -s src-tauri/resources/trainer -p 'test_*.py'`, без torch: торч-зависимые части импортируются внутри функций): `parse_request_rejects_bad_version`, `eof_triggers_stop` (поток-сторож на pipe, цикл уже начался → event, не выход; после `stopped` процесс завершается < 5 с — daemon-таймер не держит), `eof_before_loop_emits_stopped` (в подпроцессе с заглушкой `torch` в `sys.modules`, импорт которой спит 5 с: EOF до цикла → строка `stopped` с `step:0`, exit 0), `emit_sanitizes_nonfinite`, `write_atomic_replaces`, `trim_and_peak` (синтетический массив numpy: тишина–сигнал–тишина → обрезка, пик 0.95), `lock_rejects_second_process` (два `flock` на один файл в подпроцессах), `gpu_check_before_import` (подменённый `torch` в `sys.modules`: `cuda.is_available()=False` → `GPU_UNAVAILABLE`; пробное ядро бросает `RuntimeError` → `CUDA_DRIVER_MISMATCH`), `texts_16_each`, `error_code_mapping`.
+- [x] **Step 2–4:** FAIL → реализовать → PASS.
+- [x] **Step 5:** GPU вручную (venv из Task 1, офлайн): 60 шагов, `saveEvery=50` → `checkpoint` на 50; закрыть stdin на ~30 → `stopped`, `state.pt` есть; повтор с `resume:true` → `started.resumedFrom≈30`, `done`; подменить `state.pt` мусором → `TRAINING_STATE_CORRUPTED`. Записать вывод.
+- [x] **Step 6:** Commit `feat(voice-lab): trainer adapter`.
+
+**Task 2 verification (2026-11-03):** TDD: первый запуск unittest — FAIL
+(`train_job.py` отсутствует), после реализации — все 10 тестов PASS через
+`python3 -I -m unittest discover -s src-tauri/resources/trainer -p 'test_*.py'`,
+без torch в системном Python. Офлайн GPU smoke в окружении Task 1, русский
+референс 7.534 с, 60 шагов, saveEvery=50, threshold=0:
+- Полный прогон: started(0), checkpoint(50), done(60), bestLoss=0.455925,
+  exit 0, 57.47 с вместе с загрузкой моделей и поиском ближайшего стиля.
+- EOF после progress(32): stopped(33), state.pt и final.json сохранены,
+  exit 0; затем resume: started(resumedFrom=33), checkpoint(50), done(60),
+  bestLoss=0.482922, exit 0 (26.41 с).
+- Мусор в state.pt: error(TRAINING_STATE_CORRUPTED), exit 1 (3.44 с).
+- В stdout только JSONL, стили имеют ожидаемые формы и конечные значения;
+  после завершения процессов адаптера на GPU нет.
+- Полный cargo test: 238 passed, 0 failed, 7 ignored;
+  cargo clippy --all-targets: успешно, предупреждений в voice_lab нет.
+Артефакты GPU-проверки: scratchpad/task2-smoke (вне репозитория).
+Отклонение: workflow superpowers недоступен, шаги выполнены напрямую.
 
 ### Task 3: store — миграции и `training_runs`
 
