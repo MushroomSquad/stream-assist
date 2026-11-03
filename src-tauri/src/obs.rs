@@ -62,47 +62,76 @@ pub async fn add_widget_to_current_scene(
         ("Stream Assist — Очередь", "queue", &parts.queue, false),
     ] {
         let settings = serde_json::json!({"url": format!("{url}?part={part}&scale={scale}"), "width": (size.width as f64 * scale).ceil() as u32, "height": (size.height as f64 * scale).ceil() as u32, "reroute_audio": audio});
-        let exists = request(client.inputs().list(None))
+        upsert_browser_source(&client, scene.id.uuid.into(), name, &settings, audio).await?;
+    }
+    Ok(())
+}
+
+async fn upsert_browser_source(
+    client: &Client,
+    scene: obws::requests::scenes::SceneId<'_>,
+    name: &str,
+    settings: &serde_json::Value,
+    monitor: bool,
+) -> Result<()> {
+    let exists = request(client.inputs().list(None))
+        .await?
+        .iter()
+        .any(|input| input.id.name == name);
+    if exists {
+        request(client.inputs().set_settings(SetSettings {
+            input: name.into(),
+            settings,
+            overlay: Some(true),
+        }))
+        .await?;
+        let in_scene = request(client.scene_items().list(scene))
             .await?
             .iter()
-            .any(|input| input.id.name == name);
-        if exists {
-            request(client.inputs().set_settings(SetSettings {
-                input: name.into(),
-                settings: &settings,
-                overlay: Some(true),
-            }))
-            .await?;
-            let in_scene = request(client.scene_items().list(scene.id.uuid.into()))
-                .await?
-                .iter()
-                .any(|item| item.source_name == name);
-            if !in_scene {
-                request(client.scene_items().create(CreateSceneItem {
-                    scene: scene.id.uuid.into(),
-                    source: name.into(),
-                    enabled: Some(true),
-                }))
-                .await?;
-            }
-        } else {
-            request(client.inputs().create(Create {
-                scene: scene.id.uuid.into(),
-                input: name,
-                kind: "browser_source",
-                settings: Some(&settings),
+            .any(|item| item.source_name == name);
+        if !in_scene {
+            request(client.scene_items().create(CreateSceneItem {
+                scene,
+                source: name.into(),
                 enabled: Some(true),
             }))
             .await?;
         }
-        if audio {
-            request(
-                client
-                    .inputs()
-                    .set_audio_monitor_type(name.into(), MonitorType::MonitorAndOutput),
-            )
-            .await?;
-        }
+    } else {
+        request(client.inputs().create(Create {
+            scene,
+            input: name,
+            kind: "browser_source",
+            settings: Some(settings),
+            enabled: Some(true),
+        }))
+        .await?;
+    }
+    if monitor {
+        request(
+            client
+                .inputs()
+                .set_audio_monitor_type(name.into(), MonitorType::MonitorAndOutput),
+        )
+        .await?;
     }
     Ok(())
+}
+pub async fn add_tts_source(cfg: &ObsCfg, url: &str) -> Result<()> {
+    let client = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
+    )
+    .await??;
+    let scene = request(client.scenes().current_program_scene()).await?;
+    let settings =
+        serde_json::json!({"url": url, "width": 400, "height": 100, "reroute_audio": true});
+    upsert_browser_source(
+        &client,
+        scene.id.uuid.into(),
+        "Stream Assist — Озвучка",
+        &settings,
+        true,
+    )
+    .await
 }

@@ -144,7 +144,7 @@ async fn start(
         dir.join("themes"),
         active_theme.clone(),
         state,
-        tts_dir,
+        tts_dir.clone(),
     )
     .await;
     handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
@@ -154,12 +154,61 @@ async fn start(
         state_tx.send_replace(s.clone());
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
-    // TODO(Task 7): forward these events to the TTS engine.
-    let _tts_widget_rx = ws.tts_rx.take();
-    let (tts_tx, _tts_rx) = mpsc::unbounded_channel::<crate::tts::engine::TtsMsg>();
+    use crate::tts::engine::{self, EngineDeps, SynthFn, TtsMsg};
+    std::fs::create_dir_all(&tts_dir)?;
+    let (tts_tx, tts_rx) = mpsc::unbounded_channel::<TtsMsg>();
+    let (outcome, tts_outcomes) = mpsc::unbounded_channel();
+    handle.manage(TtsHandle(tts_tx.clone()));
+    let lab = handle
+        .try_state::<crate::voice_lab::VlState>()
+        .and_then(|s| s.0.clone());
+    let synth: SynthFn = Arc::new(move |profile_id, text, lang, speed, out| {
+        let lab = lab.clone();
+        Box::pin(async move {
+            let lab = lab.ok_or("VOICE_LAB_UNAVAILABLE")?;
+            crate::voice_lab::commands::tts_synth(
+                lab,
+                profile_id,
+                crate::voice_lab::store::RenderParams {
+                    text,
+                    lang,
+                    speed,
+                    quality: 8,
+                },
+                out,
+            )
+            .await
+            .map_err(|e| e.code())
+        })
+    });
+    let view_handle = handle.clone();
+    tokio::spawn(engine::run(
+        EngineDeps {
+            synth,
+            dir: tts_dir,
+            ws: ws.out_tx.clone(),
+            outcome,
+            view: Arc::new(move |view| {
+                let _ = tauri::Emitter::emit(&view_handle, "tts", view);
+            }),
+        },
+        settings.tts.clone(),
+        tts_rx,
+    ));
+    if let Some(mut events) = ws.tts_rx.take() {
+        let tx = tts_tx.clone();
+        tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                if tx.send(TtsMsg::Widget(event)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
     crate::driver::run(
         DriverCtx {
             tts: tts_tx,
+            tts_outcomes,
             db,
             active_theme,
             state_tx,
@@ -207,6 +256,14 @@ pub fn exit(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tts_test_text_bounds() {
+        assert!(validate_tts_test_text("").is_err());
+        assert!(validate_tts_test_text("  ").is_err());
+        assert_eq!(validate_tts_test_text(" я ").unwrap(), "я");
+        assert!(validate_tts_test_text(&"я".repeat(300)).is_ok());
+        assert!(validate_tts_test_text(&"я".repeat(301)).is_err());
+    }
     #[test]
     fn validate_rejects_bad_tts() {
         let base = Settings::default();
@@ -598,4 +655,49 @@ pub async fn spotify_volume(state: tauri::State<'_, AppState>) -> Result<Option<
     let (tx, rx) = tokio::sync::oneshot::channel();
     send(&state, DriverMsg::SpotifyVolume(tx)).await?;
     rx.await.map_err(|_| "driver_closed".into())
+}
+
+pub struct TtsHandle(pub mpsc::UnboundedSender<crate::tts::engine::TtsMsg>);
+fn tts_send(app: &tauri::AppHandle, msg: crate::tts::engine::TtsMsg) -> Result<(), String> {
+    app.try_state::<TtsHandle>()
+        .ok_or("starting")?
+        .0
+        .send(msg)
+        .map_err(|_| "starting".into())
+}
+fn validate_tts_test_text(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    if !(1..=300).contains(&text.chars().count()) {
+        return Err("invalid_text".into());
+    }
+    Ok(text.into())
+}
+#[tauri::command]
+pub async fn tts_state(app: tauri::AppHandle) -> Result<crate::tts::TtsView, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tts_send(&app, crate::tts::engine::TtsMsg::State(tx))?;
+    rx.await.map_err(|_| "starting".into())
+}
+#[tauri::command]
+pub fn tts_skip(app: tauri::AppHandle) -> Result<(), String> {
+    tts_send(&app, crate::tts::engine::TtsMsg::Skip)
+}
+#[tauri::command]
+pub fn tts_clear(app: tauri::AppHandle) -> Result<(), String> {
+    tts_send(&app, crate::tts::engine::TtsMsg::Clear)
+}
+#[tauri::command]
+pub fn tts_test(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    tts_send(
+        &app,
+        crate::tts::engine::TtsMsg::Test(validate_tts_test_text(&text)?),
+    )
+}
+#[tauri::command]
+pub async fn obs_add_tts(app: tauri::AppHandle) -> Result<(), String> {
+    let s = get_settings(app.clone())?;
+    let port = running_port(app).ok_or("server_start_failed")?;
+    crate::obs::add_tts_source(&s.obs, &format!("http://127.0.0.1:{port}/widget/tts"))
+        .await
+        .map_err(|_| "obs_add_failed".into())
 }

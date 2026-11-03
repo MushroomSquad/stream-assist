@@ -78,6 +78,7 @@ pub enum DriverMsg {
 }
 pub struct DriverCtx {
     pub tts: mpsc::UnboundedSender<TtsMsg>,
+    pub tts_outcomes: mpsc::UnboundedReceiver<(RedemptionRef, bool)>,
     pub db: Arc<Mutex<Db>>,
     pub active_theme: Arc<std::sync::RwLock<String>>,
     pub state_tx: watch::Sender<WidgetState>,
@@ -365,7 +366,26 @@ enum Internal {
     Reconcile(Vec<Redemption>),
     Reward(Result<String>),
     TtsReward(Result<String>),
+    TtsReconcile(Vec<Redemption>),
+    TtsOutcome(RedemptionRef, bool),
     Spotify(Result<Tokens>),
+}
+fn tts_target(r: &Redemption, s: &Settings) -> Option<router::FeatureKind> {
+    router::route(
+        &r.r.reward_id,
+        s.music_reward_id.as_deref(),
+        s.tts.reward_id.as_deref(),
+    )
+}
+fn tts_reconcile(ctx: &DriverCtx, tx: &mpsc::UnboundedSender<Internal>) {
+    if let (Some(h), Some(id)) = (ctx.helix.clone(), ctx.settings.tts.reward_id.clone()) {
+        let tx = tx.clone();
+        background(async move {
+            let rows = h.unfulfilled(&id).await?;
+            let _ = tx.send(Internal::TtsReconcile(rows));
+            Ok(())
+        });
+    }
 }
 fn redeem(
     c: &DriverCtx,
@@ -373,13 +393,13 @@ fn redeem(
     inflight: &mut HashSet<String>,
     tx: &mpsc::UnboundedSender<Internal>,
 ) {
-    if router::route(
-        &r.r.reward_id,
-        c.settings.music_reward_id.as_deref(),
-        c.settings.tts.reward_id.as_deref(),
-    ) != Some(router::FeatureKind::Music)
-    {
-        return;
+    match tts_target(&r, &c.settings) {
+        Some(router::FeatureKind::Tts) => {
+            let _ = c.tts.send(TtsMsg::Reward(r));
+            return;
+        }
+        Some(router::FeatureKind::Music) => {}
+        None => return,
     }
     if c.db
         .lock()
@@ -479,6 +499,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
         actions(&ctx, &player, aa, &tx, &mut polls);
     }
     let mut es = connect_twitch(&ctx, &tx);
+    tts_reconcile(&ctx, &tx);
     reconcile(&ctx, &tx);
     let mut tick = tokio::time::interval(Duration::from_millis(player::POLL_MS));
     loop {
@@ -505,6 +526,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 None => break,
             },
             Some(message) = internal.recv() => message,
+            Some((r, ok)) = ctx.tts_outcomes.recv() => Internal::TtsOutcome(r, ok),
             Some(input) = ctx.ws.yt_rx.recv() => Internal::Input(input),
             Some((code, state)) = ctx.ws.oauth_rx.recv() => {
                 match code {
@@ -555,9 +577,23 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             Internal::Msg(DriverMsg::Es(EsSignal::Redemption(r))) => {
                 redeem(&ctx, r, &mut inflight, &tx)
             }
-            Internal::Msg(DriverMsg::Es(EsSignal::Resync)) => reconcile(&ctx, &tx),
-            // Task 7 will forward these signals to the TTS engine.
-            Internal::Msg(DriverMsg::Es(EsSignal::Chat(_) | EsSignal::ChatStatus(_))) => {}
+            Internal::Msg(DriverMsg::Es(EsSignal::Resync)) => {
+                reconcile(&ctx, &tx);
+                tts_reconcile(&ctx, &tx);
+            }
+            Internal::Msg(DriverMsg::Es(EsSignal::Chat(m))) => {
+                let _ = ctx.tts.send(TtsMsg::Chat(m));
+            }
+            Internal::Msg(DriverMsg::Es(EsSignal::ChatStatus(s))) => {
+                let _ = ctx.tts.send(TtsMsg::ChatStatus(s));
+            }
+            Internal::TtsOutcome(r, ok) => status(&ctx, r, ok),
+            Internal::TtsReconcile(rows) => {
+                let _ = ctx
+                    .tts
+                    .send(TtsMsg::Reconcile(rows.into_iter().map(|r| r.r).collect()));
+            }
+
             Internal::Reconcile(rows) => {
                 let states: Result<Vec<_>> = rows
                     .into_iter()
@@ -700,7 +736,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                     background(async move { h.update_reward(&id, &body).await });
                 }
                 let _ = ctx.tts.send(TtsMsg::Settings(ctx.settings.tts.clone()));
-                // TODO(Task 7): tts_reconcile
+                tts_reconcile(&ctx, &tx);
             }
             Internal::TtsReward(Err(e)) => {
                 // A concurrent lookup may already have stored the id; its error is stale then.
@@ -816,8 +852,10 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 }
                 ctx.helix = Some(crate::app::twitch_client(t, ctx.app.clone()));
                 es = connect_twitch(&ctx, &tx);
+                tts_reconcile(&ctx, &tx);
             }
             Internal::Msg(DriverMsg::TwitchLogout) => {
+                let _ = ctx.tts.send(TtsMsg::ChatStatus(eventsub::ChatStatus::Ok));
                 if let Some(old) = es.take() {
                     old.abort();
                 }
@@ -939,6 +977,32 @@ fn spawn_tts_reward(helix: Arc<Helix>, tts: &TtsSettings, tx: &mpsc::UnboundedSe
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tts_target_routes_by_reward_id() {
+        let settings = Settings {
+            music_reward_id: Some("music".into()),
+            tts: TtsSettings {
+                reward_id: Some("tts".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for (id, expected) in [
+            ("music", Some(router::FeatureKind::Music)),
+            ("tts", Some(router::FeatureKind::Tts)),
+            ("other", None),
+        ] {
+            let r = Redemption {
+                r: RedemptionRef {
+                    reward_id: id.into(),
+                    redemption_id: "r".into(),
+                },
+                user_login: "viewer".into(),
+                user_input: "текст".into(),
+            };
+            assert_eq!(tts_target(&r, &settings), expected);
+        }
+    }
     #[test]
     fn settings_without_tts_from_old_json() {
         let mut value = serde_json::to_value(Settings::default()).unwrap();
