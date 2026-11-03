@@ -8,7 +8,7 @@ export const ru = {
   vlTrainStages: { venv: 'Python и зависимости', weights: 'Веса WavLM' }, vlTrainRegion: 'Регион 3–30 с чистой речи из «Записей»',
   vlTrainLong: 'Долго — 6000 шагов', vlTrainFast: 'Быстро — 1000 шагов', vlTrainStandard: 'Стандарт — 3000 шагов',
   vlTrainStart: 'Начать обучение', vlTrainStep: 'Шаг', vlTrainBest: 'Лучшая ошибка', vlTrainLr: 'Скорость обучения (lr)',
-  vlTrainStop: 'Остановить', vlTrainKill: 'Прервать', vlTrainKillConfirm: 'Прервать процесс? Несохранённый прогресс будет потерян.',
+  vlTrainStop: 'Остановить', vlTrainStopping: 'Останавливается…', vlTrainKill: 'Прервать', vlTrainKillConfirm: 'Прервать процесс? Несохранённый прогресс будет потерян.',
   vlTrainResume: 'Продолжить', vlTrainRuns: 'Прогоны', vlTrainDeleteConfirm: 'Удалить прогон и его состояние? Профили сохранятся.',
   vlTrainStatus: { running: 'Обучение', stopped: 'Остановлен', interrupted: 'Прерван при выходе', failed: 'Ошибка', completed: 'Завершён' },
   voice: 'Голоса', vlSources: 'Записи', vlVoices: 'Голоса', vlMixer: 'Микшер', vlRenders: 'Рендеры',
@@ -47,6 +47,7 @@ export const ru = {
 export const errorMessages: Record<string, string> = {
   UV_MISSING: 'Установите uv и добавьте его в PATH или ~/.local/bin',
   UV_TOO_OLD: 'Обновите uv до поддерживаемой версии',
+  TRAIN_INVALID: 'Неверные параметры обучения',
   TRAINER_NOT_INSTALLED: 'Сначала установите пакет обучения',
   TRAINER_OUTDATED: 'Обновите пакет обучения',
   TRAINER_INSTALL_FAILED: 'Не удалось установить пакет обучения. Проверьте сеть и свободное место (нужно 9 ГБ).',

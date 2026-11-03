@@ -750,6 +750,32 @@ mod tests {
     async fn uninstall_during_run_busy() {
         active_run_checks().await;
     }
+    #[tokio::test]
+    async fn status_during_install_is_ok() {
+        let (_d, lab, _) = setup();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        *lab.train_install.lock().await = Some(tx);
+        let status = train_status(&lab, false).await.unwrap();
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["installing"], true);
+        assert!(json.get("pack").is_some());
+        assert!(lab.train_install.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn install_cleanup_with_poisoned_cache() {
+        let (_d, lab, _) = setup();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        *lab.train_install.lock().await = Some(tx);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lab.torch_cache.lock().unwrap();
+            panic!("poison cache");
+        }));
+        finish_train_install(&lab).await;
+        assert!(lab.train_install.lock().await.is_none());
+        assert!(lab.torch_cache.lock().unwrap_err().into_inner().is_none());
+    }
+
     #[test]
     fn train_presets_and_model_required() {
         let (d, lab, _) = setup();
@@ -758,7 +784,10 @@ mod tests {
             assert_eq!((p.total_steps, p.save_every, p.seed), (total, 500, 123));
             assert_eq!((p.lr, p.threshold), (2e-4, 0.24));
         }
-        assert!(train_params("unknown", 42).is_err());
+        assert_eq!(
+            train_params("unknown", 42).unwrap_err().code(),
+            "TRAIN_INVALID"
+        );
         let dir = d.path().join("trainer/weights/wavlm-large");
         std::fs::create_dir_all(&dir).unwrap();
         for file in trainer::WAVLM_FILES {
@@ -974,7 +1003,7 @@ fn train_params(preset: &str, seed: u64) -> Result<TrainParams, VlError> {
         "fast" => 1000,
         "standard" => 3000,
         "long" => 6000,
-        _ => return Err(err("RENDER_INVALID")),
+        _ => return Err(err("TRAIN_INVALID")),
     };
     Ok(TrainParams {
         preset: preset.into(),
@@ -1008,7 +1037,7 @@ fn train_start(
     }
     require_train(lab)?;
     if !AVAILABLE_LANGS.contains(&lang.as_str()) {
-        return Err(err("RENDER_INVALID"));
+        return Err(err("TRAIN_INVALID"));
     }
     lab.train.start(
         lab.store.clone(),
@@ -1041,19 +1070,41 @@ fn train_uninstall(lab: &VoiceLab) -> Result<(), VlError> {
     *lab.torch_cache.lock().map_err(|_| err("IO_FAILED"))? = None;
     trainer::uninstall(&lab.root)
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainStatus {
+    #[serde(flatten)]
+    diagnostics: trainer::TrainStatus,
+    installing: bool,
+    languages: &'static [&'static str],
+}
+
+async fn train_status(l: &VoiceLab, refresh: bool) -> Result<TrainStatus, String> {
+    let installing = l.train_install.lock().await.is_some();
+    Ok(TrainStatus {
+        diagnostics: trainer::status(&l.root, &l.torch_cache, refresh).await,
+        installing,
+        languages: AVAILABLE_LANGS,
+    })
+}
+
 #[tauri::command]
 pub async fn vl_train_status(
     state: State<'_, VlState>,
     refresh: bool,
-) -> Result<trainer::TrainStatus, String> {
+) -> Result<TrainStatus, String> {
     let l = lab(&state)?;
-    // Serialize diagnostics with package mutations, including cache invalidation.
-    let slot = l.train_install.lock().await;
-    if slot.is_some() {
-        return Err("JOB_BUSY".into());
-    }
-    Ok(trainer::status(&l.root, &l.torch_cache, refresh).await)
+    train_status(&l, refresh).await
 }
+
+async fn finish_train_install(l: &VoiceLab) {
+    let mut slot = l.train_install.lock().await;
+    *l.torch_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    slot.take();
+}
+
 #[tauri::command]
 pub async fn vl_train_install(
     state: State<'_, VlState>,
@@ -1070,7 +1121,9 @@ pub async fn vl_train_install(
             return Err("JOB_BUSY".into());
         }
         *slot = Some(tx);
-        *l.torch_cache.lock().map_err(|_| "IO_FAILED".to_string())? = None;
+        *l.torch_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
     let last = std::sync::Mutex::new(None::<Instant>);
     let progress = |stage: &str, done, total| {
@@ -1086,8 +1139,7 @@ pub async fn vl_train_install(
         }
     };
     let result = trainer::install(&l.root, &progress, rx).await;
-    *l.torch_cache.lock().map_err(|_| "IO_FAILED".to_string())? = None;
-    l.train_install.lock().await.take();
+    finish_train_install(&l).await;
     result.map_err(|e| e.code())
 }
 #[tauri::command]

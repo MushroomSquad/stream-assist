@@ -40,7 +40,7 @@ export const blobUrl = (buf: ArrayBuffer) => URL.createObjectURL(new Blob([buf],
 export type TrainPreset = 'fast' | 'standard' | 'long';
 export interface TrainParams { preset: TrainPreset; totalSteps: number; lr: number; saveEvery: number; seed: number; threshold: number }
 export interface TrainRun { id: number; sourceId: number | null; startMs: number; endMs: number; lang: string; params: TrainParams; status: string; step: number; total: number; bestLoss: number | null; history: [number, number, number][]; error: string | null; lr: number | null; createdAt: number; updatedAt: number }
-export interface TrainStatus { uv: string | null; uvOk: boolean; pack: 'none' | 'ok' | 'outdated'; gpu: { name: string; driver: string; vramTotalMb: number; vramFreeMb: number } | null; torchCuda: string | null; diskFreeMb: number | null }
+export interface TrainStatus { installing: boolean; languages: string[]; uv: string | null; uvOk: boolean; pack: 'none' | 'ok' | 'outdated'; gpu: { name: string; driver: string; vramTotalMb: number; vramFreeMb: number } | null; torchCuda: string | null; diskFreeMb: number | null }
 export interface TrainInstallProgress { stage: string; done: number; total: number }
 export const vl_train_status = (refresh = false) => call<TrainStatus>('vl_train_status', { refresh });
 export const vl_train_install = () => call<void>('vl_train_install');

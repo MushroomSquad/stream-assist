@@ -6,6 +6,7 @@ let status = $state<api.TrainStatus | null>(null), sources = $state<api.Source[]
 let sourceId = $state(0), startMs = $state(0), endMs = $state(10000), lang = $state('ru'), preset = $state<api.TrainPreset>('fast'), seed = $state(42);
 let message = $state(''), busy = $state(false), installing = $state(false), listening = $state(false);
 let progress = $state<api.TrainInstallProgress | null>(null);
+let stopping = $state<Set<number>>(new Set());
 let timing = $state<{ id: number; step: number; time: number }[]>([]);
 const selected = $derived(sources.find(s => s.id === sourceId));
 const active = $derived(runs.find(r => r.status === 'running'));
@@ -16,6 +17,7 @@ const eta = $derived.by(() => {
   return Math.max(0, active.total - last.step) * (last.time - first.time) / (last.step - first.step) / 1000;
 });
 function update(run: api.TrainRun) {
+  if (run.status !== 'running') stopping = new Set([...stopping].filter(id => id !== run.id));
   runs = [run, ...runs.filter(r => r.id !== run.id)].sort((a, b) => b.id - a.id);
   const last = timing.at(-1);
   if (run.status === 'running' && (!last || last.id !== run.id || run.step > last.step)) {
@@ -24,7 +26,20 @@ function update(run: api.TrainRun) {
   }
 }
 async function action(f: () => Promise<unknown>) { message = ''; busy = true; try { await f(); } catch (e) { message = errorText(e); } finally { busy = false; } }
-async function load(refresh = false) { status = await api.vl_train_status(refresh); sources = await api.vl_sources(); runs = await api.vl_train_runs(); }
+async function load(refresh = false) {
+  const results = await Promise.allSettled([
+    api.vl_train_status(refresh).then(s => { status = s; installing = s.installing; }),
+    api.vl_sources().then(s => { sources = s; }),
+    api.vl_train_runs().then(r => { runs = r; })
+  ]);
+  const failed = results.find(r => r.status === 'rejected');
+  if (failed?.status === 'rejected') throw failed.reason;
+}
+async function stop(runId: number) {
+  stopping = new Set(stopping).add(runId);
+  try { await api.vl_train_stop(runId); }
+  catch (e) { stopping = new Set([...stopping].filter(id => id !== runId)); throw e; }
+}
 async function install() {
   installing = true; progress = null;
   try { await api.vl_train_install(); } finally { installing = false; status = await api.vl_train_status(true); }
@@ -66,7 +81,7 @@ onMount(() => {
 {#if status.gpu && status.gpu.vramFreeMb < 6144}<p class="vram-warning" role="alert">{ru.vlTrainLowVram}</p>{/if}
 {#if installing}
 <p>{progress ? ru.vlTrainStages[progress.stage as keyof typeof ru.vlTrainStages] : ru.vlTrainInstall}</p>
-{#if progress}<progress value={progress.done} max={progress.total || 1}></progress>{/if}
+<progress aria-label={ru.vlTrainInstall} value={progress?.done} max={progress?.total || 1}></progress>
 <button onclick={() => action(api.vl_train_install_cancel)}>{ru.vlCancel}</button>
 {:else}
 {#if status.pack !== 'ok'}<button disabled={busy || !!active || !listening} onclick={() => action(install)}>{status.pack === 'outdated' ? ru.vlTrainUpdate : ru.vlTrainInstall}</button>{/if}
@@ -80,7 +95,7 @@ onMount(() => {
 {#if selected && !selected.consent}<p class="notice">{ru.vlConsent}</p>{/if}
 <label>{ru.vlStart}<input required type="number" min="0" step="1" bind:value={startMs} /></label>
 <label>{ru.vlEnd}<input required type="number" min="0" max={selected?.durationMs} step="1" bind:value={endMs} /></label>
-<label>{ru.vlLanguage}<input required bind:value={lang} /></label>
+<label>{ru.vlLanguage}<select bind:value={lang}>{#each status?.languages ?? [lang] as language}<option value={language}>{language}</option>{/each}</select></label>
 <label>{ru.vlPreset}<select bind:value={preset}><option value="fast">{ru.vlTrainFast}</option><option value="standard">{ru.vlTrainStandard}</option><option value="long">{ru.vlTrainLong}</option></select></label>
 <label>{ru.vlSeed}<input required type="number" min="0" max={Number.MAX_SAFE_INTEGER} step="1" bind:value={seed} /></label>
 <button class="primary" disabled={!valid || busy || installing || !!active || status?.pack !== 'ok' || !listening}>{ru.vlTrainStart}</button>
@@ -89,7 +104,7 @@ onMount(() => {
 {#if runs.length === 0}<p>{ru.vlEmpty}</p>{/if}
 {#each runs as run (run.id)}
 <div class="card">
-<h4>#{run.id} · {sources.find(s => s.id === run.sourceId)?.name ?? ru.vlSources} · {ru.vlTrainStatus[run.status as keyof typeof ru.vlTrainStatus]}</h4>
+<h4>#{run.id} · {sources.find(s => s.id === run.sourceId)?.name ?? '—'} · {ru.vlTrainStatus[run.status as keyof typeof ru.vlTrainStatus]}</h4>
 <p>{ru.vlTrainStep}: {run.step}/{run.total} · {ru.vlLoss}: {number(run.history.at(-1)?.[1])} · {ru.vlTrainBest}: {number(run.bestLoss)} · {ru.vlTrainLr}: {number(run.lr)}</p>
 {#if run.error}<p class="notice">{errorText(run.error)}</p>{/if}
 {#if run.history.length}
@@ -97,9 +112,9 @@ onMount(() => {
 <p>{ru.vlLoss} · <span class="best">{ru.vlTrainBest}</span></p>
 {/if}
 {#if run.status === 'running'}
-<progress value={run.step} max={run.total}></progress>
+<progress aria-label={ru.vlTrainStep} value={run.step} max={run.total}></progress>
 <p>{ru.vlEta}: {eta === null ? ru.vlEtaPending : `≈ ${Math.ceil(eta / 60)} ${ru.vlMinutes}`}</p>
-<button disabled={busy} onclick={() => action(() => api.vl_train_stop(run.id))}>{ru.vlTrainStop}</button>
+<button disabled={busy || stopping.has(run.id)} onclick={() => action(() => stop(run.id))}>{stopping.has(run.id) ? ru.vlTrainStopping : ru.vlTrainStop}</button>
 <button disabled={busy} onclick={() => { if (confirm(ru.vlTrainKillConfirm)) void action(() => api.vl_train_kill(run.id)); }}>{ru.vlTrainKill}</button>
 {:else}
 {#if ['stopped', 'interrupted', 'failed'].includes(run.status)}<button disabled={busy || installing || !!active || status?.pack !== 'ok' || !listening} onclick={() => action(async () => { timing = []; await api.vl_train_resume(run.id); runs = await api.vl_train_runs(); })}>{ru.vlTrainResume}</button>{/if}
