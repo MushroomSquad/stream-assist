@@ -264,17 +264,20 @@ pub fn from_legacy(v: &serde_json::Value) -> Rules {
     }
     if let (TriggerKind::Reward { title: music, .. }, TriggerKind::Reward { title: tts, .. }) =
         (&r.music.triggers[0].kind, &mut r.tts.triggers[0].kind)
+        && music.trim().to_lowercase() == tts.trim().to_lowercase()
     {
+        let suffix = " (озвучка)";
+        *tts = tts
+            .chars()
+            .take(45 - suffix.chars().count())
+            .collect::<String>()
+            + suffix;
         if music.trim().to_lowercase() == tts.trim().to_lowercase() {
-            let suffix = " (озвучка)";
             *tts = tts
                 .chars()
-                .take(45 - suffix.chars().count())
+                .take(45 - suffix.chars().count() - 1)
                 .collect::<String>()
                 + suffix;
-            if music.trim().to_lowercase() == tts.trim().to_lowercase() {
-                *tts = tts.chars().skip(1).collect();
-            }
         }
     }
     r.tts.triggers[0].enabled = t["reward_enabled"].as_bool().unwrap_or(false);
@@ -370,6 +373,15 @@ mod tests {
                 reward_id: Some("m1".into())
             }
         );
+        assert_eq!(
+            r.tts.triggers[0].kind,
+            TriggerKind::Reward {
+                title: "Скажи".into(),
+                cost: 100,
+                cooldown_s: 0,
+                reward_id: Some("t1".into())
+            }
+        );
         assert_eq!(r.music.cfg.limits.no_repeat_last_n, 5);
         assert!(r.music.enabled && r.tts.enabled && r.tts.triggers[0].enabled);
         assert!(!r.tts.triggers[1].enabled);
@@ -409,9 +421,20 @@ mod tests {
     }
     #[test]
     fn migrate_legacy_titles_with_suffix() {
-        let title = "я".repeat(35) + " (озвучка)";
-        let r = from_legacy(&json!({"reward_title":title,"tts":{"reward_title":title}}));
-        assert_eq!(validate(&r), Ok(()));
+        for prefix in ["я".repeat(35), "я ".to_string() + &"я".repeat(33)] {
+            let title = prefix + " (озвучка)";
+            let r = from_legacy(&json!({"reward_title":title,"tts":{"reward_title":title}}));
+            let TriggerKind::Reward {
+                title: migrated, ..
+            } = &r.tts.triggers[0].kind
+            else {
+                panic!();
+            };
+            assert!(!migrated.starts_with(char::is_whitespace));
+            assert_ne!(migrated.trim().to_lowercase(), title.trim().to_lowercase());
+            assert_eq!(migrated.chars().count(), 44);
+            assert_eq!(validate(&r), Ok(()));
+        }
     }
     #[test]
     fn migrate_legacy_invalid_stop_words() {
@@ -446,14 +469,27 @@ mod tests {
             cases.push(r);
         }
         let mut r = Rules::default();
-        r.music.triggers[0].kind = r.tts.triggers[1].kind.clone();
+        r.music.triggers[0].kind = TriggerKind::ChatMarker { marker: "!".into() };
         cases.push(r);
         let mut r = Rules::default();
         r.tts.triggers.push(r.tts.triggers[1].clone());
         cases.push(r);
         let mut r = Rules::default();
-        r.music.triggers = vec![r.music.triggers[0].clone(); 11];
-        cases.push(r);
+        r.music.triggers = (0..11)
+            .map(|i| Trigger {
+                id: format!("music-{i}"),
+                enabled: true,
+                kind: TriggerKind::Reward {
+                    title: format!("Трек {i}"),
+                    cost: 500,
+                    cooldown_s: 0,
+                    reward_id: None,
+                },
+            })
+            .collect();
+        cases.push(r.clone());
+        r.music.triggers.pop();
+        assert_eq!(validate(&r), Ok(()));
         for (cost, cooldown_s) in [(0, 0), (2147483648, 0), (1, 604801)] {
             let mut r = Rules::default();
             r.music.triggers[0].kind = TriggerKind::Reward {
