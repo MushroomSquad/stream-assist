@@ -87,6 +87,7 @@ export const errorMessages: Record<string, string> = {
   MIX_INVALID: 'Выберите разные профили и проверьте веса смеси',
   PROFILE_HASH_MISMATCH: 'Файл профиля изменён или повреждён',
   TEXT_INVALID: 'Введите от 1 до 1000 символов',
+  NAME_INVALID: 'Имя до 200 символов, не больше 20 тегов по 50 символов',
   JOB_BUSY: 'Задача уже выполняется',
   WORKER_CRASHED: 'Процесс обработки завершился аварийно',
   JOB_CANCELLED: 'Задача отменена',

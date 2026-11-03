@@ -197,6 +197,9 @@ pub fn import_project(store: &Mutex<Store>, src: &Path) -> Result<ImportReport, 
     if z.len() > ENTRY_LIMIT {
         return Err(err("PROJECT_TOO_LARGE"));
     }
+    if count != z.len() {
+        return Err(invalid()); // duplicate entry names: by_name would pick one silently
+    }
     if z.file_names()
         .any(|n| n != "manifest.json" && !profile_name(n) && !render_name(n))
     {

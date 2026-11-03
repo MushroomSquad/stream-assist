@@ -524,6 +524,11 @@ pub(crate) fn rename_profile(
     name: String,
     tags: Vec<String>,
 ) -> Result<(), VlError> {
+    // Same limits as .svlab import, so every local profile stays exportable.
+    if name.chars().count() > 200 || tags.len() > 20 || tags.iter().any(|t| t.chars().count() > 50)
+    {
+        return Err(err("NAME_INVALID"));
+    }
     lab.store
         .lock()
         .map_err(|_| err("IO_FAILED"))?

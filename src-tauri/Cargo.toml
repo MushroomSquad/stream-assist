@@ -35,7 +35,7 @@ base64 = "0.22"
 rand = "0.9"
 rand_chacha = "0.9"
 include_dir = "0.7"
-zip = "6"
+zip = { version = "6", default-features = false, features = ["deflate", "time"] }  # no lzma/ppmd: their headers force huge allocations on untrusted .svlab
 url = "2"
 thiserror = "2"
 anyhow = "1"
