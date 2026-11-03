@@ -23,3 +23,506 @@ pub const WAVLM_FILES: &[ModelFile] = &[
         size: 1261990257,
     },
 ];
+
+use super::{VlError, err, models::install_files};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Mutex,
+    time::Duration,
+};
+use tokio::{process::Command, sync::oneshot};
+
+pub const EMBEDDED: &[(&str, &str)] = &[
+    (
+        "pyproject.toml",
+        include_str!("../../resources/trainer/pyproject.toml"),
+    ),
+    ("uv.lock", include_str!("../../resources/trainer/uv.lock")),
+    (
+        "train_job.py",
+        include_str!("../../resources/trainer/train_job.py"),
+    ),
+    (
+        "upstream/LICENSE",
+        include_str!("../../resources/trainer/upstream/LICENSE"),
+    ),
+    (
+        "upstream/helper.py",
+        include_str!("../../resources/trainer/upstream/helper.py"),
+    ),
+    (
+        "upstream/utils_model.py",
+        include_str!("../../resources/trainer/upstream/utils_model.py"),
+    ),
+    (
+        "upstream/utils_dataloader.py",
+        include_str!("../../resources/trainer/upstream/utils_dataloader.py"),
+    ),
+    (
+        "upstream/utils_style.py",
+        include_str!("../../resources/trainer/upstream/utils_style.py"),
+    ),
+    (
+        "upstream/wavlm_loss.py",
+        include_str!("../../resources/trainer/upstream/wavlm_loss.py"),
+    ),
+];
+
+pub fn trainer_dir(root: &Path) -> PathBuf {
+    root.join("trainer")
+}
+
+pub fn venv_python(root: &Path) -> PathBuf {
+    trainer_dir(root).join(if cfg!(windows) {
+        ".venv/Scripts/python.exe"
+    } else {
+        ".venv/bin/python"
+    })
+}
+
+pub fn write_adapter(root: &Path) -> Result<(), VlError> {
+    for (name, contents) in EMBEDDED {
+        let dest = trainer_dir(root).join("adapter").join(name);
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        let tmp = dest.with_extension("tmp");
+        std::fs::write(&tmp, contents)?;
+        std::fs::rename(tmp, dest)?;
+    }
+    Ok(())
+}
+
+pub fn lock_hash() -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(include_bytes!("../../resources/trainer/uv.lock"))
+    )
+}
+
+pub fn pack_state(root: &Path) -> &'static str {
+    let dir = trainer_dir(root);
+    let marker = dir.join("installed.ok");
+    if !marker.exists() {
+        return "none";
+    }
+    if std::fs::read_to_string(marker).is_ok_and(|s| s == lock_hash())
+        && WAVLM_FILES.iter().all(|file| {
+            dir.join("weights/wavlm-large")
+                .join(file.path)
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.len() == file.size)
+        })
+    {
+        "ok"
+    } else {
+        "outdated"
+    }
+}
+
+pub fn find_uv(path_var: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+    let mut candidates: Vec<_> = path_var
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.join(name))
+        .collect();
+    if let Some(home) = home {
+        candidates.extend([
+            home.join(".local/bin").join(name),
+            home.join(".cargo/bin").join(name),
+        ]);
+    }
+    candidates.into_iter().find(|p| {
+        p.metadata().is_ok_and(|m| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                m.is_file() && m.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                m.is_file()
+            }
+        })
+    })
+}
+
+pub fn parse_uv_version(s: &str) -> Option<(u32, u32, u32)> {
+    let mut words = s.split_whitespace();
+    if words.next()? != "uv" {
+        return None;
+    }
+    let mut parts = words.next()?.split('.');
+    let version = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(version)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInfo {
+    pub name: String,
+    pub driver: String,
+    pub vram_total_mb: u64,
+    pub vram_free_mb: u64,
+}
+
+pub fn parse_nvidia_smi(csv: &str) -> Option<GpuInfo> {
+    let fields: Vec<_> = csv.lines().next()?.split(',').map(str::trim).collect();
+    if fields.len() != 4 || fields[0].is_empty() || fields[1].is_empty() {
+        return None;
+    }
+    Some(GpuInfo {
+        name: fields[0].into(),
+        driver: fields[1].into(),
+        vram_total_mb: fields[2].parse().ok()?,
+        vram_free_mb: fields[3].parse().ok()?,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainStatus {
+    pub uv: Option<String>,
+    pub uv_ok: bool,
+    pub pack: String,
+    pub gpu: Option<GpuInfo>,
+    pub torch_cuda: Option<String>,
+    pub disk_free_mb: Option<u64>,
+}
+
+fn command(program: &OsStr) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    cmd
+}
+
+async fn output(cmd: &mut Command, seconds: u64) -> Option<String> {
+    let out = tokio::time::timeout(Duration::from_secs(seconds), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
+}
+
+fn uv_path() -> Option<PathBuf> {
+    find_uv(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").as_deref().map(Path::new),
+    )
+}
+
+fn disk_free_mb(root: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut existing = root;
+        while !existing.exists() {
+            existing = existing.parent()?;
+        }
+        let path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // statvfs initializes the supplied structure on success.
+        if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let stats = unsafe { stats.assume_init() };
+        Some((u128::from(stats.f_bavail) * u128::from(stats.f_frsize) / 1_000_000) as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        None
+    }
+}
+
+pub async fn status(
+    root: &Path,
+    cache: &Mutex<Option<Option<String>>>,
+    refresh: bool,
+) -> TrainStatus {
+    if refresh {
+        *cache.lock().unwrap() = None;
+    }
+    let uv = if let Some(path) = uv_path() {
+        output(command(path.as_os_str()).arg("--version"), 10).await
+    } else {
+        None
+    };
+    let uv_ok = uv
+        .as_deref()
+        .and_then(parse_uv_version)
+        .is_some_and(|v| v >= MIN_UV);
+    let gpu = output(
+        command(OsStr::new("nvidia-smi")).args([
+            "--query-gpu=name,driver_version,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ]),
+        10,
+    )
+    .await
+    .as_deref()
+    .and_then(parse_nvidia_smi);
+    let pack = pack_state(root);
+    let torch_cuda = if pack == "ok" {
+        let cached = cache.lock().unwrap().clone();
+        if let Some(value) = cached {
+            value
+        } else {
+            let value = output(
+                command(venv_python(root).as_os_str()).args([
+                    "-I",
+                    "-c",
+                    "import torch;print(torch.version.cuda if torch.cuda.is_available() else '')",
+                ]),
+                60,
+            )
+            .await
+            .filter(|s| !s.is_empty());
+            *cache.lock().unwrap() = Some(value.clone());
+            value
+        }
+    } else {
+        None
+    };
+    TrainStatus {
+        uv,
+        uv_ok,
+        pack: pack.into(),
+        gpu,
+        torch_cuda,
+        disk_free_mb: disk_free_mb(root),
+    }
+}
+
+pub async fn install(
+    root: &Path,
+    progress: &(dyn Fn(&str, u64, u64) + Send + Sync),
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<(), VlError> {
+    let uv = uv_path().ok_or_else(|| err("UV_MISSING"))?;
+    let version = output(command(uv.as_os_str()).arg("--version"), 10)
+        .await
+        .and_then(|s| parse_uv_version(&s))
+        .ok_or_else(|| err("TRAINER_INSTALL_FAILED"))?;
+    if version < MIN_UV {
+        return Err(err("UV_TOO_OLD"));
+    }
+    let dir = trainer_dir(root);
+    let failed = |_| err("TRAINER_INSTALL_FAILED");
+    match std::fs::remove_file(dir.join("installed.ok")) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(err("TRAINER_INSTALL_FAILED")),
+    }
+    write_adapter(root).map_err(failed)?;
+    if disk_free_mb(root).is_some_and(|mb| mb < 9000) {
+        return Err(err("TRAINER_INSTALL_FAILED"));
+    }
+    progress("venv", 0, 1);
+    let mut cmd = command(uv.as_os_str());
+    cmd.args(["sync", "--frozen", "--no-config", "--project"])
+        .arg(dir.join("adapter"))
+        .env("UV_PYTHON_DOWNLOADS", "automatic")
+        .env("UV_PROJECT_ENVIRONMENT", dir.join(".venv"))
+        .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
+        .env("UV_PYTHON_PREFERENCE", "only-managed")
+        .env("UV_CACHE_DIR", dir.join("uv-cache"))
+        .stdout(Stdio::null());
+    let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+    tokio::select! {
+        result = child.wait() => {
+            if !result.map_err(|_| err("TRAINER_INSTALL_FAILED"))?.success() {
+                return Err(err("TRAINER_INSTALL_FAILED"));
+            }
+        }
+        _ = &mut cancel => {
+            let _ = child.kill().await;
+            return Err(err("JOB_CANCELLED"));
+        }
+    }
+    progress("venv", 1, 1);
+    let files: Vec<_> = WAVLM_FILES
+        .iter()
+        .map(|file| {
+            (
+                format!(
+                    "https://huggingface.co/microsoft/wavlm-large/resolve/{WAVLM_REV}/{}",
+                    file.path
+                ),
+                dir.join("weights/wavlm-large").join(file.path),
+                file.sha256,
+                file.size,
+            )
+        })
+        .collect();
+    let tmp = dir.join("tmp");
+    let weights_progress = |d, t| progress("weights", d, t);
+    let result = tokio::select! {
+        result = install_files(&files, &tmp, &weights_progress) =>
+            result.map_err(|_| err("TRAINER_INSTALL_FAILED")),
+        _ = &mut cancel => Err(err("JOB_CANCELLED")),
+    };
+    let _ = tokio::fs::remove_dir_all(&tmp).await;
+    result?;
+    std::fs::write(dir.join("installed.ok"), lock_hash())
+        .map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+    Ok(())
+}
+
+pub fn uninstall(root: &Path) -> Result<(), VlError> {
+    match std::fs::remove_dir_all(trainer_dir(root)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn parse_nvidia_smi_line() {
+        let gpu = parse_nvidia_smi("NVIDIA GeForce RTX 5070 Ti, 580.95, 16303, 15800").unwrap();
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 5070 Ti");
+        assert_eq!(gpu.driver, "580.95");
+        assert_eq!((gpu.vram_total_mb, gpu.vram_free_mb), (16303, 15800));
+    }
+
+    #[test]
+    fn parse_nvidia_smi_empty() {
+        for csv in ["", "N/A", "GPU, driver, N/A, 100", "GPU, driver, 100"] {
+            assert!(parse_nvidia_smi(csv).is_none());
+        }
+    }
+
+    #[test]
+    fn parse_uv_version_line() {
+        assert_eq!(parse_uv_version("uv 0.10.4 (abc 2026-01-01)"), Some(MIN_UV));
+        for value in ["", "python 0.10.4", "uv 0.10", "uv a.b.c"] {
+            assert_eq!(parse_uv_version(value), None);
+        }
+    }
+
+    #[test]
+    fn find_uv_fallbacks() {
+        let dir = tempdir().unwrap();
+        let local = dir.path().join(".local/bin/uv");
+        let cargo = dir.path().join(".cargo/bin/uv");
+        for path in [&local, &cargo] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        assert_eq!(
+            find_uv(Some(std::ffi::OsStr::new("")), Some(dir.path())),
+            Some(local.clone())
+        );
+        fs::remove_file(local).unwrap();
+        assert_eq!(find_uv(None, Some(dir.path())), Some(cargo.clone()));
+        let path = std::env::join_paths([cargo.parent().unwrap()]).unwrap();
+        assert_eq!(find_uv(Some(&path), None), Some(cargo));
+        assert_eq!(find_uv(None, None), None);
+    }
+
+    #[test]
+    fn outdated_when_lock_hash_differs() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(trainer_dir(dir.path())).unwrap();
+        let marker = trainer_dir(dir.path()).join("installed.ok");
+        fs::write(&marker, "old").unwrap();
+        assert_eq!(pack_state(dir.path()), "outdated");
+        fs::write(&marker, lock_hash()).unwrap();
+        assert_eq!(pack_state(dir.path()), "outdated");
+        for file in WAVLM_FILES {
+            let dest = trainer_dir(dir.path())
+                .join("weights/wavlm-large")
+                .join(file.path);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::File::create(dest).unwrap().set_len(file.size).unwrap();
+        }
+        assert_eq!(pack_state(dir.path()), "ok");
+    }
+
+    #[test]
+    fn pack_none_without_marker() {
+        assert_eq!(pack_state(tempdir().unwrap().path()), "none");
+    }
+
+    #[test]
+    fn write_adapter_writes_embedded() {
+        let dir = tempdir().unwrap();
+        write_adapter(dir.path()).unwrap();
+        write_adapter(dir.path()).unwrap();
+        assert_eq!(EMBEDDED.len(), 9);
+        for (name, contents) in EMBEDDED {
+            assert_eq!(
+                fs::read_to_string(trainer_dir(dir.path()).join("adapter").join(name)).unwrap(),
+                *contents
+            );
+        }
+        assert_eq!(lock_hash().len(), 64);
+        assert!(
+            !trainer_dir(dir.path())
+                .join("adapter/test_train_job.py")
+                .exists()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads ~7 GB trainer environment and WavLM; requires uv and NVIDIA CUDA"]
+    async fn install_real_pack() {
+        let scratch =
+            std::env::var_os("TRAINER_TEST_TMP").expect("set TRAINER_TEST_TMP to scratchpad");
+        let dir = tempfile::Builder::new()
+            .prefix("task4-install-")
+            .tempdir_in(scratch)
+            .unwrap();
+        let (_sender, cancel) = tokio::sync::oneshot::channel();
+        let start = std::time::Instant::now();
+        install(
+            dir.path(),
+            &|stage, done, total| {
+                if done == 0 || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                }
+            },
+            cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pack_state(dir.path()), "ok");
+        let diagnostics = status(dir.path(), &std::sync::Mutex::new(None), true).await;
+        assert_eq!(diagnostics.torch_cuda.as_deref(), Some("12.8"));
+        eprintln!(
+            "install_real_pack: {:.2}s (including diagnostics)",
+            start.elapsed().as_secs_f64()
+        );
+        uninstall(dir.path()).unwrap();
+        assert_eq!(pack_state(dir.path()), "none");
+    }
+}
