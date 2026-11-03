@@ -1,7 +1,7 @@
 export const ru = {
   vlMinutes: 'мин', vlTrain: 'Обучение', vlTrainWarning: 'Обучение загружает GPU полностью — не запускайте во время стрима',
   vlTrainLowVram: 'Свободно меньше 6 ГБ VRAM — обучение может завершиться из-за нехватки памяти.',
-  vlTrainInstall: 'Установить пакет обучения (≈ 7 ГБ)', vlTrainUpdate: 'Обновить пакет', vlTrainUninstall: 'Удалить пакет',
+  vlTrainInstall: 'Установить пакет обучения (≈ 8 ГБ)', vlTrainUpdate: 'Обновить пакет', vlTrainUninstall: 'Удалить пакет',
   vlTrainPack: 'Пакет обучения', vlTrainPackState: { none: 'Не установлен', ok: 'Установлен', outdated: 'Требуется обновление' },
   vlTrainUv: 'Версия uv', vlTrainUvOld: 'uv отсутствует или устарел', vlTrainGpu: 'GPU', vlTrainDriver: 'Драйвер',
   vlTrainVram: 'VRAM свободно / всего, МБ', vlTrainCuda: 'CUDA torch', vlTrainDisk: 'Свободно на диске, МБ', vlUnknown: 'Нет данных',
