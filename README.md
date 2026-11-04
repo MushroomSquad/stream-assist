@@ -38,7 +38,7 @@
 
 - **Windows.** Сборки не подписаны, SmartScreen может показать предупреждение:
   «Подробнее» → «Выполнить в любом случае».
-- **Linux.** Нужен glibc 2.38+ (Ubuntu 24.04, Debian 13, Fedora 39 и новее) —
+- **Linux.** Нужен glibc 2.39+ (Ubuntu 24.04, Debian 13, Fedora 40 и новее) —
   этого требует встроенный ONNX Runtime. И работающее хранилище ключей Secret Service (gnome-keyring или KWallet).
 
 Дальше — [руководство стримера](docs/user-guide.md): подключение Twitch, Spotify и OBS
