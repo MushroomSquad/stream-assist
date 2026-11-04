@@ -217,7 +217,7 @@ TWITCH_CLIENT_ID=… npm run tauri build   # deb / rpm / AppImage на Linux
 ### CI и релизы (`.github/workflows`)
 
 - `ci.yml` — на push в `main` и PR: панель (`npm run check`, `node --test`, `npm run build`)
-  и ядро (`cargo test` на Ubuntu 22.04, `cargo check --all-targets` на Windows).
+  и ядро (`cargo test` на Ubuntu 24.04, `cargo check --all-targets` на Windows).
 - `release.yml` — на тег `vX.Y.Z`: `tauri-action` собирает Linux (deb, rpm, AppImage)
   и Windows (NSIS, MSI) и кладёт их в черновик релиза. `TWITCH_CLIENT_ID` —
   переменная репозитория (Client ID публичный, не секрет). Черновик публикуется вручную.
