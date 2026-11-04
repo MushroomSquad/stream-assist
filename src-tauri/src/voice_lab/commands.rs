@@ -2017,6 +2017,11 @@ pub async fn vl_gpu_install(
     };
     let result = super::gpu::install(&l.root, &progress, rx).await;
     *l.gpu_install.lock().await = None;
+    // A remounted panel did not start this call, so it learns about the end only from this event.
+    let _ = app.emit(
+        "vl-gpu-install",
+        serde_json::json!({"done": 0, "total": 0, "finished": true, "error": result.as_ref().err().map(|e| e.code())}),
+    );
     result.map_err(|e| e.code())
 }
 

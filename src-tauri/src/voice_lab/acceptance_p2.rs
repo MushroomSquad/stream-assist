@@ -409,12 +409,13 @@ async fn real_gpu_clone_fast() -> anyhow::Result<()> {
         lengths.push(wav.samples.len());
         embeddings.push(encoder.embed(&wav.samples, wav.sample_rate)?);
     }
-    // Synthesis samples noise, so two CPU runs differ too (~0.90 measured); GPU must stay within that spread.
+    // Synthesis samples noise: two CPU runs land at ~0.88-0.90 and a single CPU/GPU pair at 0.83-0.92.
+    // Broken GPU numerics would give unrelated audio (well below 0.75) or a different length.
     let cpu_cpu = cosine(&embeddings[0], &embeddings[1]);
     let cpu_gpu = cosine(&embeddings[0], &embeddings[2]);
     println!("similarity cpu-cpu {cpu_cpu:.4} cpu-gpu {cpu_gpu:.4}");
     assert!(
-        cpu_gpu >= cpu_cpu - 0.05,
+        cpu_gpu >= 0.75 && cpu_gpu >= cpu_cpu - 0.10,
         "cpu-cpu {cpu_cpu} cpu-gpu {cpu_gpu}"
     );
     assert!((lengths[0] as f64 / lengths[2] as f64 - 1.0).abs() <= 0.05);

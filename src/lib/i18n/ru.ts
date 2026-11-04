@@ -67,7 +67,7 @@ export const ru = {
   vlTranscript: 'Транскрипт', vlLanguage: 'Язык', vlName: 'Имя', vlClone: 'Клонировать', vlPreset: 'Пресет',
   vlFast: 'Быстро', vlStandard: 'Стандарт', vlPrecise: 'Точно', vlCloneCpuNote: 'Клонирование на CPU занимает минуты: быстро ≈ 3–5 мин, стандарт ≈ 10–15, точно ≈ 25+ мин; во время эфира не запускайте',
   vlCloneDevice: 'Устройство', vlDeviceCpu: 'Процессор', vlDeviceGpu: 'Видеокарта (NVIDIA)',
-  vlGpuInstall: 'Установить GPU-пакет (≈230 МБ)', vlGpuUninstall: 'Удалить GPU-пакет',
+  vlGpuInstalling: 'Установка GPU-пакета', vlGpuNotFound: 'Видеокарта NVIDIA не найдена (nvidia-smi)', vlGpuInstall: 'Установить GPU-пакет (≈230 МБ)', vlGpuUninstall: 'Удалить GPU-пакет',
   vlGpuMissingLibs: 'Не найдены библиотеки CUDA: {libs}. Установите CUDA 13 и cuDNN 9',
   vlCloneGpuNote: 'На видеокарте клонирование занимает минуты; во время эфира не запускайте',
   vlElapsed: 'Прошло', vlEta: 'Осталось', vlEtaPending: 'оценка появится после первых итераций',

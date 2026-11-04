@@ -10,7 +10,8 @@ export const vl_gpu_status = () => call<GpuStatus>('vl_gpu_status');
 export const vl_gpu_install = () => call<void>('vl_gpu_install');
 export const vl_gpu_install_cancel = () => call<void>('vl_gpu_install_cancel');
 export const vl_gpu_uninstall = () => call<void>('vl_gpu_uninstall');
-export const onGpuInstall = (cb: (p: { done: number; total: number }) => void) => isTauri() ? listen<{ done: number; total: number }>('vl-gpu-install', e => cb(e.payload)) : Promise.resolve(() => {});
+export interface GpuInstallEvent { done: number; total: number; finished?: boolean; error?: string | null }
+export const onGpuInstall = (cb: (p: GpuInstallEvent) => void) => isTauri() ? listen<GpuInstallEvent>('vl-gpu-install', e => cb(e.payload)) : Promise.resolve(() => {});
 export type ClonePreset = 'fast' | 'standard' | 'precise';
 export interface Recipe { schemaVersion: number; kind: string; engine: { id: string; version: string; assetRevision: string }; inputs: { profileSha256: string; name: string; weight: number }[]; dpStrategy: DpStrategy; selectedDpProfileSha256: string | null; createdAt: string }
 export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix' | 'train'; recipe: Recipe | null; meta: unknown; createdAt: number }

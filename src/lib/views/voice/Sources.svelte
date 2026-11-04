@@ -62,7 +62,13 @@ async function load() { sources = await api.vl_sources(); }
 onMount(() => {
   let disposed = false, stop = () => {}, stopGpu = () => {};
   void run(async () => {
-    const fn = await api.onGpuInstall(p => { gpuProgress = p; });
+    // The install may have been started by an earlier mount of this tab; its end arrives only as an event.
+    const fn = await api.onGpuInstall(p => {
+      if (!p.finished) { gpuProgress = p; return; }
+      gpuProgress = null;
+      if (p.error && p.error !== 'JOB_CANCELLED') message = errorText(p.error);
+      void run(loadGpu);
+    });
     if (disposed) { fn(); return; } stopGpu = fn;
     await loadGpu();
   });
@@ -95,11 +101,11 @@ async function clone() {
 <button onclick={() => run(importAudio)}>{ru.vlImportAudio}</button></div>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
 {#if gpu?.supported}<div class="card">
-{#if gpu.gpu}<p>{gpu.gpu.name} · {gpu.gpu.driver}</p>{/if}
+{#if gpu.gpu}<p>{gpu.gpu.name} · {gpu.gpu.driver}</p>{:else}<p class="muted">{ru.vlGpuNotFound}</p>{/if}
 {#if gpu.pack === 'broken'}<p class="notice" role="alert">{errorText('GPU_PACK_INVALID')}</p>{/if}
 {#if gpu.missingLibs.length}<p class="notice" role="alert">{ru.vlGpuMissingLibs.replace('{libs}', gpu.missingLibs.join(', '))}</p>{/if}
 {#if gpuBusy || gpu.installing}
-<progress aria-label={ru.vlGpuInstall} value={gpuProgress?.done} max={gpuProgress?.total || 1}></progress>
+<progress aria-label={ru.vlGpuInstalling} value={gpuProgress?.done} max={gpuProgress?.total || 1}></progress>
 <button onclick={() => run(api.vl_gpu_install_cancel)}>{ru.vlCancel}</button>
 {:else}
 {#if gpu.pack !== 'ok'}<button onclick={() => run(installGpu)}>{ru.vlGpuInstall}</button>{/if}
