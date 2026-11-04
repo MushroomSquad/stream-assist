@@ -1,0 +1,2 @@
+[env]
+ORT_CUDA_VERSION = "13"

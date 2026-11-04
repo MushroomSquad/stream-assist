@@ -824,6 +824,7 @@ mod tests {
                 Duration::from_secs(1),
             )),
             train_install: tokio::sync::Mutex::new(None),
+            gpu_install: tokio::sync::Mutex::new(None),
             torch_cache: std::sync::Mutex::new(None),
             installing: tokio::sync::Mutex::new(()),
         };
@@ -1819,6 +1820,95 @@ pub async fn vl_import_project(
 ) -> Result<super::project::ImportReport, String> {
     blocking(lab(&state)?, move |l| {
         super::project::import_project(&l.store, &path)
+    })
+    .await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuStatus {
+    pub supported: bool,
+    pub pack: super::gpu::Pack,
+    pub installing: bool,
+    pub gpu: Option<trainer::GpuInfo>,
+    pub missing_libs: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn vl_gpu_status(state: State<'_, VlState>) -> Result<GpuStatus, String> {
+    let l = lab(&state)?;
+    let installing = l.gpu_install.lock().await.is_some();
+    let gpu = trainer::gpu_info().await;
+    blocking(l, move |l| {
+        let pack = super::gpu::pack(&l.root);
+        let missing_libs = if pack == super::gpu::Pack::Ok {
+            super::gpu::missing_libs(&l.root)
+        } else {
+            Vec::new()
+        };
+        Ok(GpuStatus {
+            supported: super::gpu::SUPPORTED,
+            pack,
+            installing,
+            gpu,
+            missing_libs,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vl_gpu_install(
+    state: State<'_, VlState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    if !super::gpu::SUPPORTED {
+        return Err("GPU_UNSUPPORTED".into());
+    }
+    let l = lab(&state)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut slot = l
+            .gpu_install
+            .try_lock()
+            .map_err(|_| "JOB_BUSY".to_string())?;
+        if slot.is_some() {
+            return Err("JOB_BUSY".into());
+        }
+        *slot = Some(tx);
+    }
+    let progress = |done, total| {
+        let _ = app.emit(
+            "vl-gpu-install",
+            serde_json::json!({"done": done, "total": total}),
+        );
+    };
+    let result = super::gpu::install(&l.root, &progress, rx).await;
+    *l.gpu_install.lock().await = None;
+    result.map_err(|e| e.code())
+}
+
+#[tauri::command]
+pub async fn vl_gpu_install_cancel(state: State<'_, VlState>) -> Result<(), String> {
+    let l = lab(&state)?;
+    let mut slot = l.gpu_install.lock().await;
+    if slot.is_some() {
+        let (placeholder, _rx) = tokio::sync::oneshot::channel();
+        if let Some(tx) = slot.replace(placeholder) {
+            let _ = tx.send(());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn vl_gpu_uninstall(state: State<'_, VlState>) -> Result<(), String> {
+    blocking(lab(&state)?, |l| {
+        let slot = l.gpu_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
+        if slot.is_some() {
+            return Err(err("JOB_BUSY"));
+        }
+        super::gpu::uninstall(&l.root)
     })
     .await
 }

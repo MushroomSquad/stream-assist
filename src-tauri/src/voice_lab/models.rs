@@ -153,7 +153,7 @@ pub fn status(root: &Path) -> ModelStatus {
 }
 
 pub async fn install_files(
-    files: &[(String, PathBuf, &'static str, u64)],
+    files: &[(String, PathBuf, String, u64)],
     tmp: &Path,
     progress: &(dyn Fn(u64, u64) + Send + Sync),
 ) -> Result<(), VlError> {
@@ -244,7 +244,7 @@ pub async fn install(
                     file.path
                 ),
                 model_dir(root).join(file.path),
-                file.sha256,
+                file.sha256.into(),
                 file.size,
             )
         })
@@ -253,7 +253,7 @@ pub async fn install(
         files.push((
             SPEAKER_ENCODER_URL.to_string(),
             encoder_path(root),
-            SPEAKER_ENCODER.sha256,
+            SPEAKER_ENCODER.sha256.into(),
             SPEAKER_ENCODER.size,
         ));
     }
@@ -320,13 +320,13 @@ mod tests {
             (
                 format!("{}/a", server.uri()),
                 dir.path().join("models/a"),
-                SHA,
+                SHA.into(),
                 3,
             ),
             (
                 format!("{}/b", server.uri()),
                 dir.path().join("models/onnx/b"),
-                SHA,
+                SHA.into(),
                 3,
             ),
         ];
@@ -360,7 +360,7 @@ mod tests {
         let dest = dir.path().join("models/a");
         let tmp = dir.path().join("tmp");
         let error = install_files(
-            &[(format!("{}/a", server.uri()), dest.clone(), SHA, 3)],
+            &[(format!("{}/a", server.uri()), dest.clone(), SHA.into(), 3)],
             &tmp,
             &|_, _| {},
         )
@@ -384,7 +384,7 @@ mod tests {
         fs::write(&dest, b"abc").unwrap();
         let events = Mutex::new(Vec::new());
         install_files(
-            &[(format!("{}/a", server.uri()), dest, SHA, 3)],
+            &[(format!("{}/a", server.uri()), dest, SHA.into(), 3)],
             &dir.path().join("tmp"),
             &|d, t| events.lock().unwrap().push((d, t)),
         )
@@ -405,7 +405,7 @@ mod tests {
         let tmp = dir.path().join("tmp");
         assert_eq!(
             install_files(
-                &[(format!("{}/a", server.uri()), dest.clone(), SHA, 3)],
+                &[(format!("{}/a", server.uri()), dest.clone(), SHA.into(), 3)],
                 &tmp,
                 &|_, _| {}
             )

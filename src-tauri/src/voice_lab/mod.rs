@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod commands;
+pub mod gpu;
 pub mod mixer;
 pub mod models;
 pub mod project;
@@ -60,6 +61,7 @@ pub struct VoiceLab {
     pub runner: Arc<Runner>,
     pub train: Arc<train_runner::TrainRunner>,
     pub train_install: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub gpu_install: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub torch_cache: std::sync::Mutex<Option<Option<String>>>,
     pub installing: tokio::sync::Mutex<()>,
 }
@@ -86,6 +88,7 @@ pub fn init(app: &tauri::App) {
         Ok(VoiceLab {
             train,
             train_install: tokio::sync::Mutex::new(None),
+            gpu_install: tokio::sync::Mutex::new(None),
             torch_cache: std::sync::Mutex::new(None),
             root,
             store: Arc::new(std::sync::Mutex::new(store)),

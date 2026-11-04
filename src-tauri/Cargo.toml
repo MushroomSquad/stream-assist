@@ -48,6 +48,10 @@ ort = "=2.0.0-rc.13"
 ndarray = "0.17"
 hound = "3.5"
 
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+# GPU-пакет — onnxruntime 1.28.0 (Microsoft, cuda13); ядро — pyke ms@1.28.0 из ort-sys rc.13. Менять только вместе.
+supertonic3-tts = { version = "=1.3.0", features = ["cuda"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

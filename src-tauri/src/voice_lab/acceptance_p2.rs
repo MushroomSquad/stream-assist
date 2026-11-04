@@ -33,6 +33,7 @@ fn fresh_lab(root: PathBuf, model: &std::path::Path) -> anyhow::Result<VoiceLab>
             std::time::Duration::from_secs(30),
         )),
         train_install: tokio::sync::Mutex::new(None),
+        gpu_install: tokio::sync::Mutex::new(None),
         torch_cache: Mutex::new(None),
         installing: tokio::sync::Mutex::new(()),
     })

@@ -234,7 +234,7 @@ fn uv_path() -> Option<PathBuf> {
     )
 }
 
-fn disk_free_mb(root: &Path) -> Option<u64> {
+pub(crate) fn disk_free_mb(root: &Path) -> Option<u64> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -258,6 +258,19 @@ fn disk_free_mb(root: &Path) -> Option<u64> {
     }
 }
 
+pub async fn gpu_info() -> Option<GpuInfo> {
+    output(
+        command(OsStr::new("nvidia-smi")).args([
+            "--query-gpu=name,driver_version,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ]),
+        10,
+    )
+    .await
+    .as_deref()
+    .and_then(parse_nvidia_smi)
+}
+
 pub async fn status(
     root: &Path,
     cache: &Mutex<Option<Option<String>>>,
@@ -275,16 +288,7 @@ pub async fn status(
         .as_deref()
         .and_then(parse_uv_version)
         .is_some_and(|v| v >= MIN_UV);
-    let gpu = output(
-        command(OsStr::new("nvidia-smi")).args([
-            "--query-gpu=name,driver_version,memory.total,memory.free",
-            "--format=csv,noheader,nounits",
-        ]),
-        10,
-    )
-    .await
-    .as_deref()
-    .and_then(parse_nvidia_smi);
+    let gpu = gpu_info().await;
     let pack = pack_state(root);
     let torch_cuda = if pack == "ok" {
         let cached = cache.lock().unwrap().clone();
@@ -458,7 +462,7 @@ pub async fn install(
                         file.path
                     ),
                     dir.join("weights/wavlm-large").join(file.path),
-                    file.sha256,
+                    file.sha256.into(),
                     file.size,
                 )
             })
