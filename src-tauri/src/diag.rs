@@ -61,19 +61,31 @@ pub fn init(dir: &Path) {
         }));
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            line("panic", info);
+            // A panic inside Writer::write holds the lock; never wait on it here.
+            emit("panic", info, false);
             previous(info);
         }));
     });
 }
 
 pub fn line(area: &str, msg: impl std::fmt::Display) {
+    emit(area, msg, true);
+}
+
+fn emit(area: &str, msg: impl std::fmt::Display, wait: bool) {
     let text = format!("{} {area} {msg}", format_ts(SystemTime::now()));
     if let Some(writer) = WRITER.get() {
-        match writer.try_lock() {
-            Ok(mut writer) => writer.write(&text),
-            Err(TryLockError::Poisoned(e)) => e.into_inner().write(&text),
-            Err(TryLockError::WouldBlock) => (),
+        let guard = if wait {
+            Some(writer.lock().unwrap_or_else(|e| e.into_inner()))
+        } else {
+            match writer.try_lock() {
+                Ok(w) => Some(w),
+                Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            }
+        };
+        if let Some(mut w) = guard {
+            w.write(&text);
         }
     }
     let _ = writeln!(std::io::stderr().lock(), "{text}");
