@@ -23,7 +23,7 @@ StreamAssist.on('state', state => {
   if (!url) cover.removeAttribute('src');
   StreamAssist.progress(el('progress'), Math.min(100, Math.max(0, state.progress_ms / (now?.track.duration_ms || Infinity) * 100)), now?.id);
   el('count').textContent = state.queue.length;
-  if (count !== state.queue.length) StreamAssist.replay(el('count'), 'sa-bump');
+  if (count !== undefined && count !== state.queue.length) StreamAssist.replay(el('count'), 'sa-bump');
   count = state.queue.length;
   StreamAssist.list(el('queue'), state.queue, item => item.id, (item, index) => {
     const row = document.createElement('div'); row.className = 'r';
