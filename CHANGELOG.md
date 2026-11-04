@@ -2,6 +2,17 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 
+## [0.3.0] — 2026-11-05
+
+### Добавлено
+- Анимации во всех встроенных темах виджета «Сейчас играет» и «Очередь»: смена трека,
+  новые и сдвигающиеся строки очереди, счётчик, плавный прогресс, появление и скрытие,
+  фоновые циклы в стиле темы (диск, блик, развёртка, вспышка, дрейф) — только во время
+  воспроизведения, на паузе замирают. При «уменьшении движения» в системе анимаций нет.
+- SDK виджета: `data-mode` на `<html>`, помощники `replay`, `show`, `progress`, `list`
+  для своих тем (экспериментально, см. docs/themes.md).
+- Демо виджета: `DEMO=cycle`, `MODE`, `PROGRESS` для предпросмотра.
+
 ## [0.2.0] — 2026-11-04
 
 ### Добавлено
@@ -46,5 +57,6 @@
 ### Сборки
 - Linux: `.deb`, `.rpm`, `.AppImage`. Windows: `.exe` (NSIS), `.msi`. Без подписи.
 
+[0.3.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.1.0
