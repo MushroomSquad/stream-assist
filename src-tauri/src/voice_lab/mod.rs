@@ -94,7 +94,7 @@ pub fn init(app: &tauri::App) {
         })
     })();
     if let Err(e) = &result {
-        crate::dlog!("vl", "Voice Lab unavailable: {e:?}");
+        crate::dlog!("vl", "Voice Lab unavailable: {e:#}");
     }
     app.manage(VlState(result.ok().map(Arc::new)));
 }

@@ -34,12 +34,9 @@ impl Writer {
         if len > 0 && len.saturating_add(line.len() as u64 + 1) > self.max {
             self.file.take();
             let backup = self.path.with_extension("log.1");
-            match std::fs::remove_file(&backup) {
-                Ok(()) => (),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                Err(e) => return Err(e),
-            }
-            std::fs::rename(&self.path, backup)?;
+            // A failed rotation keeps appending past the limit instead of losing lines.
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(&self.path, backup);
             self.file = Some(
                 OpenOptions::new()
                     .create(true)
