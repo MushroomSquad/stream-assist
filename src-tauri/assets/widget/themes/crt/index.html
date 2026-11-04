@@ -7,7 +7,7 @@
 <div class="q" id="queue"></div></main><div id="sa-youtube"></div>
 <script src="/widget/sdk.js"></script><script>
 const el = id => document.getElementById(id);
-let trackId, typing;
+let trackId, shownTitle, typing;
 function title(text) {
   clearTimeout(typing);
   const target = el('title');
@@ -29,7 +29,10 @@ StreamAssist.on('state', state => {
   StreamAssist.show(el('widget'), state.visible);
   const now = state.now;
   const changed = now?.id != null && now.id !== trackId;
-  if (changed || now?.id !== trackId) title(now?.track.title || '');
+  const text = now?.track.title || '';
+  if (now?.id !== trackId) title(text);
+  else if (text !== shownTitle) { clearTimeout(typing); el('title').textContent = text; }
+  shownTitle = text;
   trackId = now?.id;
   el('artist').textContent = now?.track.artist || '';
   el('requester').textContent = now ? 'by @' + now.requester : '';
