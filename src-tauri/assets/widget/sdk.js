@@ -54,7 +54,8 @@
     progresses.set(element, { percent: p, trackId });
   }
   function list(container, items, keyOf, build) {
-    const old = new Map(Array.from(container.children, node => [node.dataset.key, { node, top: node.offsetTop }]));
+    const children = Array.from(container.children);
+    const old = new Map(children.map(node => [node.dataset.key, { node, top: node.offsetTop }]));
     const nodes = items.map((item, index) => {
       const fresh = build(item, index), key = String(keyOf(item));
       fresh.dataset.key = key;
@@ -82,7 +83,8 @@
       return fresh;
     });
     const retained = new Set(nodes);
-    for (const { node } of old.values()) if (!retained.has(node)) node.remove();
+    for (const node of children) if (!retained.has(node)) node.remove();
+    // ponytail: naive in-order placement may move extra nodes on reorders; queues only drop the head.
     nodes.forEach((node, index) => {
       if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
     });
