@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
             item(6, "Snoop Dogg", "Who Am I", "racer"),
         ],
         progress_ms: 0,
-        mode: "Playing".into(),
+        mode: std::env::var("MODE").unwrap_or_else(|_| "Playing".into()),
         warning: None,
     };
     let (tx, rx) = tokio::sync::watch::channel(state.clone());

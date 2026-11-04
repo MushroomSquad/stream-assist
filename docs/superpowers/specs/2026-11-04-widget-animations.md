@@ -69,20 +69,22 @@
 - Перед вызовом обработчиков SDK выставляет `document.documentElement.dataset.mode =
   state.mode` (`Idle`, `Starting`, `Playing`, `Paused`, `Suspended`), чтобы CSS включал
   циклы через `html[data-mode="Playing"]`.
-- `StreamAssist.fresh(key, ids)` → `Set` идентификаторов из `ids`, которых не было при
-  прошлом вызове с тем же `key` (первый вызов — все).
 - `StreamAssist.replay(element, className)` — перезапустить CSS-анимацию класса.
 - `StreamAssist.show(element, visible)` — показать сразу; при скрытии добавить класс
-  `sa-leaving`, дождаться окончания анимации (не дольше 400 мс), затем `hidden = true`.
-  Повторный показ во время выхода отменяет скрытие. Без анимации выхода — скрыть сразу.
-- `StreamAssist.flip(container, keyOf)` — плавный сдвиг строк при перестроении списка
-  (запоминает позиции до `replaceChildren` и анимирует разницу). Точная форма API
-  определяется в плане; требование — переиспользуемо всеми темами.
+  `sa-leaving`, дождаться окончания его анимации на самом элементе (не дольше 400 мс), затем
+  `hidden = true`. Повторный показ во время выхода отменяет скрытие. Без анимации выхода — скрыть сразу.
+- `StreamAssist.progress(element, percent, trackId)` — ширина полосы с плавным ходом
+  (`transition: width` — разрешённое исключение из правила про layout) и мгновенным сбросом
+  при смене трека, откате или первой отрисовке.
+- `StreamAssist.list(container, items, keyOf, build)` — список по ключам: существующие строки
+  переиспользуются (их анимации не обрываются опросом), новые получают класс `sa-enter`,
+  сдвинувшиеся плавно доезжают (FLIP).
+- Раздел в docs/themes.md помечается как экспериментальный на один выпуск.
 
 ## Проверка
 
-- `src-tauri/tests/widget_sdk.mjs`: тесты `dataset.mode`, `fresh`, `show` (в т. ч. повторный
-  показ во время выхода и reduced motion), `replay`.
+- `src-tauri/tests/widget_sdk.mjs`: тесты `dataset.mode`, `replay`, `show` (повторный показ
+  во время выхода, всплывший `animationend`, reduced motion), `progress`, `list`.
 - `examples/widget_demo.rs`: режим `DEMO=cycle` — смена трека каждые 8 с, добавление и
   удаление элементов очереди, пауза/воспроизведение, скрытие/показ, чтобы смотреть анимации
   в браузере и OBS.

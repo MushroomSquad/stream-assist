@@ -4,100 +4,117 @@
 
 **Goal:** анимации смены трека, очереди, прогресса, показа/скрытия и фоновых циклов во всех шести встроенных темах, в стиле каждой темы.
 
-**Architecture:** общие помощники в `sdk.js` (режим в `data-mode`, «новые id», перезапуск анимации, показ/скрытие с выходом, FLIP, плавный прогресс). Темы описывают анимации в CSS и вызывают помощники из своего кода рендера. Анимации привязаны к событиям (новый `id`), а не к каждому состоянию.
+**Architecture:** общие помощники в `sdk.js`: `data-mode`, `replay`, `show`, `progress`, `list` (список по ключам с переиспользованием узлов, входом новых строк и FLIP). Темы описывают анимации в CSS и вызывают помощники. Анимации привязаны к событиям (новый `id`, смена трека), а не к каждому состоянию.
 
-**Tech Stack:** vanilla JS, CSS animations, Web Animations API (`element.animate`), Chromium/CEF (OBS).
+**Tech Stack:** vanilla JS, CSS animations, Web Animations API, Chromium/CEF (OBS).
 
 **Spec:** `docs/superpowers/specs/2026-11-04-widget-animations.md`
 
 ## Global Constraints
 
-- Файлы: только `src-tauri/assets/widget/sdk.js`, `src-tauri/assets/widget/themes/*/{index.html,style.css,render.js}`, `src-tauri/tests/widget_sdk.mjs`, `src-tauri/examples/widget_demo.rs`, `docs/themes.md`. `tts.html` не трогать.
-- Без зависимостей и внешних запросов. Данные — только `textContent`.
-- Анимации входа и FLIP используют индивидуальные свойства `translate`/`scale`/`rotate`, `opacity`, `filter`, `clip-path` — **не** `transform`: у многих элементов тем уже есть `transform` (скос, наклон букв phantom), его нельзя перетирать.
-- Повторяющиеся (recreated) узлы — строки очереди, буквы phantom — получают анимацию входа только через класс `sa-enter`, который ставится лишь для свежих `id` (`StreamAssist.fresh`). Бесконечные циклы — только на постоянных узлах.
-- Циклы работают только при `html[data-mode="Playing"]`, иначе `animation-play-state: paused`.
-- `@media (prefers-reduced-motion: reduce)`: в каждой теме `*{animation:none!important;transition:none!important}`; помощники SDK при reduced motion не анимируют (show скрывает сразу, flip ничего не делает, crt печатает сразу).
-- Конечное состояние после всех анимаций совпадает с текущей вёрсткой пиксель в пиксель (проверяется скриншотами с reduced motion).
-- Вход 250–700 мс, задержки между элементами 40–120 мс, строки очереди — `min(index,4) × 60 мс`. Выход при скрытии ≤ 400 мс. FLIP 300 мс. Циклы не мигают чаще 3 Гц.
+- Файлы: `src-tauri/assets/widget/sdk.js`, `src-tauri/assets/widget/themes/*/{index.html,style.css,render.js}`, `src-tauri/tests/widget_sdk.mjs`, `src-tauri/examples/widget_demo.rs`, `docs/themes.md`. `tts.html` не трогать. Без зависимостей и внешних запросов. Данные — только `textContent`/узлы.
+- **Свойства:** входы, выходы и FLIP анимируют `translate`/`scale`/`rotate` (индивидуальные), `opacity`, `filter`, `clip-path`, `background-position`, `box-shadow` — **не `transform`**, кроме элементов без собственного `transform` (`.now`/`.queue-panel` в moonlight/phantom, `#widget` всех тем). Единственное layout-свойство — `width` полосы прогресса (`transition: width 2.5s linear`), это разрешённое отступление.
+- **Каскад `animation`:** один элемент — один итоговый список. Если у элемента есть цикл и вход/выход, правило входа/выхода пишет **полный список через запятую** (`animation: roll .6s cubic-bezier(...) backwards, spin 8s linear infinite`) и соответствующий список `animation-play-state`. Правила `.sa-leaving` стоят **последними** в файле темы.
+- **fill-mode:** входы с задержкой — `backwards`; `forwards`/`both` запрещены (конечное состояние = обычный стиль). Нулевой кадр каждого цикла (`0%`) совпадает с обычным стилем элемента.
+- **Повтор анимации:** `replay` работает только если имя анимации меняется при добавлении класса; поэтому вход по `sa-new` использует отдельные `@keyframes` от анимации первой загрузки (например, `enter` и `enter-new`).
+- Циклы идут только при `html[data-mode="Playing"]`, иначе `animation-play-state: paused`.
+- **Reduced motion** в каждой теме: `@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}`. Помощники SDK при reduced motion не анимируют.
+- **Выход при скрытии** задаётся анимацией на самом `#widget` (`#widget.sa-leaving`, ≤ 400 мс); анимации дочерних частей — той же длительности.
+- Конечные кадры совпадают с эталоном пиксель в пиксель (см. «Проверка»).
+- Вход 250–700 мс, задержки 40–120 мс, строки очереди — `calc(var(--i) * 60ms)`, `--i = min(index, 4)`. FLIP 300 мс. Циклы не мигают чаще 3 Гц.
 
 ## Review Focus
 
-1. Обновление состояния раз в 2,5 с без изменений не перезапускает ни одну анимацию (входы строк, название, буквы phantom, печать crt).
-2. Быстрая смена трека во время анимации входа или печати crt: показывается новый трек, старая печать не дописывается поверх.
-3. Скрытие → показ во время анимации выхода: виджет остаётся видимым, `hidden` не выставляется поздним таймером.
-4. Смена трека сбрасывает прогресс в 0 без анимации «назад»; пауза останавливает полосу (transition доходит до последнего значения и стоит).
-5. `?scale=2` (CSS zoom) и `?part=now|queue`: FLIP и раскладка частей не смещаются.
+1. Обновление состояния раз в 2,5 с без изменений не перезапускает и не обрывает ни одну анимацию (входы строк, название, буквы phantom, печать crt, циклы).
+2. Быстрая смена трека во время входа или печати crt: показывается новый трек, старая печать не дописывается.
+3. Скрытие → показ во время выхода: виджет остаётся видимым; всплывший `animationend` дочернего элемента не скрывает виджет.
+4. Смена трека сбрасывает прогресс в 0 без анимации «назад»; первая отрисовка ставит ширину без анимации; пауза останавливает полосу.
+5. `?scale=2` и `?part=now|queue`: FLIP и раскладка частей не смещаются.
 
 ---
 
-### Task 1: Помощники SDK, демо-цикл, документация
+### Task 0: Эталон (выполняет оркестратор, уже сделано)
 
-**Files:**
-- Modify: `src-tauri/assets/widget/sdk.js`
-- Modify: `src-tauri/tests/widget_sdk.mjs`
-- Modify: `src-tauri/examples/widget_demo.rs`
-- Modify: `docs/themes.md` (раздел «Анимации»)
+Скриншоты всех тем × `all|now|queue` + `queue&scale=2` сняты с `16fef55` скриптом проверки (`PROGRESS=60000`), детерминированность подтверждена двумя прогонами.
 
-**Interfaces — Produces** (поля объекта `window.StreamAssist`, рядом с `on`):
-- Перед `emit('state', …)` SDK ставит `document.documentElement.dataset.mode = String(state.mode)`.
-- `reduced: boolean` — геттер, `matchMedia?.('(prefers-reduced-motion: reduce)').matches === true`.
-- `fresh(key: string, ids: Iterable<number|string>): Set` — ids, которых не было в прошлом вызове с тем же `key`; первый вызов возвращает все; хранит последний набор целиком (удалённые id при возвращении снова считаются свежими).
-- `replay(element: Element|null, className: string): void` — `classList.remove`, чтение `offsetWidth`, `classList.add`. `null` — ничего.
-- `show(element: HTMLElement, visible: boolean): void` — `visible`: снять `sa-leaving`, `hidden = false`, отменить ожидающее скрытие. `!visible`: если уже `hidden` или идёт выход — ничего; если `reduced` — `hidden = true`; иначе добавить `sa-leaving` и скрыть по первому `animationend` на самом элементе или через 400 мс (что раньше); перед скрытием проверить, что скрытие не отменено (токен/счётчик).
-- `flip(container: HTMLElement, render: () => void): void` — до `render()` запомнить `offsetTop` детей с `dataset.key`; после — для детей с тем же ключом и ненулевой разницей `dy` вызвать `child.animate([{translate: '0 ' + dy + 'px'}, {translate: '0 0'}], {duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)'})`. При `reduced` или без `Element.prototype.animate` — просто `render()`. `offsetTop` (а не `getBoundingClientRect`) — в CSS-пикселях без учёта zoom и transform.
-- `progress(element: HTMLElement, percent: number, trackId: unknown): void` — `percent` ограничить 0–100 (NaN → 0). Если `trackId` изменился с прошлого вызова для этого элемента или `percent` меньше прошлого: `style.transition = 'none'`, `style.width = percent + '%'`, чтение `offsetWidth`, `style.transition = ''`. Иначе просто `style.width`. Состояние хранить в `WeakMap`. Плавность задаёт CSS темы: `transition: width 2.5s linear`.
+### Task 1: Помощники SDK и демо-цикл
 
-- [ ] **Step 1: Тесты в `widget_sdk.mjs`** (vm-контекст как в текущих кейсах, с фейковыми `matchMedia`, `setTimeout`, элементами с `classList`/`dataset`/`offsetTop`/`animate`):
-  - `dataset.mode` равен `'Playing'` после сообщения `{State:{…mode:'Playing'}}` в `socket.onmessage`;
-  - `fresh('q',[1,2])` → `{1,2}`; `fresh('q',[2,3])` → `{3}`; `fresh('q',[1])` → `{1}`; другой ключ независим;
-  - `show(el,false)` → `el.classList` содержит `sa-leaving`, `hidden` ещё false; после таймера 400 мс `hidden === true`; `show(el,false)` затем `show(el,true)` затем таймер → `hidden === false`, `sa-leaving` снят; при `reduced` `show(el,false)` скрывает сразу;
-  - `flip`: ребёнок с `key=a` смещается с `offsetTop` 60 на 0 → `animate` вызван с `translate: '0 60px'`; новый ключ — без вызова; при `reduced` `animate` не вызывается;
-  - `progress`: 10 → 20 (тот же трек) — `transition` не трогается; 20 → 5 — сброс через `'none'`; новый трек — сброс; `NaN` → `'0%'`.
-- [ ] **Step 2:** `node src-tauri/tests/widget_sdk.mjs` — FAIL (нет функций).
-- [ ] **Step 3:** реализовать помощники в `sdk.js` (существующее поведение и первые 7 кейсов теста не менять).
+**Files:** `src-tauri/assets/widget/sdk.js`, `src-tauri/tests/widget_sdk.mjs`, `src-tauri/examples/widget_demo.rs`
+
+**Interfaces — Produces** (поля `window.StreamAssist` рядом с `on`; внутренний `reduced()` = `typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches`):
+- Перед `emit('state', …)`: `document.documentElement.dataset.mode = String(state.mode)`.
+- `replay(element: Element|null, className: string): void` — `classList.remove`, чтение `offsetWidth`, `classList.add`; `null` — ничего.
+- `show(element: HTMLElement, visible: boolean): void` — `visible`: отменить ожидающее скрытие (токен), снять `sa-leaving`, `hidden = false`. `!visible`: если `hidden` или уже уходит — ничего; если `reduced()` — `hidden = true`; иначе добавить `sa-leaving`; если `getComputedStyle(element).animationName === 'none'` — скрыть сразу; иначе скрыть по `animationend` с `event.target === element` или через 400 мс, что раньше; скрытие выполняется только если токен не сменился; после скрытия снять `sa-leaving`.
+- `progress(element: HTMLElement, percent: number, trackId: unknown): void` — `percent` → 0–100, не число → 0. Состояние в `WeakMap`. Первый вызов для элемента, смена `trackId` или уменьшение `percent`: `style.transition = 'none'`, `style.width = p + '%'`, чтение `offsetWidth`, `style.transition = ''`. Иначе только `style.width`.
+- `list(container: HTMLElement, items: Array, keyOf: (item) => string|number, build: (item, index) => HTMLElement): void` — ключевой рендер:
+  1. Запомнить `offsetTop` текущих детей по `dataset.key`.
+  2. Для каждого `item` (по порядку): `node = build(item, index)`, `node.dataset.key = String(keyOf(item))`, `node.style.setProperty('--i', Math.min(index, 4))`. Если есть старый ребёнок с этим ключом — оставить старый элемент: если `old.textContent !== node.textContent`, `old.replaceChildren(...node.childNodes)`; `old.className = node.className` + `' sa-enter'`, если он был у старого; обновить `--i`. Иначе — новый узел с классом `sa-enter`, кроме случая `reduced()`.
+  3. `container.replaceChildren(...итоговые узлы)` (лишние удаляются).
+  4. Для сохранённых узлов с изменившимся `offsetTop` (`dy = было − стало ≠ 0`) и `typeof node.animate === 'function'` и не `reduced()`: `node.animate([{translate: '0 ' + dy + 'px'}, {translate: '0 0'}], {duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)'})`.
+  5. `sa-enter` снимается с узла по его `animationend` (`target === node`), чтобы последующие правки `className` не трогали вход.
+  Первый вызов для контейнера: все строки новые (получают `sa-enter`).
+
+- [ ] **Step 1: тесты** в `widget_sdk.mjs` (vm-контекст; `matchMedia`, `getComputedStyle`, `setTimeout` — глобалы контекста, не поля `window`; фейковые элементы с `classList`, `dataset`, `style.setProperty`, `offsetTop`, `textContent`, `replaceChildren`, `addEventListener`, `animate`):
+  - `dataset.mode === 'Playing'` после `socket.onmessage({data: JSON.stringify({State:{visible:true,now:null,queue:[],progress_ms:0,mode:'Playing',warning:null}})})`;
+  - `replay`: `remove` до `add`, между ними читается `offsetWidth`; `replay(null,'x')` не бросает;
+  - `show`: скрытие ждёт таймер 400 мс; `animationend` с `target === el` скрывает сразу; `animationend` от ребёнка игнорируется; `show(false)`→`show(true)`→таймер — виден, `sa-leaving` снят; `animationName === 'none'` — скрыт сразу; reduced — скрыт сразу;
+  - `progress`: первый вызов — сброс через `'none'`; 10→20 тот же трек — без сброса; 20→5 — сброс; новый трек — сброс; `NaN` → `'0%'`, 150 → `'100%'`;
+  - `list`: первый вызов `[a,b]` — оба `sa-enter`; второй вызов `[b,c]` — узел `b` тот же объект, без `sa-enter` (если не был), `c` новый с `sa-enter`, `a` удалён; `b` с `offsetTop` 60→0 — `animate` вызван с `translate: '0 60px'`; при reduced — нет `sa-enter` и нет `animate`; без `animate` у узла — не бросает; `--i` у пятой и шестой строки = 4.
+- [ ] **Step 2:** `node src-tauri/tests/widget_sdk.mjs` — FAIL.
+- [ ] **Step 3:** реализовать в `sdk.js` (существующие 7 кейсов не менять).
 - [ ] **Step 4:** `node src-tauri/tests/widget_sdk.mjs` — PASS.
-- [ ] **Step 5:** `widget_demo.rs`: при `DEMO=cycle` тик 2,5 с; каждые 8 с текущий трек уходит, первый из очереди становится текущим, в конец добавляется новый элемент с новым `id` (циклический список названий), `progress_ms` = 0; каждый 4-й цикл режим `Paused` на один цикл; каждый 5-й цикл `visible=false` на 3 с. Без `DEMO` поведение прежнее. `cargo build --example widget_demo` — OK.
-- [ ] **Step 6:** `docs/themes.md`: раздел «Анимации» — `data-mode`, все помощники с сигнатурами, правило «анимация входа только через класс для свежих id», индивидуальные свойства вместо `transform`, reduced motion, `DEMO=cycle`.
-- [ ] **Step 7:** commit `feat(widget): animation helpers in SDK and demo cycle`.
+- [ ] **Step 5: `widget_demo.rs`** — (`MODE` и `PROGRESS` уже есть.) `DEMO=cycle`: тик 2,5 с; цикл = 3 тика; на границе цикла сразу (без ожидания тика) отправить состояние: текущий трек уходит, первый из очереди — текущий (`started=true`), `progress_ms = 0`; в очередь добавляется 0, 1 или 2 новых элемента (по номеру цикла, `id` растёт, названия из циклического списка), длина очереди 2–7; каждый 4-й цикл — `mode = "Paused"` на весь цикл; каждый 5-й цикл — `visible = false` на первый тик. Без `DEMO` — прежнее поведение (включая `PROGRESS`). `cargo build --example widget_demo` — OK, `cargo fmt`.
+- [ ] **Step 6:** commit `feat(widget): animation helpers in SDK and demo cycle`.
+
+### Общий шаблон рендера тем (Tasks 2–4)
+
+`StreamAssist.show(el('widget'), state.visible)`; при смене `now?.id` (включая первую отрисовку) — `replay(<блок трека>, 'sa-new')`; прогресс — `progress(el('progress'), pct, now?.id)`; очередь — `list(el('queue'), <видимые элементы>, i => i.id, build)` (в phantom/moonlight видимые = `queue.slice(0,5)`); одиночная строка «Далее/NEXT» (glass, block) — `replay(el('queue'), 'sa-enter')` при смене `queue[0]?.id`; счётчик — `replay(count, 'sa-bump')` при изменении числа. CSS полосы: `transition: width 2.5s linear`.
 
 ### Task 2: underground и glass
 
 **Files:** `themes/underground/{index.html,style.css}`, `themes/glass/{index.html,style.css}`
 
-**Interfaces — Consumes:** Task 1 (`show`, `fresh`, `replay`, `flip`, `progress`, `data-mode`).
-
-Общий шаблон рендера (для всех тем в Tasks 2–4): `StreamAssist.show(el('widget'), state.visible)`; при смене `now?.id` — `replay(блок трека, 'sa-new')`; прогресс через `progress(el('progress'), pct, now?.id)`; очередь — `flip(container, () => container.replaceChildren(...rows))`, у каждой строки `dataset.key = item.id`, класс `sa-enter` если `id ∈ fresh('queue', ids)`, `style.setProperty('--i', min(index,4))`; счётчик — `replay(count,'sa-bump')` при изменении числа. CSS: `.prog i`/`.progress i{transition:width 2.5s linear}`, `#widget.sa-leaving{animation:<выход> …}`.
-
-- [ ] **Step 1: underground** — диск: `@keyframes spin{to{rotate:360deg}}` 8 с linear infinite, `paused` вне `Playing`; `.np.sa-new .disc` — вкатывание (`translate` слева + `rotate` −180°→0, 600 мс); `.np.sa-new .box` — выезд из-под диска (`clip-path: inset(0 100% 0 0)` → `inset(0)`, 450 мс, задержка 120 мс), тексты `.a,.t,.by` — `translate` 12px→0 + opacity с задержками 200/260/320 мс; `.r.sa-enter` — въезд справа + лаймовая вспышка фона (через `box-shadow inset`/`background-color` keyframe, не меняя размеров), задержка `calc(var(--i)*60ms)`; `#count.sa-bump` — `scale` 1→1.35→1 200 мс; выход — `.np` уезжает влево и `.qp` вправо с opacity, 350 мс.
-- [ ] **Step 2: glass** — вход `#widget`: opacity 0, `filter: blur(10px)`, `scale .97` → норма, 500 мс; `.sa-new` на `#widget`: `.cov` кроссфейд (opacity + `scale` 1.06→1), `.t,.a,.by` — подъём 6px с затуханием, задержки 60/120/180 мс; блик по прогрессу: `.prog` `position:relative;overflow:hidden`, `::after` с полупрозрачным градиентом, `translate` −100%→300% каждые 3,5 с, только в `Playing`; `.q.sa-enter` (строка «Далее» — один узел, класс через `replay` при смене id `queue[0]`) — подъём с затуханием; выход — обратный вход 300 мс.
-- [ ] **Step 3: проверка** — запустить скрипт скриншотов (см. «Проверка» ниже) для `underground` и `glass`: финальные кадры с reduced motion совпадают с эталоном; кадры посреди анимации просмотрены.
+- [ ] **Step 1: underground** — диск: `spin` (`rotate` 0→360deg, 8 с linear infinite), paused вне `Playing`; `.np.sa-new .disc` — полный список: вкатывание (`translate: -60px 0`→0, `rotate: -180deg`→0, 600 мс, backwards) + `spin`; `.np.sa-new .box` — `clip-path: inset(0 100% 0 0)`→`inset(0)` (fill backwards: после анимации `clip-path` нет, `.tab` и тень не обрезаны), 450 мс, задержка 120 мс; `.a,.t,.by` — `translate: 12px 0`→0 + opacity, задержки 200/260/320 мс; `.r.sa-enter` — въезд справа (`translate: 40px 0`) + лаймовая вспышка `box-shadow: inset 0 0 0 999px #c6f27a55` → none, задержка по `--i`; `#count.sa-bump` — `scale` 1→1.35→1, 200 мс; `#widget.sa-leaving` — opacity 1→0, 350 мс, и `#widget.sa-leaving .np` / `.qp` — `translate` влево/вправо 350 мс.
+- [ ] **Step 2: glass** — `#widget` загрузка: `appear` (opacity 0, `filter: blur(10px)`, `scale .97` → норма, 500 мс); смена трека — `sa-new` на `.info` и `.cov` (не на `#widget`): `.cov` — opacity + `scale` 1.06→1, `.t,.a,.by` — `translate: 0 6px`→0 + opacity, задержки 60/120/180 мс; блик: `.prog{position:relative;overflow:hidden}` `.prog::after` — полоса-градиент, `translate` −100%→300% (нулевой кадр за пределами полосы), 3,5 с infinite, только `Playing`; `.q.sa-enter` — подъём с затуханием 350 мс; `#widget.sa-leaving` — opacity→0 + `filter: blur(8px)`, 300 мс.
+- [ ] **Step 3:** скрипт проверки для обеих тем — PASS; кадры середины анимации просмотрены.
 - [ ] **Step 4:** commit `feat(widget): underground and glass animations`.
 
 ### Task 3: crt и block
 
 **Files:** `themes/crt/{index.html,style.css}`, `themes/block/{index.html,style.css}`
 
-- [ ] **Step 1: crt** — вход/`sa-new` на `#widget`: «включение кинескопа» (`scale: 1 .02` → `1 1` с `filter: brightness(2)` → 1, 450 мс); название печатается JS-ом: при смене `now.id` текст ставится по одному символу каждые 28 мс (не дольше 1,2 с — при длинном названии шаг = 1200/длина), предыдущая печать отменяется (таймер/токен); при `reduced` — сразу целиком; в тиках без смены трека текст не трогается; `#time::after{content:'_'}` мигает 1 с `steps(1)`; в `Playing` строки развёртки `#widget` бегут (`background-position` 0→0 3px, 0,4 с linear infinite) и мерцание `opacity` .97↔1 раз в 4 с; строки очереди `.sa-enter` — `clip-path: inset(0 100% 0 0)` → `inset(0)` с `steps(12)`, 360 мс, задержка по `--i`; выход — сжатие в линию (`scale: 1 .02`, затем opacity), 350 мс.
-- [ ] **Step 2: block** — `sa-new` на `#widget`: `.t` «шлепок» (`scale` 1.6→0.92→1, `rotate` −8deg→0 через индивидуальное свойство, итоговый наклон −1,5° остаётся в `transform`), 380 мс, `cubic-bezier(.3,1.6,.5,1)`; `.a` и `.by` — падение сверху (`translate: 0 -14px` → 0) с задержкой 120/200 мс; `.cov` — выскакивание с поворотом (`scale` 0→1, `rotate` 25deg→0), 420 мс; `.q.sa-enter` — жёсткий въезд слева (`translate: -110% 0` → 0, `steps(4)` или резкий ease), 300 мс; выход — `translate` вниз + opacity, 300 мс.
-- [ ] **Step 3: проверка** — скрипт скриншотов для `crt` и `block`; дополнительно: в crt при быстрой смене двух треков (демо с принудительным состоянием) отображается только второе название.
+- [ ] **Step 1: crt** —
+  - `#time` строится узлами: текст `'> ' + MODE`, `<span class="cur">_</span>`, текст `' ' + время` (вид и пиксели как сейчас); `.cur` мигает (opacity 1↔0, 1 с `steps(1)`, нулевой кадр — видим) только в `Playing`.
+  - Смена трека: `sa-new` на `.info` — «включение кинескопа» (`scale: 1 .02`→`1 1`, `filter: brightness(2)`→1, 450 мс). Название печатается без перекладки строк: полный текст в `#title`, где введённая часть — текст, а остальная — `<span class="ghost">` с `color: transparent; text-shadow: none`; каждые `min(28, 1200/длина)` мс один символ переходит из ghost в текст; новая смена трека отменяет таймер; при reduced motion — сразу полностью; тики без смены трека не трогают `#title`.
+  - Развёртка в `Playing`: `#widget::before` (абсолютно на весь `#widget`, `pointer-events:none`) с тем же `repeating-linear-gradient`, что сейчас у `#widget`, анимируется `background-position` 0→0 3px, 0,4 с linear infinite; градиент с самого `#widget` переносится в `::before` так, чтобы кадр в покое совпал с эталоном; мерцание — opacity `#widget::before` .6↔1 раз в 4 с (не всего виджета).
+  - Строки очереди `.sa-enter` — `clip-path: inset(0 100% 0 0)`→`inset(0)` `steps(12)`, 360 мс, задержка по `--i`.
+  - `#widget.sa-leaving` — `scale: 1 .02` затем opacity 0, 350 мс.
+- [ ] **Step 2: block** — `sa-new` на `.info` и `.cov`: `.t` — «шлепок» (`scale` 1.6→0.92→1, `rotate` −8deg→0, 380 мс, `cubic-bezier(.3,1.6,.5,1)`; базовый `transform: rotate(-1.5deg)` сохраняется); `.a`, `.by` — `translate: 0 -14px`→0 с задержкой 120/200 мс; `.cov` — `scale` 0→1 + `rotate` 25deg→0, 420 мс; `.q.sa-enter` — `translate: -110% 0`→0, `steps(4)`, 300 мс; `#widget.sa-leaving` — `translate: 0 20px` + opacity→0, 300 мс.
+- [ ] **Step 3:** скрипт проверки для обеих — PASS; crt: состояние A, затем через 300 мс состояние B — после 2 с в `#title` только название B (проверить в DEMO=cycle глазами и тестом-скриптом в браузере по желанию).
 - [ ] **Step 4:** commit `feat(widget): crt and block animations`.
 
 ### Task 4: phantom и moonlight
 
-**Files:** `themes/phantom/{render.js,style.css,index.html}`, `themes/moonlight/{render.js,style.css,index.html}`. `render.js` у тем — копии; менять обе одинаково (кроме существующих различий: группировка букв по словам в phantom).
+**Files:** `themes/phantom/{render.js,style.css}`, `themes/moonlight/{render.js,style.css}` (`render.js` — копии; изменения одинаковые, сохраняя существующие различия).
 
-- [ ] **Step 1: render.js (обе темы)** — `show`, `progress`, `flip` для `#queue` со строками `dataset.key`, `sa-enter` по `fresh`, `replay(el('now'),'sa-new')` при смене `now.id`, `replay(count,'sa-bump')`; в `ransom` каждой букве `style.setProperty('--i', index)` и класс `sa-enter` только когда название реально сменилось (существующая проверка `previousTitle`); заголовок «ОЧЕРЕДЬ» — без анимации букв.
-- [ ] **Step 2: phantom** — `.letter.sa-enter` — появление по одной: `scale` 0→1.25→1, `rotate` 40deg→0 (индивидуальное свойство, inline `transform` наклон сохраняется), opacity, 260 мс, задержка `calc(var(--i)*35ms)` (не больше 40 букв); `.burst` — в `Playing` «дыхание» `scale` 1↔1.04 за 2,4 с; `.now.sa-new .burst` — поворот `rotate` −90deg→0 + `scale` .6→1, 500 мс; `.now.sa-new .cover` — влёт `translate: -40px 20px` + `rotate: -25deg` → 0, 450 мс; `#artist,#requester` — въезд справа с задержкой 250/320 мс; `.row.sa-enter` — врезка справа `translate: 60px 0` → 0 с opacity, 280 мс, задержка по `--i`; `#count.sa-bump` — `scale`; выход — `.now` и `.queue-panel` уезжают (`translate`) и гаснут, 350 мс.
-- [ ] **Step 3: moonlight** — существующий `@keyframes enter` (у `.now`/`.queue-panel` собственного `transform` нет, поэтому `skewX` в нём допустим) оставить и повторять его для `.now.sa-new`; `.now.sa-new::after` (новый псевдоэлемент поверх фона, `pointer-events:none`, тот же `clip-path`, что у `::before`) — световая полоса: градиент проходит слева направо 700 мс; `.now.sa-new .cover` — выезд со скосом слева (`translate: -30px 0`, opacity), 450 мс; `.backword` — в `Playing` дрейф `translate` 0↔−18px за 9 с ease-in-out alternate; `.progress i:after` — пульс свечения (`box-shadow`/opacity) 1,6 с в `Playing`; `.row.sa-enter` — выезд слева `translate: -40px 0` + opacity, 320 мс, задержка по `--i`; выход — `translate: -12px 0` + opacity 300 мс.
-- [ ] **Step 4: проверка** — скрипт скриншотов для `phantom` и `moonlight`.
+- [ ] **Step 1: render.js** — шаблон рендера; блок трека `el('now')` получает `sa-new`; в `ransom` при реальной смене названия каждая буква получает `--i = index` и класс `sa-enter` (не при reduced motion); заголовок «ОЧЕРЕДЬ» без анимации.
+- [ ] **Step 2: phantom** — `.letter.sa-enter`: `scale` 0→1.25→1, `rotate` 40deg→0, opacity, 260 мс, задержка `calc(var(--i) * 35ms)`, backwards (inline `transform` наклона сохраняется); `.burst`: `breathe` (`scale` 1→1.04→1, 2,4 с infinite, только `Playing`); `.now.sa-new .burst` — полный список `burst-in` (`rotate: -90deg`→0, 500 мс) + `breathe` (у `burst-in` только `rotate`, чтобы не спорить за `scale`); `.now.sa-new .cover` — `translate: -40px 20px` + `rotate: -25deg` → 0, 450 мс; `#artist`, `#requester` — `translate: 30px 0`→0 + opacity, задержки 250/320 мс; `.now.sa-new` — `enter-new` (копия `enter`); `.row.sa-enter` — `translate: 60px 0`→0 + opacity, 280 мс, задержка по `--i`; `#count.sa-bump` — `scale`; `#widget.sa-leaving` — opacity→0, `.now`/`.queue-panel` — `translate` в стороны, 350 мс.
+- [ ] **Step 3: moonlight** — `.now.sa-new` — `enter-new`; `.now::after` (поверх фона, под текстом: `z-index` ниже `.details`/`.cover`, тот же `inset` и `clip-path`, что у `::before`, `pointer-events:none`, в покое `opacity: 0`) — при `.sa-new` световая полоса: градиент `background-position` проходит слева направо, 700 мс; `.now.sa-new .cover` — `translate: -30px 0` + opacity, 450 мс (базовый `transform: skew` сохраняется); `.backword` — `translate` 0↔−18px, 9 с ease-in-out infinite alternate, только `Playing`, нулевой кадр = покой; `.progress i:after` — пульс `box-shadow` 1,6 с, только `Playing`, нулевой кадр = покой; `.row.sa-enter` — `translate: -40px 0`→0 + opacity, 320 мс, задержка по `--i`; `#widget.sa-leaving` — `translate: -12px 0` + opacity→0, 300 мс.
+- [ ] **Step 4:** скрипт проверки для обеих — PASS.
 - [ ] **Step 5:** commit `feat(widget): phantom and moonlight animations`.
 
-## Проверка (скрипт скриншотов)
+### Task 5: Документация
 
-Скрипт держит исполнитель-проверяющий вне репозитория. Для каждой темы и части `all|now|queue`:
-1. `THEME=<t> PORT=<p> cargo run --example widget_demo` (без `DEMO`, статичное состояние).
-2. `chromium --headless=new --force-prefers-reduced-motion --hide-scrollbars --window-size=<width,height из theme.json/parts> --virtual-time-budget=4000 --screenshot=<file> http://127.0.0.1:<p>/widget/music?part=<part>`.
-3. Эталон снимается с `main` до изменений; после изменений — побайтовое/пиксельное сравнение (ImageMagick `compare -metric AE`, допуск 0). Обложек нет (`cover_url: null`), поэтому кадры детерминированы.
-4. Без `--force-prefers-reduced-motion` и с `--virtual-time-budget=150` — кадр посреди входа, просматривается глазами.
-5. `DEMO=cycle` — ручной просмотр в Chromium и OBS (пользователь).
+**Files:** `docs/themes.md`
+
+- [ ] **Step 1:** раздел «Анимации (экспериментально)»: `data-mode` и значения, `replay`, `show`, `progress`, `list` с сигнатурами и примером; правила: вход только через `sa-enter`/`sa-new`, индивидуальные свойства вместо `transform`, полный список `animation` при цикле + входе, `backwards`, отдельные keyframes для повтора, reduced motion с `*::before,*::after`, пример `matchMedia`; `DEMO=cycle`, `MODE`, `PROGRESS` для предпросмотра.
+- [ ] **Step 2:** commit `docs(widget): animation helpers and rules`.
+
+## Проверка (скрипт оркестратора, вне репозитория)
+
+Для каждой темы и вида `all`, `now`, `queue`, `queue&scale=2`; демо `PROGRESS=60000`:
+1. **Reduced:** `MODE=Playing`, `chromium --headless=new --force-prefers-reduced-motion --virtual-time-budget=4000 --screenshot`.
+2. **Конечный кадр:** `MODE=Paused`, без reduced motion, `--virtual-time-budget=4000` (все входы закончились, циклы стоят на нулевом кадре); сравнивается с эталоном, снятым с `MODE=Paused` (crt выводит режим текстом).
+3. Оба кадра побайтно равны эталону (`cmp`), и в кадре есть непрозрачные пиксели (`magick … -format %[fx:mean.a] info:` > 0).
+4. Кадры середины входа (`--virtual-time-budget=150`/`400`, без reduced) — просмотр глазами.
+5. `DEMO=cycle` — ручной просмотр в Chromium и OBS (пользователь), в т. ч. нагрузка CPU в OBS.
