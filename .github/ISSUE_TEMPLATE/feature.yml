@@ -1,0 +1,11 @@
+name: Идея
+description: Предложить новую возможность
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Что хочется
+      description: Какую задачу на стриме это решит
+    validations:
+      required: true

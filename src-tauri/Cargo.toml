@@ -1,8 +1,10 @@
 [package]
 name = "stream-assist"
 version = "0.1.0"
-description = "Stream Assist — музыка по наградам Twitch"
-authors = []
+description = "Stream Assist — заказ музыки и озвучка за баллы канала Twitch"
+authors = ["DonSudak"]
+license = "MIT"
+repository = "https://github.com/DonSudak/stream-assist"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

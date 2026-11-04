@@ -1,7 +1,7 @@
 {
   "name": "stream-assist",
   "version": "0.1.0",
-  "description": "",
+  "description": "Заказ музыки и озвучка за баллы канала Twitch: Spotify, YouTube, OBS, Voice Lab",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -28,5 +28,9 @@
     "svelte-check": "^4.6.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DonSudak/stream-assist.git"
   }
 }

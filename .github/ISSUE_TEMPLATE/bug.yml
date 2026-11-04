@@ -1,0 +1,24 @@
+name: Ошибка
+description: Что-то работает не так
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что вы делали, что ожидали и что произошло
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия и система
+      placeholder: 0.1.0, Windows 11 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Сообщения об ошибках
+      description: Текст из панели или терминала. Не вставляйте токены и ключи
+      render: text
