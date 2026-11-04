@@ -20,9 +20,9 @@ html:not([data-mode="Playing"]) .progress i{transition:none}
 @keyframes sweep{0%{background-position:100% 0;opacity:0}20%,80%{opacity:1}100%{background-position:0 0;opacity:0}}
 .now.sa-new .cover{animation:cover-in .45s ease-out backwards}
 @keyframes cover-in{from{translate:-30px 0;opacity:0}to{translate:0 0;opacity:1}}
-html[data-mode="Playing"] .backword{animation:drift 9s ease-in-out infinite alternate}
+.backword{animation:drift 9s ease-in-out infinite alternate}
 @keyframes drift{from{translate:0 0}to{translate:-18px 0}}
-html[data-mode="Playing"] .progress i:after{animation:pulse 1.6s ease-in-out infinite}
+.progress i:after{animation:pulse 1.6s ease-in-out infinite}
 @keyframes pulse{0%,100%{box-shadow:0 0 9px #46e0ff}50%{box-shadow:0 0 18px #46e0ff}}
 html:not([data-mode="Playing"]) .backword,html:not([data-mode="Playing"]) .progress i:after{animation-play-state:paused}
 .row.sa-enter{animation:row-in .32s ease-out calc(var(--i) * 60ms) backwards}

@@ -15,12 +15,11 @@ html:not([data-mode="Playing"]) .progress i{transition:none}
 @keyframes bump{0%,100%{scale:1}50%{scale:1.3}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 
-.letter.sa-enter{animation:letter-in .26s ease-out calc(var(--i) * 35ms) backwards}
+.letter.sa-enter{animation:letter-in .26s ease-out calc(min(var(--i), 20) * 35ms) backwards}
 @keyframes letter-in{0%{scale:0;rotate:40deg;opacity:0}70%{scale:1.25}100%{scale:1;rotate:0deg;opacity:1}}
-html[data-mode="Playing"] .burst{animation:breathe 2.4s ease-in-out infinite}
+.burst{animation:breathe 2.4s ease-in-out infinite}
 @keyframes breathe{0%,100%{scale:1}50%{scale:1.04}}
-.now.sa-new .burst{animation:burst-in .5s ease-out backwards}
-html[data-mode="Playing"] .now.sa-new .burst{animation:burst-in .5s ease-out backwards,breathe 2.4s ease-in-out infinite}
+.now.sa-new .burst{animation:burst-in .5s ease-out backwards,breathe 2.4s ease-in-out infinite}
 html:not([data-mode="Playing"]) .burst{animation-play-state:paused}
 html:not([data-mode="Playing"]) .now.sa-new .burst{animation-play-state:running,paused}
 @keyframes burst-in{from{rotate:-90deg}to{rotate:0deg}}
