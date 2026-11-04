@@ -72,7 +72,7 @@ async fn gpu_train_stop_resume() -> anyhow::Result<()> {
         let (_sender, cancel) = tokio::sync::oneshot::channel();
         trainer::install(
             &root,
-            &|stage, done, total| {
+            &|stage, done, total, _| {
                 if done == 0 || done == total {
                     eprintln!("install {stage}: {done}/{total}");
                 }

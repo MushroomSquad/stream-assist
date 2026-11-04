@@ -5,6 +5,7 @@ import { ru, errorText } from '$lib/i18n/ru';
 let status = $state<api.TrainStatus | null>(null), sources = $state<api.Source[]>([]), runs = $state<api.TrainRun[]>([]);
 let sourceId = $state(0), startMs = $state(0), endMs = $state(10000), lang = $state('ru'), preset = $state<api.TrainPreset>('fast'), seed = $state(42);
 let message = $state(''), busy = $state(false), installing = $state(false), listening = $state(false);
+let installLog = $state('');
 let progress = $state<api.TrainInstallProgress | null>(null);
 let stopping = $state<Set<number>>(new Set());
 let timing = $state<{ id: number; step: number; time: number }[]>([]);
@@ -41,8 +42,12 @@ async function stop(runId: number) {
   catch (e) { stopping = new Set([...stopping].filter(id => id !== runId)); throw e; }
 }
 async function install() {
-  installing = true; progress = null;
-  try { await api.vl_train_install(); } finally { installing = false; status = await api.vl_train_status(true); }
+  installing = true; progress = null; installLog = '';
+  try { await api.vl_train_install(); }
+  catch (e) {
+    installLog = await api.vl_train_install_log().then(log => log.trimEnd().split('\n').slice(-20).join('\n')).catch(() => '');
+    throw e;
+  } finally { installing = false; status = await api.vl_train_status(true); }
 }
 function chart(run: api.TrainRun, index: 1 | 2) {
   const values = run.history.flatMap(p => [p[1], p[2]]), low = Math.min(...values), high = Math.max(...values);
@@ -70,6 +75,8 @@ onMount(() => {
 {#if status}
 <div class="card">
 <h3>{ru.vlTrainPack}</h3>
+<p>{ru.vlTrainInstallNote}</p>
+{#if installLog}<pre>{installLog}</pre>{/if}
 <dl>
 <dt>{ru.vlTrainUv}</dt><dd>{status.uv ?? ru.vlUnknown}{#if !status.uvOk}{' · '}{ru.vlTrainUvOld}{/if}</dd>
 <dt>{ru.vlTrainPack}</dt><dd>{ru.vlTrainPackState[status.pack]}</dd>
@@ -82,7 +89,14 @@ onMount(() => {
 {#if status.gpu && status.gpu.vramFreeMb < 6144}<p class="vram-warning" role="alert">{ru.vlTrainLowVram}</p>{/if}
 {#if installing}
 <p>{progress ? ru.vlTrainStages[progress.stage as keyof typeof ru.vlTrainStages] : ru.vlTrainInstall}</p>
-<progress aria-label={ru.vlTrainInstall} value={progress?.done} max={progress?.total || 1}></progress>
+ {#if progress?.stage === 'packages'}
+<p>{ru.vlTrainMegabytes} {(progress.done / 1048576).toFixed(1)} / {(progress.total / 1048576).toFixed(1)}{#if progress.item}{' · '}{progress.item}{/if}</p>
+{/if}
+{#if !progress || (progress.stage === 'venv' && progress.total === 0)}
+<progress aria-label={ru.vlTrainInstall}></progress>
+{:else}
+<progress aria-label={ru.vlTrainInstall} value={progress.done} max={progress.total || 1}></progress>
+{/if}
 <button onclick={() => action(api.vl_train_install_cancel)}>{ru.vlCancel}</button>
 {:else}
 {#if status.pack !== 'ok'}<button disabled={busy || !!active || !listening} onclick={() => action(install)}>{status.pack === 'outdated' ? ru.vlTrainUpdate : ru.vlTrainInstall}</button>{/if}
@@ -126,6 +140,7 @@ onMount(() => {
 
 </div>
 <style>
+pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 dl { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,2fr); gap:var(--s2) var(--s4); margin-block:var(--s4); }
 dt { color:var(--t2); } dd { margin:0; overflow-wrap:anywhere; font-family:var(--font-mono); font-size:var(--type-meta); font-variant-numeric:tabular-nums; }
 svg { width:100%; max-height:220px; background:var(--card); margin-top:var(--s4); }

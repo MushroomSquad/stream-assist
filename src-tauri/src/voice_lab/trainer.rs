@@ -317,9 +317,73 @@ pub async fn status(
     }
 }
 
+pub struct UvProgress {
+    pub done: u64,
+    pub total: u64,
+    pub item: Option<String>,
+}
+
+pub fn uv_progress(log: &str) -> UvProgress {
+    let mut packages = Vec::<(&str, u64)>::new();
+    let mut downloaded = std::collections::HashSet::new();
+    for line in log
+        .split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+    {
+        if let Some(rest) = line.strip_prefix("Downloading ") {
+            let Some(name) = rest.split_whitespace().next() else {
+                continue;
+            };
+            let Some((_, size)) = rest.rsplit_once('(') else {
+                continue;
+            };
+            let Some(size) = size.trim().strip_suffix(')') else {
+                continue;
+            };
+            let bytes = [
+                ("GiB", 1073741824.0),
+                ("MiB", 1048576.0),
+                ("KiB", 1024.0),
+                ("B", 1.0),
+            ]
+            .into_iter()
+            .find_map(|(unit, scale)| {
+                size.strip_suffix(unit)?
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite() && *n >= 0.0)
+                    .map(|n| (n * scale) as u64)
+            });
+            if let Some(bytes) = bytes
+                && !packages.iter().any(|(n, _)| *n == name)
+            {
+                packages.push((name, bytes));
+            }
+        } else if let Some(rest) = line.strip_prefix(" Downloaded ")
+            && let Some(name) = rest.split_whitespace().next()
+        {
+            downloaded.insert(name);
+        }
+    }
+    UvProgress {
+        total: packages.iter().map(|(_, bytes)| bytes).sum(),
+        done: packages
+            .iter()
+            .filter(|(name, _)| downloaded.contains(name))
+            .map(|(_, bytes)| bytes)
+            .sum(),
+        item: packages
+            .iter()
+            .rev()
+            .find(|(name, _)| !downloaded.contains(name))
+            .map(|(name, _)| (*name).to_string()),
+    }
+}
+
+#[allow(clippy::type_complexity)] // Keep the install callback signature explicit.
 pub async fn install(
     root: &Path,
-    progress: &(dyn Fn(&str, u64, u64) + Send + Sync),
+    progress: &(dyn Fn(&str, u64, u64, Option<&str>) + Send + Sync),
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<(), VlError> {
     crate::dlog!("train", "install start");
@@ -344,10 +408,12 @@ pub async fn install(
             return Err(err("TRAINER_INSTALL_FAILED"));
         }
         crate::dlog!("train", "install stage=venv");
-        progress("venv", 0, 1);
+        progress("venv", 0, 0, None);
         let mut cmd = command(uv.as_os_str());
         cmd.args(["sync", "--frozen", "--no-config", "--project"])
             .arg(dir.join("adapter"))
+            .env("NO_COLOR", "1")
+            .args(["--color", "never"])
             .env("UV_PYTHON_DOWNLOADS", "automatic")
             .env("UV_PROJECT_ENVIRONMENT", dir.join(".venv"))
             .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
@@ -356,20 +422,33 @@ pub async fn install(
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(dir.join("install.log"))?);
         let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
-        tokio::select! {
-            result = child.wait() => {
-                let status = result.map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
-                crate::dlog!("train", "uv exit code={:?}", status.code());
-                if !status.success() {
-                    return Err(err("TRAINER_INSTALL_FAILED"));
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            tokio::select! {
+                result = child.wait() => {
+                    let status = result.map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+                    crate::dlog!("train", "uv exit code={:?}", status.code());
+                    if !status.success() {
+                        return Err(err("TRAINER_INSTALL_FAILED"));
+                    }
+                    break;
+                }
+                _ = &mut cancel => {
+                    let _ = child.kill().await;
+                    return Err(err("JOB_CANCELLED"));
+                }
+                _ = interval.tick() => {
+                    let log = tokio::fs::read(dir.join("install.log")).await.unwrap_or_default();
+                    let p = uv_progress(&String::from_utf8_lossy(&log));
+                    if p.done < p.total {
+                        progress("packages", p.done, p.total, p.item.as_deref());
+                    } else {
+                        progress("venv", 0, 0, None);
+                    }
                 }
             }
-            _ = &mut cancel => {
-                let _ = child.kill().await;
-                return Err(err("JOB_CANCELLED"));
-            }
         }
-        progress("venv", 1, 1);
+        progress("venv", 1, 1, None);
         let files: Vec<_> = WAVLM_FILES
             .iter()
             .map(|file| {
@@ -386,7 +465,7 @@ pub async fn install(
             .collect();
         let tmp = dir.join("tmp");
         crate::dlog!("train", "install stage=weights");
-        let weights_progress = |d, t| progress("weights", d, t);
+        let weights_progress = |d, t| progress("weights", d, t, None);
         let result = tokio::select! {
             result = install_files(&files, &tmp, &weights_progress) =>
                 result.map_err(|_| err("TRAINER_INSTALL_FAILED")),
@@ -426,6 +505,54 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
+    #[test]
+    fn uv_progress_on_real_log() {
+        let p = uv_progress(FIXTURE);
+        assert_eq!(p.total, 3_968_860_149);
+        assert_eq!(p.done, 92_589_255);
+        assert!(p.done > 0 && p.done < p.total);
+        assert_eq!(p.item.as_deref(), Some("triton"));
+    }
+    #[test]
+    fn uv_progress_parses_python_line() {
+        let p = uv_progress(
+            "Downloading cpython-3.12.12-linux-x86_64-gnu (download) (32.3MiB)\n Downloaded cpython-3.12.12-linux-x86_64-gnu (download)\n",
+        );
+        assert_eq!(p.done, (32.3 * 1048576.0) as u64);
+        assert_eq!(p.done, p.total);
+        assert_eq!(p.item, None);
+    }
+    #[test]
+    fn uv_progress_ignores_partial_line() {
+        let p = uv_progress("Downloading torch (991.1MiB)\n Downloaded tor");
+        assert_eq!(p.done, 0);
+        assert_eq!(p.total, (991.1 * 1048576.0) as u64);
+        assert_eq!(uv_progress("Downloading torch (991.1MiB)").total, 0);
+    }
+    #[test]
+    fn uv_progress_unique_names() {
+        let p = uv_progress(
+            "Downloading nvidia-cublas-cu12 (1MiB)\nDownloading nvidia-cublas-cu12 (1MiB)\nDownloading nvidia-cublas (2MiB)\n Downloaded nvidia-cublas\n Downloaded nvidia-cublas\n",
+        );
+        assert_eq!(p.total, 3 * 1048576);
+        assert_eq!(p.done, 2 * 1048576);
+        assert_eq!(p.item.as_deref(), Some("nvidia-cublas-cu12"));
+    }
+    #[test]
+    fn uv_progress_ignores_unknown_downloaded() {
+        let p = uv_progress(" Downloaded unknown\nDownloading known (512B)\n");
+        assert_eq!(p.done, 0);
+        assert_eq!(p.total, 512);
+    }
+    #[test]
+    fn uv_progress_units() {
+        let p = uv_progress(
+            "Downloading a (512B)\nDownloading b (1.5KiB)\nDownloading c (2GiB)\n Downloaded a\n Downloaded b\n Downloaded c\n",
+        );
+        assert_eq!(p.total, 512 + 1536 + 2 * 1024 * 1024 * 1024);
+        assert_eq!(p.done, p.total);
+    }
     #[test]
     fn parse_nvidia_smi_line() {
         let gpu = parse_nvidia_smi("NVIDIA GeForce RTX 5070 Ti, 580.95, 16303, 15800").unwrap();
@@ -531,7 +658,7 @@ mod tests {
         let start = std::time::Instant::now();
         install(
             dir.path(),
-            &|stage, done, total| {
+            &|stage, done, total, _| {
                 if done == 0 || done == total {
                     eprintln!("{stage}: {done}/{total}");
                 }

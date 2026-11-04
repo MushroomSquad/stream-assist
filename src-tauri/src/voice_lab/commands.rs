@@ -829,6 +829,20 @@ mod tests {
         };
         (d, lab, p)
     }
+
+    #[tokio::test]
+    async fn vl_train_install_log_tails_file() {
+        let (d, _, _) = setup();
+        assert_eq!(train_install_log(d.path()).await.unwrap(), "");
+        std::fs::create_dir_all(d.path().join("trainer")).unwrap();
+        let text = "я".repeat(5121) + "конец";
+        std::fs::write(d.path().join("trainer/install.log"), &text).unwrap();
+        let tail = train_install_log(d.path()).await.unwrap();
+        assert!(tail.len() <= 8192);
+        assert!(tail.len() >= 8190);
+        assert!(text.ends_with(&tail));
+        assert!(tail.ends_with("конец"));
+    }
     #[test]
     fn tts_synth_is_send() {
         fn assert_send<T: Send>(_: &T) {}
@@ -1645,6 +1659,39 @@ async fn finish_train_install(l: &VoiceLab) {
     slot.take();
 }
 
+async fn train_install_log(root: &Path) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = match tokio::fs::File::open(trainer::trainer_dir(root).join("install.log")).await
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(_) => return Err("TRAINER_INSTALL_FAILED".into()),
+    };
+    let len = file
+        .metadata()
+        .await
+        .map_err(|_| "TRAINER_INSTALL_FAILED")?
+        .len();
+    file.seek(std::io::SeekFrom::Start(len.saturating_sub(8192)))
+        .await
+        .map_err(|_| "TRAINER_INSTALL_FAILED")?;
+    let mut bytes = Vec::new();
+    file.take(8192)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| "TRAINER_INSTALL_FAILED")?;
+    let start = bytes
+        .iter()
+        .position(|b| b & 0xc0 != 0x80)
+        .unwrap_or(bytes.len());
+    String::from_utf8(bytes[start..].to_vec()).map_err(|_| "TRAINER_INSTALL_FAILED".into())
+}
+
+#[tauri::command]
+pub async fn vl_train_install_log(state: State<'_, VlState>) -> Result<String, String> {
+    train_install_log(&lab(&state)?.root).await
+}
+
 #[tauri::command]
 pub async fn vl_train_install(
     state: State<'_, VlState>,
@@ -1666,14 +1713,14 @@ pub async fn vl_train_install(
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
     let last = std::sync::Mutex::new(None::<Instant>);
-    let progress = |stage: &str, done, total| {
+    let progress = |stage: &str, done, total, item: Option<&str>| {
         let mut last = last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if done == total || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
             let _ = app.emit(
                 "vl-train-install",
-                serde_json::json!({"stage":stage,"done":done,"total":total}),
+                serde_json::json!({"stage":stage,"done":done,"total":total,"item":item}),
             );
             *last = Some(Instant::now());
         }

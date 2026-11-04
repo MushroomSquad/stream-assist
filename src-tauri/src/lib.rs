@@ -60,6 +60,7 @@ pub fn run() {
             app::widget_test,
             voice_lab::commands::vl_train_status,
             voice_lab::commands::vl_train_install,
+            voice_lab::commands::vl_train_install_log,
             voice_lab::commands::vl_train_install_cancel,
             voice_lab::commands::vl_train_uninstall,
             voice_lab::commands::vl_train_start,
