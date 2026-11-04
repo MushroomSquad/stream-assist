@@ -26,16 +26,8 @@ fn fresh_lab(root: PathBuf, model: &std::path::Path) -> anyhow::Result<VoiceLab>
         root,
         store: Arc::new(Mutex::new(store)),
         runner: Arc::new(Runner::new(exe, vec![])),
-        train: Arc::new(train_runner::TrainRunner::new(
-            "unused".into(),
-            "unused".into(),
-            vec![],
-            std::time::Duration::from_secs(30),
-        )),
-        train_install: tokio::sync::Mutex::new(None),
         gpu_install: tokio::sync::Mutex::new(None),
         gpu_gate: std::sync::Mutex::new(()),
-        torch_cache: Mutex::new(None),
         installing: tokio::sync::Mutex::new(()),
     })
 }

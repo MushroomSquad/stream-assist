@@ -7,12 +7,11 @@ import Sources from './Sources.svelte';
 import Voices from './Voices.svelte';
 import Mixer from './Mixer.svelte';
 import Explore from './Explore.svelte';
-import Train from './Train.svelte';
 import Renders from './Renders.svelte';
 let status = $state<api.ModelStatus | null>(null);
 let message = $state('');
 let tab = $state('vlSources');
-const tabs = ['vlSources', 'vlVoices', 'vlMixer', 'vlExplore', 'vlRenders', 'vlTrain'] as const;
+const tabs = ['vlSources', 'vlVoices', 'vlMixer', 'vlExplore', 'vlRenders'] as const;
 async function load() { try { status = await api.vl_status(); message = ''; } catch (e) { message = errorText(e); } }
 onMount(() => { void load(); });
 </script>
@@ -29,7 +28,7 @@ onMount(() => { void load(); });
  const buttons = e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]'); buttons?.[next]?.focus();
 }}>{ru[id]}{#if id === 'vlExplore'} <span class="experimental">{ru.vlExperimental}</span>{/if}</button>{/each}</div>
 <div id="voice-panel" role="tabpanel" aria-labelledby={`voice-tab-${tab}`} tabindex="0">
-{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlExplore'}<Explore />{:else if tab === 'vlTrain'}<Train />{:else}<Renders />{/if}</div>
+{#if tab === 'vlSources'}<Sources />{:else if tab === 'vlVoices'}<Voices />{:else if tab === 'vlMixer'}<Mixer />{:else if tab === 'vlExplore'}<Explore />{:else}<Renders />{/if}</div>
 {/if}{/if}</section>
 
 <style>

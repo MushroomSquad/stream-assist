@@ -37,39 +37,9 @@ const MIGRATIONS: &[&str] = &[
         status TEXT NOT NULL, step INTEGER DEFAULT 0, total INTEGER, best_loss REAL,
         history_json TEXT DEFAULT '[]', error TEXT, created_at INTEGER, updated_at INTEGER
     );",
+    // Training was removed; the table is dropped, trained profiles stay.
+    "DROP TABLE IF EXISTS training_runs;",
 ];
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TrainParams {
-    pub preset: String,
-    pub total_steps: u32,
-    pub lr: f64,
-    pub save_every: u32,
-    pub seed: u64,
-    pub threshold: f64,
-}
-
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct TrainRun {
-    pub id: i64,
-    pub source_id: Option<i64>,
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub lang: String,
-    pub params: TrainParams,
-    pub status: String,
-    pub step: i64,
-    pub total: i64,
-    pub best_loss: Option<f64>,
-    pub history: Vec<[f64; 3]>,
-    pub error: Option<String>,
-    #[serde(skip_deserializing)]
-    pub lr: Option<f64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
 
 type Result<T> = std::result::Result<T, VlError>;
 
@@ -134,7 +104,6 @@ impl Store {
             "profiles",
             "renders",
             "models",
-            "training",
             "tmp",
         ] {
             fs::create_dir_all(root.join(sub))?;
@@ -160,111 +129,10 @@ impl Store {
         }
         tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
         tx.commit()?;
-        conn.execute(
-            "UPDATE training_runs SET status='interrupted' WHERE status='running'",
-            [],
-        )?;
         Ok(Store {
             conn,
             root: root.to_path_buf(),
         })
-    }
-
-    pub fn create_run(
-        &self,
-        source_id: Option<i64>,
-        start_ms: i64,
-        end_ms: i64,
-        lang: &str,
-        params: &TrainParams,
-    ) -> Result<TrainRun> {
-        let timestamp = now();
-        self.conn.execute(
-            "INSERT INTO training_runs (source_id,start_ms,end_ms,lang,params_json,status,total,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,'running',?6,?7,?7)",
-            params![source_id,start_ms,end_ms,lang,serde_json::to_string(params)?,params.total_steps,timestamp],
-        )?;
-        self.run(self.conn.last_insert_rowid())
-    }
-
-    pub fn run(&self, id: i64) -> Result<TrainRun> {
-        self.conn
-            .query_row(
-                "SELECT * FROM training_runs WHERE id=?1",
-                [id],
-                train_run_row,
-            )
-            .optional()?
-            .ok_or_else(|| err("NOT_FOUND"))
-    }
-
-    pub fn runs(&self) -> Result<Vec<TrainRun>> {
-        Ok(self
-            .conn
-            .prepare("SELECT * FROM training_runs ORDER BY created_at DESC, id DESC")?
-            .query_map([], train_run_row)?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn set_run_status(&self, id: i64, status: &str, error: Option<&str>) -> Result<()> {
-        changed(self.conn.execute(
-            "UPDATE training_runs SET status=?2,error=?3,updated_at=?4 WHERE id=?1",
-            params![id, status, error, now()],
-        )?)
-    }
-
-    pub fn set_run_step(&self, id: i64, step: i64) -> Result<()> {
-        changed(self.conn.execute(
-            "UPDATE training_runs SET step=?2,updated_at=?3 WHERE id=?1",
-            params![id, step, now()],
-        )?)
-    }
-
-    pub fn add_run_point(&self, id: i64, step: i64, loss: f64, best: f64) -> Result<()> {
-        if !loss.is_finite() || !best.is_finite() {
-            return Ok(());
-        }
-        let mut history = self.run(id)?.history;
-        history.push([step as f64, loss, best]);
-        changed(self.conn.execute(
-            "UPDATE training_runs SET history_json=?2,updated_at=?3 WHERE id=?1",
-            params![id, serde_json::to_string(&history)?, now()],
-        )?)
-    }
-
-    pub fn truncate_run_history(&self, id: i64, max_step: i64) -> Result<()> {
-        let mut history = self.run(id)?.history;
-        history.retain(|point| point[0] <= max_step as f64);
-        changed(self.conn.execute(
-            "UPDATE training_runs SET history_json=?2,updated_at=?3 WHERE id=?1",
-            params![id, serde_json::to_string(&history)?, now()],
-        )?)
-    }
-
-    pub fn set_run_best(&self, id: i64, best: f64) -> Result<()> {
-        if !best.is_finite() {
-            return Ok(());
-        }
-        changed(self.conn.execute(
-            "UPDATE training_runs SET best_loss=?2,updated_at=?3 WHERE id=?1",
-            params![id, best, now()],
-        )?)
-    }
-
-    pub fn delete_run(&self, id: i64) -> Result<()> {
-        // Row first: a failed DELETE must not leave a run without its state.pt.
-        changed(
-            self.conn
-                .execute("DELETE FROM training_runs WHERE id=?1", [id])?,
-        )?;
-        match fs::remove_dir_all(self.run_dir(id)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn run_dir(&self, id: i64) -> PathBuf {
-        self.root.join(format!("training/{id}"))
     }
 
     pub fn root(&self) -> &Path {
@@ -543,26 +411,6 @@ fn optional_json_column<T: serde::de::DeserializeOwned>(
     .transpose()
 }
 
-fn train_run_row(row: &Row<'_>) -> rusqlite::Result<TrainRun> {
-    Ok(TrainRun {
-        id: row.get("id")?,
-        source_id: row.get("source_id")?,
-        start_ms: row.get("start_ms")?,
-        end_ms: row.get("end_ms")?,
-        lang: row.get("lang")?,
-        params: json_column(row, "params_json")?,
-        status: row.get("status")?,
-        step: row.get("step")?,
-        total: row.get("total")?,
-        best_loss: row.get("best_loss")?,
-        history: json_column(row, "history_json")?,
-        error: row.get("error")?,
-        lr: None,
-        created_at: row.get("created_at")?,
-        updated_at: row.get("updated_at")?,
-    })
-}
-
 fn source_row(row: &Row<'_>) -> rusqlite::Result<Source> {
     Ok(Source {
         id: row.get("id")?,
@@ -615,17 +463,6 @@ mod tests {
     use ndarray::Array3;
     use supertonic3_tts::Style;
     use tempfile::tempdir;
-
-    fn train_params() -> TrainParams {
-        TrainParams {
-            preset: "fast".into(),
-            total_steps: 1000,
-            lr: 2e-4,
-            save_every: 500,
-            seed: 42,
-            threshold: 0.24,
-        }
-    }
 
     #[test]
     fn migration_from_v1_keeps_data() {
@@ -682,12 +519,20 @@ mod tests {
         assert_eq!(fs::read(s.source_work_path(source.id)).unwrap(), b"source");
         assert_eq!(s.render(render.id).unwrap().profile_id, Some(profile.id));
         assert_eq!(fs::read(s.render_path(render.id)).unwrap(), b"render");
-        assert!(s.runs().unwrap().is_empty());
+        let training: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='training_runs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(training, 0);
         assert_eq!(
             s.conn
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            2
+            MIGRATIONS.len() as i64
         );
     }
 
@@ -701,8 +546,6 @@ mod tests {
                 .unwrap(),
             MIGRATIONS.len() as i64
         );
-        assert!(s.root().join("training").is_dir());
-        assert!(s.runs().unwrap().is_empty());
     }
 
     #[test]
@@ -716,92 +559,6 @@ mod tests {
                 .unwrap(),
             999
         );
-    }
-
-    #[test]
-    fn startup_marks_running_interrupted() {
-        let dir = tempdir().unwrap();
-        let s = Store::open(dir.path()).unwrap();
-        let a = s.create_run(None, 0, 5000, "ru", &train_params()).unwrap();
-        let b = s.create_run(None, 0, 5000, "en", &train_params()).unwrap();
-        s.set_run_status(b.id, "failed", Some("GPU_OUT_OF_MEMORY"))
-            .unwrap();
-        drop(s);
-        let s = Store::open(dir.path()).unwrap();
-        assert_eq!(s.run(a.id).unwrap().status, "interrupted");
-        assert_eq!(s.run(b.id).unwrap().status, "failed");
-        assert_eq!(
-            s.run(b.id).unwrap().error.as_deref(),
-            Some("GPU_OUT_OF_MEMORY")
-        );
-        s.set_run_status(b.id, "running", None).unwrap();
-        assert!(s.run(b.id).unwrap().error.is_none());
-    }
-
-    #[test]
-    fn history_points_and_truncate() {
-        let dir = tempdir().unwrap();
-        let s = Store::open(dir.path()).unwrap();
-        let r = s
-            .create_run(None, 100, 5100, "ru", &train_params())
-            .unwrap();
-        assert_eq!(r.params, train_params());
-        assert_eq!(
-            (r.start_ms, r.end_ms, r.total, r.step),
-            (100, 5100, 1000, 0)
-        );
-        assert_eq!(r.lang, "ru");
-        assert_eq!(r.status, "running");
-        assert!(r.lr.is_none());
-        s.add_run_point(r.id, 8, 0.8, 0.7).unwrap();
-        s.add_run_point(r.id, 16, 0.6, 0.5).unwrap();
-        for (loss, best) in [
-            (f64::NAN, 0.1),
-            (0.1, f64::INFINITY),
-            (f64::NEG_INFINITY, 0.1),
-        ] {
-            s.add_run_point(r.id, 24, loss, best).unwrap();
-        }
-        assert_eq!(
-            s.run(r.id).unwrap().history,
-            vec![[8., 0.8, 0.7], [16., 0.6, 0.5]]
-        );
-        s.truncate_run_history(r.id, 8).unwrap();
-        s.set_run_step(r.id, 8).unwrap();
-        s.set_run_best(r.id, 0.7).unwrap();
-        let r = s.run(r.id).unwrap();
-        assert_eq!(r.history, vec![[8., 0.8, 0.7]]);
-        assert_eq!(r.step, 8);
-        assert_eq!(r.best_loss, Some(0.7));
-        assert!(r.updated_at >= r.created_at);
-        assert_eq!(s.run(999).unwrap_err().code(), "NOT_FOUND");
-    }
-
-    #[test]
-    fn delete_run_keeps_profiles() {
-        let dir = tempdir().unwrap();
-        let s = Store::open(dir.path()).unwrap();
-        let source = s.add_source("a", "wav", "A", 5000, true, &[]).unwrap();
-        let r = s
-            .create_run(Some(source.id), 0, 5000, "ru", &train_params())
-            .unwrap();
-        let p = s
-            .put_profile(
-                &style(),
-                "Checkpoint",
-                "train",
-                None,
-                Some(serde_json::json!({"runId":r.id})),
-            )
-            .unwrap();
-        fs::create_dir_all(s.run_dir(r.id)).unwrap();
-        fs::write(s.run_dir(r.id).join("state.pt"), b"state").unwrap();
-        s.rollback_source(source.id).unwrap();
-        assert_eq!(s.run(r.id).unwrap().source_id, None);
-        s.delete_run(r.id).unwrap();
-        assert!(!s.run_dir(r.id).exists());
-        assert_eq!(s.run(r.id).unwrap_err().code(), "NOT_FOUND");
-        assert_eq!(s.load_style(p.id).unwrap().ttl, style().ttl);
     }
 
     fn style() -> Style {

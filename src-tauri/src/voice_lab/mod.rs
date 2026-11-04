@@ -7,8 +7,6 @@ pub mod project;
 pub mod runner;
 pub mod store;
 pub mod style;
-pub mod train_runner;
-pub mod trainer;
 pub mod worker;
 
 #[derive(Debug, thiserror::Error)]
@@ -60,10 +58,7 @@ pub struct VoiceLab {
     pub root: PathBuf,
     pub store: Arc<std::sync::Mutex<Store>>,
     pub runner: Arc<Runner>,
-    pub train: Arc<train_runner::TrainRunner>,
-    pub train_install: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub gpu_install: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    pub torch_cache: std::sync::Mutex<Option<Option<String>>>,
     pub installing: tokio::sync::Mutex<()>,
 }
 
@@ -80,18 +75,9 @@ pub fn init(app: &tauri::App) {
         if models::installed(&root) {
             let _ = models::register_builtins(&store, &root);
         }
-        let train = Arc::new(train_runner::TrainRunner::new(
-            trainer::venv_python(&root),
-            trainer::trainer_dir(&root).join("adapter/train_job.py"),
-            vec![],
-            std::time::Duration::from_secs(30),
-        ));
         Ok(VoiceLab {
-            train,
-            train_install: tokio::sync::Mutex::new(None),
             gpu_install: tokio::sync::Mutex::new(None),
             gpu_gate: std::sync::Mutex::new(()),
-            torch_cache: std::sync::Mutex::new(None),
             root,
             store: Arc::new(std::sync::Mutex::new(store)),
             runner: Arc::new(Runner::new(std::env::current_exe()?, vec![])),

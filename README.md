@@ -20,7 +20,7 @@
   отдельным аудиоисточником в OBS.
 - **Виджет для OBS.** Текущий трек и очередь — встроенные темы или свои из zip.
 - **Voice Lab.** Локальное клонирование и микширование голосов на Supertonic 3,
-  клонирование и дообучение на GPU (Linux x86_64 + NVIDIA).
+  клонирование на GPU (Linux x86_64 + NVIDIA).
 - **Честные баллы.** Если трек не сыграл или заказ отклонён — баллы возвращаются.
 
 ![Раздел «Правила»](docs/images/rules.png)
@@ -53,7 +53,7 @@
 ## Документация
 
 - [Руководство стримера](docs/user-guide.md) — настройка, работа на стриме, правила, озвучка, частые проблемы.
-- [Voice Lab](docs/voice-lab.md) — модель, клонирование, обучение, микшер, экспорт.
+- [Voice Lab](docs/voice-lab.md) — модель, клонирование, микшер, экспорт.
 - [Темы виджета](docs/themes.md) — встроенные темы и как сделать свою.
 - [Архитектура](docs/architecture.md) — устройство, инварианты, как добавить вид триггера или действие.
 - [Изменения](CHANGELOG.md)
@@ -76,7 +76,6 @@ sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchel
 зависимость `ort` скачивает ONNX Runtime. CUDA и Python для базовых функций Voice Lab
 не нужны; GPU-клон требует драйвер NVIDIA 580+, CUDA 13, cuDNN 9
 и отдельный GPU-пакет (≈230 МБ) из «Записей». Подробнее — [Voice Lab](docs/voice-lab.md).
-Дообучение ставит отдельный пакет (около 8 ГиБ) через uv из вкладки «Обучение».
 
 1. Зарегистрируйте приложение в [Twitch Developer Console](https://dev.twitch.tv/console/apps):
    Client Type **Public**, включён **Device Code Flow**, OAuth Redirect URL — любой
@@ -110,6 +109,6 @@ http://127.0.0.1:1420 (`?mock=errors` — с ошибками правил).
 ## Лицензия
 
 [MIT](LICENSE). Шрифты в `static/fonts` и темах виджета — SIL OFL 1.1 (лицензии рядом
-с файлами), код тренера в `src-tauri/resources/trainer/upstream` — MIT.
+с файлами).
 
 Инструкция по сбору состояния и логов: [Отладка](docs/debugging.md).

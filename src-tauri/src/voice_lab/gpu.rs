@@ -1,5 +1,5 @@
 //! Downloadable CUDA provider, kept separate from the CPU runtime.
-use super::{VlError, err, models, trainer};
+use super::{VlError, err, models};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -143,7 +143,7 @@ async fn install_from(
 ) -> Result<(), VlError> {
     let tmp = dir(root).join("tmp");
     let result = async {
-        if trainer::disk_free_mb(root).is_some_and(|mb| mb < 600) {
+        if disk_free_mb(root).is_some_and(|mb| mb < 600) {
             return Err(err("DISK_FULL"));
         }
         let archive = tmp.join("archive.tgz");
@@ -204,6 +204,88 @@ pub fn uninstall(root: &Path) -> Result<(), VlError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
     }
+}
+
+// GPU probing (nvidia-smi) and free-disk check.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInfo {
+    pub name: String,
+    pub driver: String,
+    pub vram_total_mb: u64,
+    pub vram_free_mb: u64,
+}
+
+pub fn parse_nvidia_smi(csv: &str) -> Option<GpuInfo> {
+    let fields: Vec<_> = csv.lines().next()?.split(',').map(str::trim).collect();
+    if fields.len() != 4 || fields[0].is_empty() || fields[1].is_empty() {
+        return None;
+    }
+    Some(GpuInfo {
+        name: fields[0].into(),
+        driver: fields[1].into(),
+        vram_total_mb: fields[2].parse().ok()?,
+        vram_free_mb: fields[3].parse().ok()?,
+    })
+}
+
+fn command(program: &std::ffi::OsStr) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    cmd
+}
+
+async fn output(cmd: &mut tokio::process::Command, seconds: u64) -> Option<String> {
+    let out = tokio::time::timeout(std::time::Duration::from_secs(seconds), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
+}
+
+pub(crate) fn disk_free_mb(root: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut existing = root;
+        while !existing.exists() {
+            existing = existing.parent()?;
+        }
+        let path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // statvfs initializes the supplied structure on success.
+        if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let stats = unsafe { stats.assume_init() };
+        Some((u128::from(stats.f_bavail) * u128::from(stats.f_frsize) / 1_000_000) as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        None
+    }
+}
+
+pub async fn gpu_info() -> Option<GpuInfo> {
+    output(
+        command(std::ffi::OsStr::new("nvidia-smi")).args([
+            "--query-gpu=name,driver_version,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ]),
+        10,
+    )
+    .await
+    .as_deref()
+    .and_then(parse_nvidia_smi)
 }
 
 #[cfg(test)]
@@ -375,5 +457,20 @@ mod tests {
         let (result, ()) = tokio::join!(future, cancel);
         assert_eq!(result.unwrap_err().code(), "JOB_CANCELLED");
         assert!(!dir(d.path()).join("tmp").exists());
+    }
+
+    #[test]
+    fn parse_nvidia_smi_line() {
+        let gpu = parse_nvidia_smi("NVIDIA GeForce RTX 5070 Ti, 580.95, 16303, 15800").unwrap();
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 5070 Ti");
+        assert_eq!(gpu.driver, "580.95");
+        assert_eq!((gpu.vram_total_mb, gpu.vram_free_mb), (16303, 15800));
+    }
+
+    #[test]
+    fn parse_nvidia_smi_empty() {
+        for csv in ["", "N/A", "GPU, driver, N/A, 100", "GPU, driver, 100"] {
+            assert!(parse_nvidia_smi(csv).is_none());
+        }
     }
 }

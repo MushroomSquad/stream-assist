@@ -9,7 +9,7 @@
 
 ```sh
 tail -f ~/.local/share/app.streamassist/logs/stream-assist.log
-grep -E ' (tts|vl|train) ' ~/.local/share/app.streamassist/logs/stream-assist.log
+grep -E ' (tts|vl) ' ~/.local/share/app.streamassist/logs/stream-assist.log
 ```
 
 Снимок состояния (порт указан в блоке «Отладка», замените `<port>`):
@@ -28,8 +28,6 @@ Endpoint проверяет локальный Host; запросы браузе
 
 Дополнительные логи относительно `<app_data_dir>`:
 
-- `voice-lab/trainer/install.log` — установка тренажёра;
-- `voice-lab/training/<id>/worker.log` — обучение;
 - `voice-lab/gpu/worker.log` — воркер GPU-клона (после добавления GPU-пакета).
 
 Общий лог и `/debug` не содержат секретов, URL с query,

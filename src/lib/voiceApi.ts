@@ -46,24 +46,6 @@ export const onJob = (cb: (job: JobState) => void) => isTauri() ? listen<JobStat
 export const onInstall = (cb: (p: { done: number; total: number }) => void) => isTauri() ? listen<{ done: number; total: number }>('vl-install', e => cb(e.payload)) : Promise.resolve(() => {});
 export const blobUrl = (buf: ArrayBuffer) => URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 
-export type TrainPreset = 'fast' | 'standard' | 'long';
-export interface TrainParams { preset: TrainPreset; totalSteps: number; lr: number; saveEvery: number; seed: number; threshold: number }
-export interface TrainRun { id: number; sourceId: number | null; startMs: number; endMs: number; lang: string; params: TrainParams; status: string; step: number; total: number; bestLoss: number | null; history: [number, number, number][]; error: string | null; lr: number | null; createdAt: number; updatedAt: number }
-export interface TrainStatus { installing: boolean; languages: string[]; uv: string | null; uvOk: boolean; pack: 'none' | 'ok' | 'outdated'; gpu: { name: string; driver: string; vramTotalMb: number; vramFreeMb: number } | null; torchCuda: string | null; diskFreeMb: number | null }
-export interface TrainInstallProgress { stage: string; done: number; total: number; item?: string | null }
-export const vl_train_status = (refresh = false) => call<TrainStatus>('vl_train_status', { refresh });
-export const vl_train_install = () => call<void>('vl_train_install');
-export const vl_train_install_log = () => call<string>('vl_train_install_log');
-export const vl_train_install_cancel = () => call<void>('vl_train_install_cancel');
-export const vl_train_uninstall = () => call<void>('vl_train_uninstall');
-export const vl_train_start = (sourceId: number, startMs: number, endMs: number, lang: string, preset: TrainPreset, seed: number) => call<number>('vl_train_start', { sourceId, startMs, endMs, lang, preset, seed });
-export const vl_train_resume = (runId: number) => call<void>('vl_train_resume', { runId });
-export const vl_train_stop = (runId: number) => call<void>('vl_train_stop', { runId });
-export const vl_train_kill = (runId: number) => call<void>('vl_train_kill', { runId });
-export const vl_train_runs = () => call<TrainRun[]>('vl_train_runs');
-export const vl_train_delete = (runId: number) => call<void>('vl_train_delete', { runId });
-export const onTrain = (cb: (run: TrainRun) => void) => isTauri() ? listen<TrainRun>('vl-train', e => cb(e.payload)) : Promise.resolve(() => {});
-export const onTrainInstall = (cb: (progress: TrainInstallProgress) => void) => isTauri() ? listen<TrainInstallProgress>('vl-train-install', e => cb(e.payload)) : Promise.resolve(() => {});
 
 export type Explore = { mode: 'interp'; a: number; b: number; points: number } | { mode: 'random'; ids: number[]; k: number; seed: number; dp: Exclude<DpStrategy, 'select'> };
 export interface RefRegion { sourceId: number; startMs: number; endMs: number }

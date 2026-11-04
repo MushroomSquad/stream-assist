@@ -51,9 +51,7 @@ export async function mockCall<T>(name: string, args?: Record<string, unknown>):
     case 'vl_profiles': result = ['Анна', 'Михаил', 'Рассказчик'].map((name, i): Profile => ({ id: i + 1, name, tags: ['ru'], styleSha256: `mock-${i}`, origin: i === 2 ? 'clone' : 'builtin', recipe: null, meta: {}, createdAt: 1793700000000 })); break;
     case 'vl_sources': result = ['Голос у микрофона', 'Чтение рассказа'].map((name, i): Source => ({ id: i + 1, name, durationMs: 18000 + i * 4000, consent: true, createdAt: 1793700000000 })); break;
     case 'vl_renders': result = ['Привет! Это проверка русского синтеза.', 'Добро пожаловать на стрим.', 'Спасибо за поддержку!'].map((text, i): Render => ({ id: i + 1, profileId: i + 1, recipe: null, text, lang: 'ru', speed: 1, quality: 5, durationMs: 3200, wallMs: 1800, favorite: i === 0, createdAt: 1793700000000 })); break;
-    case 'vl_jobs': case 'vl_train_runs': result = []; break;
-    case 'vl_train_install_log': result = ''; break;
-    case 'vl_train_status': result = { installing: false, languages: ['ru', 'en'], uv: null, uvOk: false, pack: 'none', gpu: null, torchCuda: null, diskFreeMb: 64000 }; break;
+    case 'vl_jobs': result = []; break;
     case 'vl_peaks': result = Array.from({ length: 120 }, (_, i) => 0.15 + Math.abs(Math.sin(i * 1.7)) * 0.65); break;
   }
   return structuredClone(result) as T;
