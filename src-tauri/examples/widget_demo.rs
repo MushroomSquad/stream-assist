@@ -67,9 +67,57 @@ async fn main() -> anyhow::Result<()> {
     );
     // PROGRESS=<ms> freezes the bar for deterministic screenshots.
     let frozen: Option<u64> = std::env::var("PROGRESS").ok().and_then(|v| v.parse().ok());
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    let cycle_demo = std::env::var("DEMO").is_ok_and(|value| value == "cycle");
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(if cycle_demo {
+        2500
+    } else {
+        1000
+    }));
+    let mut tick = 0_u64;
+    let mut next_id = 7;
+    let titles = [
+        ("Lil Jon", "Get Low"),
+        ("Chingy", "I Do"),
+        ("Xzibit", "Hey Now"),
+        ("The Doors", "Riders on the Storm"),
+        ("Snoop Dogg", "Who Am I"),
+    ];
     loop {
-        tokio::select! {_=tokio::signal::ctrl_c()=>break,_=channels.yt_rx.recv()=>{},_=channels.oauth_rx.recv()=>{},_=interval.tick()=>{state.progress_ms=frozen.unwrap_or((state.progress_ms+1000)%180_000);tx.send_replace(state.clone());let _=channels.out_tx.send(WsOut::State(state.clone()));}}
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = channels.yt_rx.recv() => {},
+            _ = channels.oauth_rx.recv() => {},
+            _ = interval.tick() => {
+                if cycle_demo {
+                    let cycle = tick / 3 + 1;
+                    if tick.is_multiple_of(3) {
+                        let mut now = state.queue.remove(0);
+                        now.started = true;
+                        state.now = Some(now);
+                        state.progress_ms = 0;
+                        let additions = (cycle % 3) as usize;
+                        let additions = additions.max(2_usize.saturating_sub(state.queue.len()));
+                        for _ in 0..additions {
+                            if state.queue.len() == 7 {
+                                break;
+                            }
+                            let (artist, title) = titles[(next_id as usize - 7) % titles.len()];
+                            state.queue.push(item(next_id, artist, title, "demo_listener"));
+                            next_id += 1;
+                        }
+                        state.mode = if cycle.is_multiple_of(4) { "Paused" } else { "Playing" }.into();
+                    } else if state.mode == "Playing" {
+                        state.progress_ms += 2500;
+                    }
+                    state.visible = !(cycle.is_multiple_of(5) && tick.is_multiple_of(3));
+                    tick += 1;
+                } else {
+                    state.progress_ms = frozen.unwrap_or((state.progress_ms + 1000) % 180_000);
+                }
+                tx.send_replace(state.clone());
+                let _ = channels.out_tx.send(WsOut::State(state.clone()));
+            }
+        }
     }
     Ok(())
 }

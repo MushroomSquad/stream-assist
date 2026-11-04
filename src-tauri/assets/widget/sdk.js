@@ -6,7 +6,95 @@
   document.documentElement.dataset.part = part;
   document.documentElement.style.zoom = String(scale);
   const listeners = new Map();
-  window.StreamAssist = { on(name, fn) {
+  const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hiding = new WeakMap(), progresses = new WeakMap();
+  function replay(element, className) {
+    if (!element) return;
+    element.classList.remove(className);
+    void element.offsetWidth;
+    element.classList.add(className);
+  }
+  function show(element, visible) {
+    if (visible) {
+      hiding.get(element)?.();
+      element.classList.remove('sa-leaving');
+      element.hidden = false;
+      return;
+    }
+    if (element.hidden || hiding.has(element)) return;
+    if (reduced()) { element.hidden = true; return; }
+    let timer;
+    const cancel = () => {
+      clearTimeout(timer);
+      element.removeEventListener('animationend', end);
+      hiding.delete(element);
+    };
+    const finish = () => {
+      if (hiding.get(element) !== cancel) return;
+      cancel();
+      element.hidden = true;
+      element.classList.remove('sa-leaving');
+    };
+    const end = event => { if (event.target === element) finish(); };
+    hiding.set(element, cancel);
+    element.classList.add('sa-leaving');
+    if (getComputedStyle(element).animationName === 'none') { finish(); return; }
+    element.addEventListener('animationend', end);
+    timer = setTimeout(finish, 400);
+  }
+  function progress(element, percent, trackId) {
+    const p = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
+    const previous = progresses.get(element);
+    if (!previous || previous.trackId !== trackId || p < previous.percent) {
+      element.style.transition = 'none';
+      element.style.width = p + '%';
+      void element.offsetWidth;
+      element.style.transition = '';
+    } else element.style.width = p + '%';
+    progresses.set(element, { percent: p, trackId });
+  }
+  function list(container, items, keyOf, build) {
+    const old = new Map(Array.from(container.children, node => [node.dataset.key, { node, top: node.offsetTop }]));
+    const nodes = items.map((item, index) => {
+      const fresh = build(item, index), key = String(keyOf(item));
+      fresh.dataset.key = key;
+      fresh.style.setProperty('--i', Math.min(index, 4));
+      const previous = old.get(key);
+      if (previous) {
+        const node = previous.node, entering = node.classList.contains('sa-enter');
+        if (node.textContent !== fresh.textContent) node.replaceChildren(...fresh.childNodes);
+        node.className = fresh.className + (entering ? ' sa-enter' : '');
+        node.style.setProperty('--i', Math.min(index, 4));
+        return node;
+      }
+      if (!reduced()) {
+        fresh.classList.add('sa-enter');
+        let timer;
+        const finish = () => {
+          clearTimeout(timer);
+          fresh.removeEventListener('animationend', end);
+          fresh.classList.remove('sa-enter');
+        };
+        const end = event => { if (event.target === fresh) finish(); };
+        fresh.addEventListener('animationend', end);
+        timer = setTimeout(finish, 1500);
+      }
+      return fresh;
+    });
+    const retained = new Set(nodes);
+    for (const { node } of old.values()) if (!retained.has(node)) node.remove();
+    nodes.forEach((node, index) => {
+      if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+    });
+    for (const node of nodes) {
+      const previous = old.get(node.dataset.key);
+      if (!previous || node.classList.contains('sa-enter') || reduced() || typeof node.animate !== 'function') continue;
+      const dy = previous.top - node.offsetTop;
+      if (dy) node.animate([{ translate: '0 ' + dy + 'px' }, { translate: '0 0' }],
+        { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' });
+    }
+  }
+  window.StreamAssist = { replay, show, progress, list, on(name, fn) {
     if (!['state', 'nowPlaying', 'queue', 'progress', 'hidden'].includes(name)) return;
     if (!listeners.has(name)) listeners.set(name, []);
     listeners.get(name).push(fn);
@@ -57,6 +145,7 @@
       if (message === 'Reload') { location.reload(); return; }
       if (message.State) {
         const state = message.State;
+        document.documentElement.dataset.mode = String(state.mode);
         emit('state', state); emit('nowPlaying', state.now); emit('queue', state.queue);
         emit('progress', state.progress_ms); emit('hidden', !state.visible);
       } else if (role === 'player') {
