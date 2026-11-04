@@ -836,13 +836,13 @@ mod tests {
         let (d, _, _) = setup();
         assert_eq!(train_install_log(d.path()).await.unwrap(), "");
         std::fs::create_dir_all(d.path().join("trainer")).unwrap();
-        let text = "я".repeat(5121) + "конец";
+        // Odd length puts the 8 KiB cut inside a two-byte character.
+        let text = "я".repeat(5121) + "конец!";
         std::fs::write(d.path().join("trainer/install.log"), &text).unwrap();
         let tail = train_install_log(d.path()).await.unwrap();
-        assert!(tail.len() <= 8192);
-        assert!(tail.len() >= 8190);
+        assert_eq!(tail.len(), 8191);
         assert!(text.ends_with(&tail));
-        assert!(tail.ends_with("конец"));
+        assert!(tail.ends_with("конец!"));
     }
     #[test]
     fn tts_synth_is_send() {
@@ -1685,7 +1685,7 @@ async fn train_install_log(root: &Path) -> Result<String, String> {
         .iter()
         .position(|b| b & 0xc0 != 0x80)
         .unwrap_or(bytes.len());
-    String::from_utf8(bytes[start..].to_vec()).map_err(|_| "TRAINER_INSTALL_FAILED".into())
+    Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
 }
 
 #[tauri::command]

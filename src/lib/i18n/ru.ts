@@ -50,7 +50,7 @@ export const ru = {
   vlTrainPack: 'Пакет обучения', vlTrainPackState: { none: 'Не установлен', ok: 'Установлен', outdated: 'Требуется обновление' },
   vlTrainUv: 'Версия uv', vlTrainUvOld: 'uv отсутствует или устарел', vlTrainGpu: 'GPU', vlTrainDriver: 'Драйвер',
   vlTrainVram: 'VRAM свободно / всего, МБ', vlTrainCuda: 'CUDA torch', vlTrainDisk: 'Свободно на диске, МБ', vlUnknown: 'Нет данных',
-  vlTrainInstallNote: 'Установка прерывается при закрытии программы; повтор докачает уже скачанное',
+  vlTrainInstallNote: 'Установка прерывается при закрытии программы; при повторе уже скачанные пакеты берутся из кеша',
   vlTrainMegabytes: 'МБ',
   vlTrainStages: { packages: 'Скачивание пакетов', venv: 'Python и зависимости', weights: 'Веса WavLM' }, vlTrainRegion: 'Регион 3–30 с чистой речи из «Записей»',
   vlTrainLong: 'Долго — 6000 шагов', vlTrainFast: 'Быстро — 1000 шагов', vlTrainStandard: 'Стандарт — 3000 шагов',

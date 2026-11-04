@@ -45,7 +45,7 @@ async function install() {
   installing = true; progress = null; installLog = '';
   try { await api.vl_train_install(); }
   catch (e) {
-    installLog = await api.vl_train_install_log().then(log => log.trimEnd().split('\n').slice(-20).join('\n')).catch(() => '');
+    if (String(e) === 'TRAINER_INSTALL_FAILED') installLog = await api.vl_train_install_log().then(log => log.trimEnd().split('\n').slice(-20).join('\n')).catch(() => '');
     throw e;
   } finally { installing = false; status = await api.vl_train_status(true); }
 }
@@ -75,7 +75,7 @@ onMount(() => {
 {#if status}
 <div class="card">
 <h3>{ru.vlTrainPack}</h3>
-<p>{ru.vlTrainInstallNote}</p>
+{#if installing || status?.pack !== 'ok'}<p>{ru.vlTrainInstallNote}</p>{/if}
 {#if installLog}<pre>{installLog}</pre>{/if}
 <dl>
 <dt>{ru.vlTrainUv}</dt><dd>{status.uv ?? ru.vlUnknown}{#if !status.uvOk}{' · '}{ru.vlTrainUvOld}{/if}</dd>
