@@ -322,7 +322,11 @@ async fn real_gpu_clone_fast() -> anyhow::Result<()> {
             std::env::var_os("VL_GPU_TEST_STYLE").unwrap(),
         ))?;
         let out = PathBuf::from(std::env::var_os("VL_GPU_TEST_OUT").unwrap());
-        for (device, name) in [(Device::Cpu, "cpu.wav"), (Device::Gpu, "gpu.wav")] {
+        for (device, name) in [
+            (Device::Cpu, "cpu.wav"),
+            (Device::Cpu, "cpu2.wav"),
+            (Device::Gpu, "gpu.wav"),
+        ] {
             let mut tts = load_text_to_speech_on(model.join("onnx").to_str().unwrap(), device)?;
             let (samples, _) = tts.call(
                 "Hello, this is a voice compatibility test.",
@@ -400,12 +404,19 @@ async fn real_gpu_clone_fast() -> anyhow::Result<()> {
     let mut encoder = SpeakerEncoder::on_device(model.join("speaker_encoder.onnx"), Device::Cpu)?;
     let mut embeddings = Vec::new();
     let mut lengths = Vec::new();
-    for name in ["cpu.wav", "gpu.wav"] {
+    for name in ["cpu.wav", "cpu2.wav", "gpu.wav"] {
         let wav = features::load_wav(data.path().join(name))?;
         lengths.push(wav.samples.len());
         embeddings.push(encoder.embed(&wav.samples, wav.sample_rate)?);
     }
-    assert!(cosine(&embeddings[0], &embeddings[1]) >= 0.97);
-    assert!((lengths[0] as f64 / lengths[1] as f64 - 1.0).abs() <= 0.05);
+    // Synthesis samples noise, so two CPU runs differ too (~0.90 measured); GPU must stay within that spread.
+    let cpu_cpu = cosine(&embeddings[0], &embeddings[1]);
+    let cpu_gpu = cosine(&embeddings[0], &embeddings[2]);
+    println!("similarity cpu-cpu {cpu_cpu:.4} cpu-gpu {cpu_gpu:.4}");
+    assert!(
+        cpu_gpu >= cpu_cpu - 0.05,
+        "cpu-cpu {cpu_cpu} cpu-gpu {cpu_gpu}"
+    );
+    assert!((lengths[0] as f64 / lengths[2] as f64 - 1.0).abs() <= 0.05);
     Ok(())
 }

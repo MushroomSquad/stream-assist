@@ -741,8 +741,10 @@ pub(crate) fn clone(
         if !super::gpu::SUPPORTED {
             return Err(err("GPU_UNSUPPORTED"));
         }
-        if super::gpu::pack(&lab.root) != super::gpu::Pack::Ok {
-            return Err(err("GPU_PACK_MISSING"));
+        match super::gpu::pack(&lab.root) {
+            super::gpu::Pack::Ok => {}
+            super::gpu::Pack::None => return Err(err("GPU_PACK_MISSING")),
+            super::gpu::Pack::Broken => return Err(err("GPU_PACK_INVALID")),
         }
     }
     let _gate = if device == CloneDevice::Gpu {
