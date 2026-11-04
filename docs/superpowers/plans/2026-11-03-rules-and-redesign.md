@@ -259,10 +259,10 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 
 **Files:** Create `src/app.css` (токены `:root`, `@font-face` на `static/fonts`, сброс, базовые `button/input/select/textarea/label/.card/.muted` и т. п.); Create `src/routes/+layout.svelte` (`import '../app.css'` + `{@render children()}`; `+layout.ts` не трогать), `src/routes/+page.svelte` (навигация из 5 вкладок; `rewards`/`limits`/`tts` убираются из `tabs`, `rules` добавляется — временно рендерит `Rewards`/`Limits`/`Tts` друг под другом до Task 9), `src/lib/i18n/ru.ts`
 
-- [ ] **Step 1:** Токены и база ровно по направлению; цвета/отступы/радиусы — только через переменные.
-- [ ] **Step 2:** `npm run check` → 0; `grep -rnE '(color|background|border|fill|stroke)[^;]*#[0-9a-fA-F]{3,8}' src/lib src/routes` — нет совпадений, кроме подложки превью в `Widget.svelte`.
-- [ ] **Step 3:** Скриншоты оболочки → ревью.
-- [ ] **Step 4:** Commit `feat(panel): design tokens, fonts and shell`.
+- [x] **Step 1:** Токены и база ровно по направлению; цвета/отступы/радиусы — только через переменные.
+- [x] **Step 2:** `npm run check` → 0; `grep -rnE '(color|background|border|fill|stroke)[^;]*#[0-9a-fA-F]{3,8}' src/lib src/routes` — нет совпадений, кроме подложки превью в `Widget.svelte`.
+- [x] **Step 3:** Скриншоты оболочки → ревью.
+- [x] **Step 4:** Commit `feat(panel): design tokens, fonts and shell`.
 
 ### Task 9: экран «Правила»
 
@@ -279,34 +279,34 @@ export const onRuleErrors = (cb: (e: Record<string, string>) => void) => isTauri
 - Подписку на `rule_errors` вынести в один помощник `watchRuleErrors(cb): () => void` в `api.ts` (сейчас продублирована в `Rewards.svelte` и `Tts.svelte`, которые уходят). Текст ошибки из ядра показывать как есть (он уже по-русски), без префикса «Не удалось выполнить действие».
 - Подсказки дублей названия/метки и пределов на клиенте (HTML-атрибуты + проверка перед `save`); `settings_invalid` от ядра → общий текст ошибки.
 
-- [ ] **Step 1:** Реализовать компоненты.
-- [ ] **Step 2:** `npm run check` → 0.
-- [ ] **Step 3:** Сценарий в браузере с моками (оркестратор): добавить метку к озвучке, изменить цену награды, выключить действие, удалить триггер (подтверждение), дубль метки — подсказка, `?mock=errors` — ошибка у строки; добавить триггер и сохранить дважды — id стабилен, в `retiring` ничего не появилось; скриншоты → ревью.
-- [ ] **Step 4:** Commit `feat(panel): rules screen`.
+- [x] **Step 1:** Реализовать компоненты.
+- [x] **Step 2:** `npm run check` → 0.
+- [x] **Step 3:** Сценарий в браузере с моками (оркестратор): добавить метку к озвучке, изменить цену награды, выключить действие, удалить триггер (подтверждение), дубль метки — подсказка, `?mock=errors` — ошибка у строки; добавить триггер и сохранить дважды — id стабилен, в `retiring` ничего не появилось; скриншоты → ревью.
+- [x] **Step 4:** Commit `feat(panel): rules screen`.
 
 ### Task 10: «Сейчас», «Виджет», «Подключения»
 
 **Files:** Modify `src/lib/views/NowQueue.svelte`, `src/lib/views/Widget.svelte`, `src/lib/views/Connections.svelte`, `src/lib/i18n/ru.ts` (только тексты по проходу copy)
 
-- [ ] **Step 1:** Проходы `unslop` (spacing → … → motion) в рамках направления; поведение и вызовы API не меняются.
-- [ ] **Step 2:** `npm run check` → 0; скриншоты (моки) → ревью.
-- [ ] **Step 3:** Commit `feat(panel): redesign now, widget, connections`.
+- [x] **Step 1:** Проходы `unslop` (spacing → … → motion) в рамках направления; поведение и вызовы API не меняются.
+- [x] **Step 2:** `npm run check` → 0; скриншоты (моки) → ревью.
+- [x] **Step 3:** Commit `feat(panel): redesign now, widget, connections`.
 
 ### Task 11: Voice Lab
 
 **Files:** Modify `src/lib/views/voice/*.svelte`, `src/lib/i18n/ru.ts`
 
-- [ ] **Step 1:** Проходы `unslop` по `VoiceLab`, `Setup`, `Sources`, `Voices`, `Mixer`, `Train`, `Renders`, `Explore`; логика, события, `canvas`/`audio` — без изменений.
-- [ ] **Step 2:** `npm run check` → 0; `node --test tests/*.mjs` → PASS; скриншоты каждой подвкладки (моки) → ревью.
-- [ ] **Step 3:** Commit `feat(panel): redesign voice lab`.
+- [x] **Step 1:** Проходы `unslop` по `VoiceLab`, `Setup`, `Sources`, `Voices`, `Mixer`, `Train`, `Renders`, `Explore`; логика, события, `canvas`/`audio` — без изменений.
+- [x] **Step 2:** `npm run check` → 0; `node --test tests/*.mjs` → PASS; скриншоты каждой подвкладки (моки) → ревью.
+- [x] **Step 3:** Commit `feat(panel): redesign voice lab`.
 
 ### Task 12: финальный проход и документация
 
 **Files:** Modify любые `src/**/*.svelte`, `src/app.css` (только находки аудита), `docs/user-guide.md`, `docs/architecture.md`, `README.md` (если упоминает старые вкладки)
 
-- [ ] **Step 1:** Повторный аудит всей панели по `references/signs.md`; исправить находки.
-- [ ] **Step 2:** Клавиатура: Tab проходит все экраны, фокус видим; у каждого поля подпись; контраст текста ≥ 4.5:1 (пары токенов).
-- [ ] **Step 3:** `docs/user-guide.md` — разделы про награды, лимиты и озвучку переписать под экран «Правила».
-- [ ] **Step 4:** `npm run check`, `node --test tests/*.mjs`, `npm run build`, `cd src-tauri && cargo test` → всё зелёное.
+- [x] **Step 1:** Повторный аудит всей панели по `references/signs.md`; исправить находки.
+- [x] **Step 2:** Клавиатура: Tab проходит все экраны, фокус видим; у каждого поля подпись; контраст текста ≥ 4.5:1 (пары токенов).
+- [x] **Step 3:** `docs/user-guide.md` — разделы про награды, лимиты и озвучку переписать под экран «Правила».
+- [x] **Step 4:** `npm run check`, `node --test tests/*.mjs`, `npm run build`, `cd src-tauri && cargo test` → всё зелёное.
 - [ ] **Step 5:** Пользователь смотрит панель в `TWITCH_CLIENT_ID=… npm run tauri dev` (реальные данные).
-- [ ] **Step 6:** Commit `feat(panel): final polish; docs: user guide for rules`.
+- [x] **Step 6:** Commit `feat(panel): final polish; docs: user guide for rules`.

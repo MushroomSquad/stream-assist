@@ -43,6 +43,7 @@ Twitch EventSub ─┐                     ┌─► Spotify Web API
 | `secrets.rs` | Keyring (сервис `stream-assist`), одна очередь записи |
 | `http.rs` | Общий reqwest-клиент: таймаут 15 с, подключение 5 с |
 | `i18n.rs` | Тексты сообщений в чат |
+| `tts/` | Озвучка: движок (`TtsMsg`, `TtsCfg`/`TtsRuntime`), очередь, фильтр текста |
 | `voice_lab/` | Локальные профили голоса, модель, аудио, микшер и воркер Supertonic 3 |
 | `app.rs`, `lib.rs` | Bootstrap Tauri, команды панели |
 
@@ -207,7 +208,7 @@ Svelte 5 (runes), обычный CSS без UI-библиотек. Оболоч�
 npm ci
 (cd src-tauri && cargo build --examples && cargo test)  # автомат, БД, клиенты (wiremock), сервер, Voice Lab, озвучка
 npm run check                     # svelte-check: 0 errors, 0 warnings
-node --test tests/*.mjs            # тесты панели и контрактов
+node --test tests/*.mjs            # тесты контракта Voice Lab (исследование)
 npm run build                     # статическая сборка панели
 TWITCH_CLIENT_ID=… npm run tauri dev
 TWITCH_CLIENT_ID=… npm run tauri build   # deb / rpm / AppImage на Linux
