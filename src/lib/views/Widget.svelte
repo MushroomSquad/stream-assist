@@ -31,6 +31,7 @@ const k = $derived(boxW ? Math.min(1, boxW / tw) : 1);
  .widget-layout { display:grid; grid-template-columns:minmax(240px, 1fr) minmax(0,2fr); gap:var(--s6); align-items:start; }
  .settings { margin:0; } label { margin:0 0 var(--s4); max-width:none; } .settings .actions { margin-bottom:0; }
  .widget-tools { border-top:1px solid var(--line); margin-top:var(--s6); padding-top:var(--s5); } .output { min-width:0; }
+ .preview:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
  .preview { background:#202020; border-radius:var(--r-row); overflow:hidden; }
  .preview iframe { display:block; border:0; border-radius:0; margin:0; max-width:none; transform-origin:0 0; }
  .sources { margin-top:var(--s6); } .source { display:flex; gap:var(--s2); align-items:flex-end; margin-bottom:var(--s4); } .source label { flex:1; min-width:0; margin:0; } .source input { width:100%; font-size:var(--type-meta); }

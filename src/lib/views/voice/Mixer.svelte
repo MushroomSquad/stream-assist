@@ -25,7 +25,7 @@ async function generate() { busy = true; try { const r = await api.vl_mix_previe
 <svelte:window onkeydown={key} />
 <div class="voice-screen">
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
-<div class="card"><section class="voices-section"><header><h3>{ru.vlVoices}</h3><div class="actions"><button disabled={!canUndo} onclick={undo}>{ru.vlUndo}</button><button disabled={!canRedo} onclick={redo}>{ru.vlRedo}</button></div></header><div class="add-row"><label>{ru.vlVoices}<select bind:value={addId}>{#each profiles.filter(p => !inputs.some(i => i.id === p.id)) as p}<option value={p.id}>{p.name}</option>{/each}</select></label>
+<div class="card"><section class="voices-section"><header><h3>{ru.vlVoices}</h3><div class="actions"><button disabled={!canUndo} onclick={undo}>{ru.vlUndo}</button><button disabled={!canRedo} onclick={redo}>{ru.vlRedo}</button></div></header><div class="add-row"><label>{ru.vlAddVoice}<select bind:value={addId}>{#each profiles.filter(p => !inputs.some(i => i.id === p.id)) as p}<option value={p.id}>{p.name}</option>{/each}</select></label>
 <button disabled={inputs.length >= 8 || !profiles.some(p => p.id === addId) || inputs.some(i => i.id === addId)} onclick={() => { inputs = [...inputs, { id: addId, weight: 50 }]; push(); addId = profiles.find(p => !inputs.some(i => i.id === p.id))?.id ?? 0; }}>{ru.vlAddVoice}</button></div>
 {#each inputs as input (input.id)}
 <div class="card"><p>{profiles.find(p => p.id === input.id)?.name}</p>
@@ -58,7 +58,7 @@ header .actions{margin:0;gap:var(--s2)}
 .voices-section + .synthesis-section{margin-top:var(--s6);padding-top:var(--s6);border-top:1px solid var(--line)}
 .synthesis-section h3{margin-bottom:var(--s4)}
 .parameter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s4)}
-.voice-screen .snapshot-row{display:flex;align-items:end;gap:var(--s2);margin-bottom:0;flex-wrap:wrap}
+.voice-screen .snapshot-row{display:flex;align-items:end;gap:var(--s2);margin-block:var(--s6) 0;flex-wrap:wrap}
 .snapshot-row label{flex:1;min-width:160px}
 input[data-weight][type=number]{width:8ch}
 input[type=range]{width:100%}

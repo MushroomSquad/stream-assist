@@ -18,7 +18,7 @@ let { trigger, active, error, edit, remove }: { trigger: Trigger; active: boolea
 .row { display: flex; align-items: center; gap: var(--s3); min-height: 44px; padding: var(--s1) var(--s3); border-radius: var(--r-row); background: var(--raised); }
 .kind { width: 120px; flex-shrink: 0; color: var(--t3); font-size: var(--type-secondary); }
 .parameters { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); overflow-wrap: anywhere; }
-.parameters.off { opacity: .5; }
+.parameters.off { color: var(--t2); }
 .title { font-weight: 500; }
 .meta { color: var(--t3); font-size: var(--type-meta); }
 button { background: transparent; border-color: transparent; color: var(--t3); padding-inline: var(--s1); }

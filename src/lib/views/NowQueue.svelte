@@ -18,7 +18,7 @@
   <div class="card deck">
     <div class="cover" aria-hidden="true"><Icon name="now" /></div>
     <div class="track">
-      {#if snapshot.now}<p class="play-state" class:live={!!snapshot.now && snapshot.mode === 'Playing'}><span class="tally" class:live={!!snapshot.now && snapshot.mode === 'Playing'}></span>{snapshot.now ? (snapshot.mode === 'Paused' ? ru.pause : snapshot.mode === 'Suspended' ? ru.queueSuspended : ru.live) : ru.nowPlaying}{#if snapshot.now.track.source} · {'Spotify' in snapshot.now.track.source ? ru.spotify : 'YouTube'}{/if}</p>{/if}
+      {#if snapshot.now}<p class="play-state" class:live={!!snapshot.now && snapshot.mode === 'Playing'}><span class="tally" class:live={!!snapshot.now && snapshot.mode === 'Playing'}></span>{snapshot.now ? (snapshot.mode === 'Paused' ? ru.pause : snapshot.mode === 'Suspended' ? ru.queueSuspended : ru.live) : ru.nowPlaying}{#if snapshot.now.track.source}{' · '}{'Spotify' in snapshot.now.track.source ? ru.spotify : 'YouTube'}{/if}</p>{/if}
       <h3>{snapshot.now ? snapshot.now.track.title : ru.empty}</h3>
       {#if snapshot.now}<p class="artist">{snapshot.now.track.artist}</p><p class="requester">{ru.requestedBy} <strong>{snapshot.now.requester}</strong></p>{/if}
       <div class="timeline" style:--played={`${played}%`}><progress aria-label={ru.nowPlaying} value={snapshot.progress_ms} max={snapshot.now?.track.duration_ms || 1}></progress><span class="ticks" aria-hidden="true"></span></div>

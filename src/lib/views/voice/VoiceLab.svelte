@@ -35,7 +35,7 @@ onMount(() => { void load(); });
 <style>
 /* Unslop by Damir Sokolovsky (@heydamir), CC BY 4.0. */
 .voice-lab { min-width: 0; }
-.experimental { font-size: var(--type-meta); color: var(--t3); font-weight: 400; }
+.experimental { margin-inline-start: var(--s1); font-size: var(--type-meta); color: var(--t3); font-weight: 400; }
 h2 { margin: 0 0 var(--s6); }
 .segments { display: flex; flex-wrap: wrap; gap: var(--s1); padding: var(--s1); margin-bottom: var(--s6); background: var(--raised); border-radius: var(--r-row); width: fit-content; max-width: 100%; }
 .segments button { border-color: transparent; background: transparent; color: var(--t2); box-shadow: none; }
