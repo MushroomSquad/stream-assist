@@ -4,7 +4,9 @@ use super::{
     models::model_dir,
     store::{Render, RenderParams, Store},
     style::{read_style_file, sha256_hex},
-    worker::{BatchItem, ClonePreset, WorkerEvent, WorkerRequest, transcript_required},
+    worker::{
+        BatchItem, CloneDevice, ClonePreset, WorkerEvent, WorkerRequest, transcript_required,
+    },
 };
 use serde::Serialize;
 use std::{
@@ -38,6 +40,7 @@ pub struct Runner {
     exe: PathBuf,
     extra_env: Vec<(String, String)>,
     next: AtomicU64,
+    gpu_job: Mutex<Option<u64>>,
     clone_slot: Mutex<Option<(u64, oneshot::Sender<()>)>>,
     synth_cancel: Mutex<Option<(u64, oneshot::Sender<()>)>>,
     synth_busy: AtomicBool,
@@ -75,6 +78,16 @@ impl<R: std::ops::Deref<Target = Runner>> Drop for JobGuard<R> {
             }));
         }
         if matches!(self.slot, Slot::Clone) {
+            let mut gpu = self
+                .runner
+                .gpu_job
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *gpu == Some(self.id) {
+                *gpu = None;
+            }
+            drop(gpu);
+
             let mut slot = self
                 .runner
                 .clone_slot
@@ -112,6 +125,7 @@ const WORKER_CODES: &[&str] = &[
     "STYLE_NOT_FINITE",
     "STYLE_TOO_LARGE",
     "WORKER_FAILED",
+    "GPU_FAILED",
     "IO_FAILED",
 ];
 fn known(code: &str) -> &'static str {
@@ -127,6 +141,7 @@ impl Runner {
             exe,
             extra_env,
             next: AtomicU64::new(1),
+            gpu_job: Mutex::new(None),
             clone_slot: Mutex::new(None),
             synth_cancel: Mutex::new(None),
             synth_busy: AtomicBool::new(false),
@@ -163,8 +178,27 @@ impl Runner {
             .cloned()
             .collect()
     }
+    pub fn gpu_clone_running(&self) -> bool {
+        self.gpu_job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
     pub async fn run_worker(
         &self,
+        req: &WorkerRequest,
+        tmp: &Path,
+        cancel: Option<oneshot::Receiver<()>>,
+        on_event: impl FnMut(WorkerEvent),
+    ) -> Result<Option<WorkerEvent>, VlError> {
+        self.run_worker_as(None, None, req, tmp, cancel, on_event)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_worker_as(
+        &self,
+        arg0: Option<&Path>,
+        stderr: Option<&Path>,
         req: &WorkerRequest,
         tmp: &Path,
         mut cancel: Option<oneshot::Receiver<()>>,
@@ -180,8 +214,17 @@ impl Runner {
             .envs(self.extra_env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(match stderr {
+                Some(path) => Stdio::from(std::fs::File::create(path)?),
+                None => Stdio::null(),
+            })
             .kill_on_drop(true);
+        #[cfg(unix)]
+        if let Some(arg0) = arg0 {
+            command.arg0(arg0);
+        }
+        #[cfg(not(unix))]
+        let _ = arg0;
         #[cfg(windows)]
         command.creation_flags(0x08000000 | 0x00004000);
         let mut child = command.spawn()?;
@@ -208,7 +251,7 @@ impl Runner {
                 if let Ok(e) = serde_json::from_slice::<WorkerEvent>(&line) {
                     match &e {
                         WorkerEvent::Done { .. } => done = Some(e.clone()),
-                        WorkerEvent::Error { code } => error = Some(known(code)),
+                        WorkerEvent::Error { code, .. } => error = Some(known(code)),
                         _ => {}
                     }
                     on_event(e);
@@ -547,6 +590,7 @@ impl Runner {
         name: String,
         preset: ClonePreset,
         seed: u64,
+        device: CloneDevice,
         emit: Emit,
     ) -> Result<u64, VlError> {
         if self
@@ -585,6 +629,7 @@ impl Runner {
             preset,
             seed,
             speaker_model,
+            device,
         };
         let (tx, rx) = oneshot::channel();
         let mut slot = self.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
@@ -595,6 +640,10 @@ impl Runner {
                 .any(|j| j.kind == "clone" && j.status == "running")
         {
             return Err(err("JOB_BUSY"));
+        }
+        if device == CloneDevice::Gpu {
+            std::fs::create_dir_all(super::gpu::dir(&root))?;
+            *self.gpu_job.lock().map_err(|_| err("IO_FAILED"))? = Some(id);
         }
         *slot = Some((id, tx));
         let mut job = JobState {
@@ -620,12 +669,57 @@ impl Runner {
         let runner = Arc::clone(self);
         tokio::spawn(async move {
             let mut guard = guard;
+            let gpu_dir = super::gpu::dir(&root);
+            let arg0 = gpu_dir.join("stream-assist");
+            let stderr = gpu_dir.join("worker.log");
+            let gpu = device == CloneDevice::Gpu;
             let result = runner
-                .run_worker(&req, &root.join("tmp"), Some(rx), |e| {
-                    job.progress = Some(e);
-                    runner.publish(job.clone(), &emit);
-                })
+                .run_worker_as(
+                    gpu.then_some(arg0.as_path()),
+                    gpu.then_some(stderr.as_path()),
+                    &req,
+                    &root.join("tmp"),
+                    Some(rx),
+                    |e| {
+                        if let WorkerEvent::Error {
+                            detail: Some(d), ..
+                        } = &e
+                        {
+                            crate::dlog!(
+                                "vl",
+                                "clone {id} gpu failed: {}",
+                                crate::diag::http_err(&anyhow::anyhow!(
+                                    d.chars().take(2000).collect::<String>()
+                                ))
+                            );
+                        }
+                        job.progress = Some(e);
+                        runner.publish(job.clone(), &emit);
+                    },
+                )
                 .await;
+            let result = result.map_err(|e| {
+                if gpu && e.code() == "WORKER_CRASHED" {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut tail = Vec::new();
+                    if let Ok(mut file) = std::fs::File::open(&stderr) {
+                        let _ = file
+                            .seek(SeekFrom::End(-2048))
+                            .or_else(|_| file.seek(SeekFrom::Start(0)));
+                        let _ = file.take(2048).read_to_end(&mut tail);
+                    }
+                    crate::dlog!(
+                        "vl",
+                        "clone {id} gpu crashed: {}",
+                        crate::diag::http_err(&anyhow::anyhow!(
+                            String::from_utf8_lossy(&tail).into_owned()
+                        ))
+                    );
+                    err("GPU_FAILED")
+                } else {
+                    e
+                }
+            });
             let result = (|| {
                 let slot = runner.clone_slot.lock().map_err(|_| err("IO_FAILED"))?;
                 if slot.is_none() {
@@ -639,7 +733,7 @@ impl Runner {
                     return Err(err("WORKER_CRASHED"));
                 };
                 let style = read_style_file(&out)?;
-                let meta = serde_json::json!({"sourceId":source_id,"startMs":start_ms,"endMs":end_ms,"lang":lang,"transcriptSha256":sha256_hex(transcript.as_bytes()),"preset":preset,"seed":seed,"loss":loss,"similarity":similarity,"engine":"supertonic3-tts 1.3.0"});
+                let meta = serde_json::json!({"sourceId":source_id,"startMs":start_ms,"endMs":end_ms,"lang":lang,"transcriptSha256":sha256_hex(transcript.as_bytes()),"preset":preset,"seed":seed,"loss":loss,"similarity":similarity,"engine":"supertonic3-tts 1.3.0","device":device});
                 store.lock().map_err(|_| err("IO_FAILED"))?.put_profile(
                     &style,
                     &name,
@@ -815,6 +909,7 @@ mod tests {
                 "Clone".into(),
                 ClonePreset::Fast,
                 42,
+                CloneDevice::Cpu,
                 Arc::new(|_| {}),
             )
         });

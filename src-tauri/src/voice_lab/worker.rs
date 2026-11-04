@@ -11,6 +11,13 @@ use supertonic3_tts::{
     probe_bank_for,
 };
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloneDevice {
+    #[default]
+    Cpu,
+    Gpu,
+}
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClonePreset {
@@ -50,6 +57,8 @@ pub enum WorkerRequest {
         preset: ClonePreset,
         seed: u64,
         speaker_model: Option<PathBuf>,
+        #[serde(default)]
+        device: CloneDevice,
     },
 }
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -80,6 +89,8 @@ pub enum WorkerEvent {
     },
     Error {
         code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 pub const RU_PROBES: &[&str] = &[
@@ -174,7 +185,9 @@ fn sanitize(mut e: WorkerEvent) -> WorkerEvent {
         WorkerEvent::Item { similarity, .. } => {
             *similarity = similarity.filter(|v| v.is_finite());
         }
-        WorkerEvent::Error { .. } => {}
+        WorkerEvent::Error { detail, .. } => {
+            *detail = detail.take().map(|d| d.chars().take(2000).collect());
+        }
     }
     e
 }
@@ -185,15 +198,33 @@ fn emit(e: WorkerEvent) {
     let _ = writeln!(out);
     let _ = out.flush();
 }
-fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
+fn execute(req: WorkerRequest) -> Result<WorkerEvent, (VlError, Option<String>)> {
+    let gpu = matches!(
+        &req,
+        WorkerRequest::Clone {
+            device: CloneDevice::Gpu,
+            ..
+        }
+    );
+    let device = if gpu { Device::Gpu } else { Device::Cpu };
+    let model_error = |e: anyhow::Error| {
+        if gpu {
+            (
+                err("GPU_FAILED"),
+                Some(format!("{e:#}").chars().take(2000).collect()),
+            )
+        } else {
+            (err("WORKER_FAILED"), None)
+        }
+    };
     let dir = match &req {
         WorkerRequest::Synth { model_dir, .. }
         | WorkerRequest::SynthBatch { model_dir, .. }
         | WorkerRequest::Clone { model_dir, .. } => model_dir,
     };
     let onnx = dir.join("onnx");
-    let path = onnx.to_str().ok_or_else(|| err("IO_FAILED"))?;
-    let mut tts = load_text_to_speech_on(path, Device::Cpu).map_err(|_| err("WORKER_FAILED"))?;
+    let path = onnx.to_str().ok_or_else(|| (err("IO_FAILED"), None))?;
+    let mut tts = load_text_to_speech_on(path, device).map_err(model_error)?;
     match req {
         WorkerRequest::Synth {
             style,
@@ -201,7 +232,7 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
             params,
             ..
         } => {
-            let style = read_style_file(&style)?;
+            let style = read_style_file(&style).map_err(|e| (e, None))?;
             let t = Instant::now();
             let (samples, _) = tts
                 .call(
@@ -212,10 +243,10 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
                     params.speed,
                     0.3,
                 )
-                .map_err(|_| err("WORKER_FAILED"))?;
+                .map_err(|_| (err("WORKER_FAILED"), None))?;
             let synth_ms = t.elapsed().as_millis() as i64;
             write_wav_file(&out_wav, &samples, tts.sample_rate)
-                .map_err(|_| err("WORKER_FAILED"))?;
+                .map_err(|_| (err("WORKER_FAILED"), None))?;
             Ok(WorkerEvent::Done {
                 duration_ms: Some(samples.len() as i64 * 1000 / tts.sample_rate as i64),
                 synth_ms: Some(synth_ms),
@@ -235,17 +266,18 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
                 (Some(path), Some(wav)) => {
                     let mut encoder =
                         supertonic3_tts::speaker::SpeakerEncoder::on_device(path, Device::Cpu)
-                            .map_err(|_| err("WORKER_FAILED"))?;
-                    let audio = features::load_wav(wav).map_err(|_| err("WORKER_FAILED"))?;
+                            .map_err(|_| (err("WORKER_FAILED"), None))?;
+                    let audio =
+                        features::load_wav(wav).map_err(|_| (err("WORKER_FAILED"), None))?;
                     let embedding = encoder
                         .embed(&audio.samples, audio.sample_rate)
-                        .map_err(|_| err("WORKER_FAILED"))?;
+                        .map_err(|_| (err("WORKER_FAILED"), None))?;
                     Some((encoder, embedding))
                 }
-                _ => return Err(err("WORKER_FAILED")),
+                _ => return Err((err("WORKER_FAILED"), None)),
             };
             for (index, item) in items.into_iter().enumerate() {
-                let style = read_style_file(&item.style)?;
+                let style = read_style_file(&item.style).map_err(|e| (e, None))?;
                 let start = Instant::now();
                 let (samples, _) = tts
                     .call(
@@ -256,10 +288,10 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
                         params.speed,
                         0.3,
                     )
-                    .map_err(|_| err("WORKER_FAILED"))?;
+                    .map_err(|_| (err("WORKER_FAILED"), None))?;
                 let synth_ms = start.elapsed().as_millis() as i64;
                 write_wav_file(&item.out_wav, &samples, tts.sample_rate)
-                    .map_err(|_| err("WORKER_FAILED"))?;
+                    .map_err(|_| (err("WORKER_FAILED"), None))?;
                 let similarity = reference.as_mut().and_then(|(encoder, embedding)| {
                     encoder
                         .embed(&samples, tts.sample_rate as u32)
@@ -290,17 +322,20 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
             preset,
             seed,
             speaker_model,
+            device: _,
         } => {
-            let audio = features::load_wav(reference_wav).map_err(|_| err("WORKER_FAILED"))?;
-            let opts = clone_options(
+            let audio =
+                features::load_wav(reference_wav).map_err(|_| (err("WORKER_FAILED"), None))?;
+            let mut opts = clone_options(
                 &language,
                 transcript.as_deref(),
                 preset,
                 seed,
                 speaker_model,
             );
+            opts.device = device;
             let cv = VoiceCloner::new(&mut tts, &audio, &model_dir.join("voice_styles"), opts)
-                .map_err(|_| err("WORKER_FAILED"))?
+                .map_err(model_error)?
                 .run(&mut |p| {
                     emit(WorkerEvent::Progress {
                         stage: p.stage.to_string(),
@@ -310,8 +345,9 @@ fn execute(req: WorkerRequest) -> Result<WorkerEvent, VlError> {
                         best_loss: p.best_loss,
                     })
                 })
-                .map_err(|_| err("WORKER_FAILED"))?;
-            save_voice_style(out_style, &cv.style, None).map_err(|_| err("WORKER_FAILED"))?;
+                .map_err(model_error)?;
+            save_voice_style(out_style, &cv.style, None)
+                .map_err(|_| (err("WORKER_FAILED"), None))?;
             Ok(WorkerEvent::Done {
                 duration_ms: None,
                 synth_ms: None,
@@ -328,7 +364,8 @@ pub fn main(request_path: &Path) -> i32 {
         libc::nice(10);
     }
     let result = (|| {
-        let req = serde_json::from_slice(&std::fs::read(request_path)?)?;
+        let bytes = std::fs::read(request_path).map_err(|e| (VlError::from(e), None))?;
+        let req = serde_json::from_slice(&bytes).map_err(|e| (VlError::from(e), None))?;
         execute(req)
     })();
     match result {
@@ -336,8 +373,11 @@ pub fn main(request_path: &Path) -> i32 {
             emit(e);
             0
         }
-        Err(e) => {
-            emit(WorkerEvent::Error { code: e.code() });
+        Err((e, detail)) => {
+            emit(WorkerEvent::Error {
+                code: e.code(),
+                detail,
+            });
             1
         }
     }
@@ -346,6 +386,30 @@ pub fn main(request_path: &Path) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clone_request_defaults_to_cpu() {
+        let req: WorkerRequest = serde_json::from_value(serde_json::json!({
+            "op":"clone","modelDir":"m","referenceWav":"r","outStyle":"o",
+            "language":"en","transcript":null,"preset":"fast","seed":42,"speakerModel":null
+        }))
+        .unwrap();
+        assert!(matches!(
+            req,
+            WorkerRequest::Clone {
+                device: CloneDevice::Cpu,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn error_event_detail_is_optional() {
+        let event: WorkerEvent = serde_json::from_str(r#"{"event":"error","code":"X"}"#).unwrap();
+        assert!(matches!(&event, WorkerEvent::Error { detail: None, .. }));
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({"event":"error","code":"X"})
+        );
+    }
     #[test]
     fn nonfinite_progress_is_parsable() {
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {

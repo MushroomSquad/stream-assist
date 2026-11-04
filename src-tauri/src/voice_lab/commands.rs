@@ -7,7 +7,7 @@ use super::{
     store::{TrainParams, TrainRun},
     style::{canonical_bytes, load_verified, read_style_file},
     trainer,
-    worker::ClonePreset,
+    worker::{CloneDevice, ClonePreset},
 };
 use std::{
     collections::HashSet,
@@ -733,8 +733,29 @@ pub(crate) fn clone(
     name: String,
     preset: ClonePreset,
     seed: u64,
+    device: Option<CloneDevice>,
     emit: Emit,
 ) -> Result<u64, VlError> {
+    let device = device.unwrap_or_default();
+    if device == CloneDevice::Gpu {
+        if !super::gpu::SUPPORTED {
+            return Err(err("GPU_UNSUPPORTED"));
+        }
+        if super::gpu::pack(&lab.root) != super::gpu::Pack::Ok {
+            return Err(err("GPU_PACK_MISSING"));
+        }
+    }
+    let _gate = if device == CloneDevice::Gpu {
+        Some(lab.gpu_gate.lock().map_err(|_| err("IO_FAILED"))?)
+    } else {
+        None
+    };
+    if device == CloneDevice::Gpu {
+        let slot = lab.gpu_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
+        if slot.is_some() || lab.train.active().is_some() {
+            return Err(err("JOB_BUSY"));
+        }
+    }
     let encoder = models::encoder_path(&lab.root);
     lab.runner.start_clone(
         lab.store.clone(),
@@ -749,6 +770,7 @@ pub(crate) fn clone(
         name,
         preset,
         seed,
+        device,
         emit,
     )
 }
@@ -766,6 +788,7 @@ pub async fn vl_clone(
     name: String,
     preset: ClonePreset,
     seed: u64,
+    device: Option<CloneDevice>,
 ) -> Result<u64, String> {
     blocking(lab(&state)?, move |l| {
         require_model(&l.root)?;
@@ -779,6 +802,7 @@ pub async fn vl_clone(
             name,
             preset,
             seed,
+            device,
             job_emitter(app),
         )
     })
@@ -825,12 +849,99 @@ mod tests {
             )),
             train_install: tokio::sync::Mutex::new(None),
             gpu_install: tokio::sync::Mutex::new(None),
+            gpu_gate: std::sync::Mutex::new(()),
             torch_cache: std::sync::Mutex::new(None),
             installing: tokio::sync::Mutex::new(()),
         };
         (d, lab, p)
     }
 
+    #[test]
+    fn gpu_clone_without_pack_fails() {
+        let (_d, lab, _) = setup();
+        let e = clone(
+            &lab,
+            1,
+            0,
+            1000,
+            "words".into(),
+            "en".into(),
+            "GPU".into(),
+            ClonePreset::Fast,
+            42,
+            Some(CloneDevice::Gpu),
+            Arc::new(|_| {}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.code(),
+            if super::super::gpu::SUPPORTED {
+                "GPU_PACK_MISSING"
+            } else {
+                "GPU_UNSUPPORTED"
+            }
+        );
+        assert!(lab.runner.jobs().is_empty());
+        assert!(!lab.runner.gpu_clone_running());
+    }
+    #[tokio::test]
+    async fn train_start_blocked_during_gpu_clone() {
+        let (_d, lab, _) = setup();
+        let source = lab
+            .store
+            .lock()
+            .unwrap()
+            .add_source("test", "wav", "ref", 2000, true, &[])
+            .unwrap();
+        let path = lab.store.lock().unwrap().source_work_path(source.id);
+        std::fs::write(
+            path,
+            audio::wav_bytes(&vec![0.1; audio::SR as usize * 2], audio::SR),
+        )
+        .unwrap();
+        let id = lab
+            .runner
+            .start_clone(
+                lab.store.clone(),
+                lab.root.clone(),
+                lab.root.join("models"),
+                None,
+                source.id,
+                0,
+                1000,
+                "words".into(),
+                "en".into(),
+                "GPU".into(),
+                ClonePreset::Fast,
+                42,
+                CloneDevice::Gpu,
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+        assert_eq!(
+            train_start(
+                &lab,
+                source.id,
+                0,
+                1000,
+                "en".into(),
+                "fast".into(),
+                42,
+                Arc::new(|_| {})
+            )
+            .unwrap_err()
+            .code(),
+            "JOB_BUSY"
+        );
+        assert_eq!(
+            train_resume(&lab, 1, Arc::new(|_| {})).unwrap_err().code(),
+            "JOB_BUSY"
+        );
+        lab.runner.cancel(id).unwrap();
+        while lab.runner.gpu_clone_running() {
+            tokio::task::yield_now().await;
+        }
+    }
     #[tokio::test]
     async fn vl_train_install_log_tails_file() {
         let (d, _, _) = setup();
@@ -1586,6 +1697,10 @@ fn train_start(
     seed: u64,
     emit: TrainEmit,
 ) -> Result<i64, VlError> {
+    let _gate = lab.gpu_gate.lock().map_err(|_| err("IO_FAILED"))?;
+    if lab.runner.gpu_clone_running() {
+        return Err(err("JOB_BUSY"));
+    }
     let slot = lab.train_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
     if slot.is_some() {
         return Err(err("JOB_BUSY"));
@@ -1606,6 +1721,10 @@ fn train_start(
     )
 }
 fn train_resume(lab: &VoiceLab, run_id: i64, emit: TrainEmit) -> Result<(), VlError> {
+    let _gate = lab.gpu_gate.lock().map_err(|_| err("IO_FAILED"))?;
+    if lab.runner.gpu_clone_running() {
+        return Err(err("JOB_BUSY"));
+    }
     let slot = lab.train_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
     if slot.is_some() {
         return Err(err("JOB_BUSY"));
@@ -1868,6 +1987,10 @@ pub async fn vl_gpu_install(
     let l = lab(&state)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     {
+        let _gate = l.gpu_gate.lock().map_err(|_| "IO_FAILED".to_string())?;
+        if l.runner.gpu_clone_running() {
+            return Err("JOB_BUSY".into());
+        }
         let mut slot = l
             .gpu_install
             .try_lock()
@@ -1911,6 +2034,10 @@ pub async fn vl_gpu_install_cancel(state: State<'_, VlState>) -> Result<(), Stri
 #[tauri::command]
 pub async fn vl_gpu_uninstall(state: State<'_, VlState>) -> Result<(), String> {
     blocking(lab(&state)?, |l| {
+        let _gate = l.gpu_gate.lock().map_err(|_| err("IO_FAILED"))?;
+        if l.runner.gpu_clone_running() {
+            return Err(err("JOB_BUSY"));
+        }
         let slot = l.gpu_install.try_lock().map_err(|_| err("JOB_BUSY"))?;
         if slot.is_some() {
             return Err(err("JOB_BUSY"));

@@ -34,6 +34,7 @@ fn fresh_lab(root: PathBuf, model: &std::path::Path) -> anyhow::Result<VoiceLab>
         )),
         train_install: tokio::sync::Mutex::new(None),
         gpu_install: tokio::sync::Mutex::new(None),
+        gpu_gate: std::sync::Mutex::new(()),
         torch_cache: Mutex::new(None),
         installing: tokio::sync::Mutex::new(()),
     })
@@ -72,6 +73,7 @@ async fn acceptance_p2() -> anyhow::Result<()> {
             name.into(),
             ClonePreset::Fast,
             42,
+            None,
             emit.clone(),
         )?;
         let job = tokio::time::timeout(std::time::Duration::from_secs(1800), async {
@@ -300,5 +302,110 @@ async fn acceptance_p2() -> anyhow::Result<()> {
         assert_eq!(fs::read_dir(root.join("tmp"))?.count(), 0);
     }
     println!("p2_total_s={:.3}", total.elapsed().as_secs_f64());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs NVIDIA GPU, CUDA 13, cuDNN 9 and GPU pack"]
+async fn real_gpu_clone_fast() -> anyhow::Result<()> {
+    use supertonic3_tts::{
+        Device, features,
+        speaker::{SpeakerEncoder, cosine},
+    };
+    use worker::{CloneDevice, ClonePreset};
+    if std::env::var_os("VL_GPU_TEST_CHILD").is_some() {
+        use supertonic3_tts::helper::{load_text_to_speech_on, write_wav_file};
+        let model = PathBuf::from(
+            std::env::var_os("SUPERTONIC_MODEL_DIR").expect("acceptance helper only"),
+        );
+        let style = style::read_style_file(&PathBuf::from(
+            std::env::var_os("VL_GPU_TEST_STYLE").unwrap(),
+        ))?;
+        let out = PathBuf::from(std::env::var_os("VL_GPU_TEST_OUT").unwrap());
+        for (device, name) in [(Device::Cpu, "cpu.wav"), (Device::Gpu, "gpu.wav")] {
+            let mut tts = load_text_to_speech_on(model.join("onnx").to_str().unwrap(), device)?;
+            let (samples, _) = tts.call(
+                "Hello, this is a voice compatibility test.",
+                "en",
+                &style,
+                8,
+                1.0,
+                0.3,
+            )?;
+            write_wav_file(out.join(name), &samples, tts.sample_rate)?;
+        }
+        return Ok(());
+    }
+    let model =
+        PathBuf::from(std::env::var_os("SUPERTONIC_MODEL_DIR").expect("set SUPERTONIC_MODEL_DIR"))
+            .canonicalize()?;
+    let pack = PathBuf::from(std::env::var_os("VL_GPU_PACK_DIR").expect("set VL_GPU_PACK_DIR"));
+    let data = tempfile::tempdir()?;
+    let lab = fresh_lab(data.path().join("gpu-clone"), &model)?;
+    fs::create_dir_all(gpu::dir(&lab.root))?;
+    for name in [
+        "libonnxruntime_providers_cuda.so",
+        "libonnxruntime_providers_shared.so",
+        "LICENSE",
+        "ThirdPartyNotices.txt",
+    ] {
+        fs::copy(pack.join(name), gpu::dir(&lab.root).join(name))?;
+    }
+    let source = audio::import(&lab.store, &model.join("luna_reference.wav"), true, false)?;
+    let id = clone(
+        &lab,
+        source.id,
+        0,
+        (source.duration_ms as u64).min(10_000),
+        String::new(),
+        "en".into(),
+        "GPU fast".into(),
+        ClonePreset::Fast,
+        42,
+        Some(CloneDevice::Gpu),
+        Arc::new(|_| {}),
+    )?;
+    let job = tokio::time::timeout(std::time::Duration::from_secs(1800), async {
+        loop {
+            let job = lab.runner.jobs().into_iter().find(|j| j.id == id).unwrap();
+            if job.status != "running" {
+                break job;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    assert_eq!(job.status, "completed", "{job:?}");
+    let style_path = {
+        let s = lab.store.lock().unwrap();
+        s.profile_path(&s.profile(job.profile_id.unwrap())?)
+    };
+    // A separate process must set argv[0] before ORT initializes.
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    #[cfg(unix)]
+    command.arg0(gpu::dir(&lab.root).join("stream-assist"));
+    let status = command
+        .args([
+            "--ignored",
+            "--exact",
+            "voice_lab::acceptance_p2::real_gpu_clone_fast",
+        ])
+        .env("VL_GPU_TEST_CHILD", "1")
+        .env("VL_GPU_TEST_STYLE", style_path)
+        .env("SUPERTONIC_MODEL_DIR", &model)
+        .env("VL_GPU_TEST_OUT", data.path())
+        .status()
+        .await?;
+    assert!(status.success());
+    let mut encoder = SpeakerEncoder::on_device(model.join("speaker_encoder.onnx"), Device::Cpu)?;
+    let mut embeddings = Vec::new();
+    let mut lengths = Vec::new();
+    for name in ["cpu.wav", "gpu.wav"] {
+        let wav = features::load_wav(data.path().join(name))?;
+        lengths.push(wav.samples.len());
+        embeddings.push(encoder.embed(&wav.samples, wav.sample_rate)?);
+    }
+    assert!(cosine(&embeddings[0], &embeddings[1]) >= 0.97);
+    assert!((lengths[0] as f64 / lengths[1] as f64 - 1.0).abs() <= 0.05);
     Ok(())
 }

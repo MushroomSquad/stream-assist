@@ -164,6 +164,7 @@ fn worker_clone_fast_real() {
     let d = tempfile::tempdir().unwrap();
     let out = d.path().join("out.json");
     let events = real_worker(WorkerRequest::Clone {
+        device: stream_assist_lib::voice_lab::worker::CloneDevice::Cpu,
         model_dir: model_dir(),
         reference_wav: std::env::var_os("SUPERTONIC_REF_WAV")
             .expect("SUPERTONIC_REF_WAV")
@@ -254,6 +255,7 @@ async fn acceptance_three_refs_mix_export_import() -> anyhow::Result<()> {
             name.into(),
             ClonePreset::Fast,
             42,
+            stream_assist_lib::voice_lab::worker::CloneDevice::Cpu,
             emit.clone(),
         )?;
         let job = tokio::time::timeout(Duration::from_secs(1800), async {

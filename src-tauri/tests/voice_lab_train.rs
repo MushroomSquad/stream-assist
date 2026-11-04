@@ -347,6 +347,7 @@ async fn clone_and_train_run_together() {
             "clone".into(),
             ClonePreset::Fast,
             42,
+            stream_assist_lib::voice_lab::worker::CloneDevice::Cpu,
             Arc::new(|_| {}),
         )
         .unwrap();

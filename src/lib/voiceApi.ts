@@ -9,7 +9,7 @@ export interface Recipe { schemaVersion: number; kind: string; engine: { id: str
 export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix' | 'train'; recipe: Recipe | null; meta: unknown; createdAt: number }
 export interface RenderParams { text: string; lang: string; speed: number; quality: number }
 export interface Render extends RenderParams { id: number; profileId: number | null; recipe: Recipe | null; durationMs: number; wallMs: number; favorite: boolean; createdAt: number }
-export interface JobState { id: number; kind: string; status: string; progress: { event: string; index?: number; similarity?: number | null; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
+export interface JobState { id: number; kind: string; status: string; progress: { event: string; code?: string; detail?: string; index?: number; similarity?: number | null; stage?: string; iteration?: number; total?: number; loss?: number; bestLoss?: number } | null; error: string | null; profileId: number | null; renderId: number | null }
 function call<T>(name: string, args?: Record<string, unknown>): Promise<T> { return isTauri() ? invoke<T>(name, args) : mockEnabled ? mockCall<T>(name, args) : Promise.reject(new Error('browser')); }
 export const vl_status = () => call<ModelStatus>('vl_status');
 export const vl_install = (withEncoder: boolean) => call<void>('vl_install', { withEncoder });

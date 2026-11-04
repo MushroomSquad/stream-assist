@@ -56,6 +56,7 @@ use store::Store;
 use tauri::Manager;
 
 pub struct VoiceLab {
+    pub gpu_gate: std::sync::Mutex<()>,
     pub root: PathBuf,
     pub store: Arc<std::sync::Mutex<Store>>,
     pub runner: Arc<Runner>,
@@ -89,6 +90,7 @@ pub fn init(app: &tauri::App) {
             train,
             train_install: tokio::sync::Mutex::new(None),
             gpu_install: tokio::sync::Mutex::new(None),
+            gpu_gate: std::sync::Mutex::new(()),
             torch_cache: std::sync::Mutex::new(None),
             root,
             store: Arc::new(std::sync::Mutex::new(store)),

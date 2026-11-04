@@ -71,6 +71,7 @@ fn start(
         "Clone".into(),
         ClonePreset::Fast,
         42,
+        stream_assist_lib::voice_lab::worker::CloneDevice::Cpu,
         Arc::new(|_| {}),
     )
 }
@@ -343,6 +344,7 @@ async fn cancel_on_done_does_not_create_profile() {
             "Clone".into(),
             ClonePreset::Fast,
             42,
+            stream_assist_lib::voice_lab::worker::CloneDevice::Cpu,
             emit,
         )
         .unwrap();
@@ -616,4 +618,78 @@ async fn batch_busy_blocks_single_synth() {
     );
     drop(batch);
     clean(d.path());
+}
+
+fn start_gpu(r: &Arc<Runner>, s: &Arc<Mutex<Store>>, p: &Path, id: i64) -> u64 {
+    r.start_clone(
+        s.clone(),
+        p.into(),
+        p.join("models"),
+        None,
+        id,
+        0,
+        1000,
+        "words".into(),
+        "en".into(),
+        "GPU".into(),
+        ClonePreset::Fast,
+        42,
+        CloneDevice::Gpu,
+        Arc::new(|_| {}),
+    )
+    .unwrap()
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn gpu_clone_sets_arg0() {
+    let (d, s, r, id) = setup("argv0", true);
+    let job = finished(&r, start_gpu(&r, &s, d.path(), id)).await;
+    assert_eq!(job.status, "completed");
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("tmp/argv0")).unwrap(),
+        d.path().join("gpu/stream-assist").to_str().unwrap()
+    );
+}
+#[tokio::test]
+async fn gpu_clone_running_tracks_slot() {
+    let (d, s, r, id) = setup("ok", true);
+    let job = start_gpu(&r, &s, d.path(), id);
+    assert!(r.gpu_clone_running());
+    finished(&r, job).await;
+    assert!(!r.gpu_clone_running());
+    let job = start(&r, &s, d.path(), id, 1000).unwrap();
+    assert!(!r.gpu_clone_running());
+    finished(&r, job).await;
+}
+#[tokio::test]
+async fn gpu_clone_running_survives_cancel_until_worker_exits() {
+    let (d, s, r, id) = setup("sleep", true);
+    let job = start_gpu(&r, &s, d.path(), id);
+    while !d.path().join("worker.pid").exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    r.cancel(job).unwrap();
+    assert!(r.gpu_clone_running());
+    assert_eq!(finished(&r, job).await.status, "cancelled");
+    assert!(!r.gpu_clone_running());
+}
+#[tokio::test]
+async fn gpu_failed_code_kept() {
+    let (d, s, r, id) = setup("gpu-fail", true);
+    let job = finished(&r, start_gpu(&r, &s, d.path(), id)).await;
+    assert_eq!(job.error.as_deref(), Some("GPU_FAILED"));
+    assert!(!r.gpu_clone_running());
+}
+#[tokio::test]
+async fn gpu_worker_crash_maps_to_gpu_failed() {
+    let (d, s, r, id) = setup("crash", true);
+    let job = finished(&r, start_gpu(&r, &s, d.path(), id)).await;
+    assert_eq!(job.error.as_deref(), Some("GPU_FAILED"));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("gpu/worker.log")).unwrap(),
+        "fake GPU crash\n"
+    );
+    assert!(!r.gpu_clone_running());
+    let job = finished(&r, start(&r, &s, d.path(), id, 1000).unwrap()).await;
+    assert_eq!(job.error.as_deref(), Some("WORKER_CRASHED"));
 }

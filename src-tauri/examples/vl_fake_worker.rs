@@ -28,7 +28,25 @@ fn main() {
     }
     let path = std::env::args_os().nth(2).unwrap();
     let req: WorkerRequest = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    if mode == "gpu-fail" {
+        emit(WorkerEvent::Error {
+            code: "GPU_FAILED".into(),
+            detail: Some("CUDA initialization failed".into()),
+        });
+        return;
+    }
+    #[cfg(unix)]
+    if mode == "argv0"
+        && let WorkerRequest::Clone { out_style, .. } = &req
+    {
+        std::fs::write(
+            out_style.parent().unwrap().join("argv0"),
+            std::env::args_os().next().unwrap().as_encoded_bytes(),
+        )
+        .unwrap();
+    }
     if mode == "crash" && !matches!(&req, WorkerRequest::SynthBatch { .. }) {
+        let _ = writeln!(std::io::stderr(), "fake GPU crash");
         std::process::exit(3);
     }
     for i in 1..=2 {
