@@ -158,16 +158,33 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                         if welcomed {
                             break;
                         }
+                        crate::dlog!("twitch", "welcome session={session_id}");
                         interval = keepalive(&text);
-                        if !matches!(
-                            timeout(
-                                Duration::from_secs(10),
-                                helix.subscribe_redemptions(&session_id)
-                            )
-                            .await,
-                            Ok(Ok(()))
-                        ) {
-                            break;
+                        match timeout(
+                            Duration::from_secs(10),
+                            helix.subscribe_redemptions(&session_id),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => crate::dlog!(
+                                "twitch",
+                                "subscription=channel.channel_points_custom_reward_redemption.add ok"
+                            ),
+                            Ok(Err(e)) => {
+                                crate::dlog!(
+                                    "twitch",
+                                    "subscription=channel.channel_points_custom_reward_redemption.add error={}",
+                                    crate::diag::http_err(&e)
+                                );
+                                break;
+                            }
+                            Err(_) => {
+                                crate::dlog!(
+                                    "twitch",
+                                    "subscription=channel.channel_points_custom_reward_redemption.add timeout"
+                                );
+                                break;
+                            }
                         }
                         let status = match timeout(
                             Duration::from_secs(10),
@@ -175,9 +192,29 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                         )
                         .await
                         {
-                            Ok(Ok(true)) => ChatStatus::Ok,
-                            Ok(Ok(false)) => ChatStatus::Forbidden,
-                            _ => ChatStatus::Failed,
+                            Ok(Ok(true)) => {
+                                crate::dlog!("twitch", "subscription=channel.chat.message ok");
+                                ChatStatus::Ok
+                            }
+                            Ok(Ok(false)) => {
+                                crate::dlog!(
+                                    "twitch",
+                                    "subscription=channel.chat.message status=403"
+                                );
+                                ChatStatus::Forbidden
+                            }
+                            Ok(Err(e)) => {
+                                crate::dlog!(
+                                    "twitch",
+                                    "subscription=channel.chat.message error={}",
+                                    crate::diag::http_err(&e)
+                                );
+                                ChatStatus::Failed
+                            }
+                            Err(_) => {
+                                crate::dlog!("twitch", "subscription=channel.chat.message timeout");
+                                ChatStatus::Failed
+                            }
                         };
                         if out.send(EsSignal::ChatStatus(status)).await.is_err() {
                             return;
@@ -209,6 +246,7 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                     EsMsg::Ignored => {}
                     EsMsg::Revocation => break,
                     EsMsg::Reconnect { url } => {
+                        crate::dlog!("twitch", "reconnect");
                         // Retain the old socket until the replacement has welcomed us.
                         let replacement = timeout(Duration::from_secs(10), async {
                             let (mut next, _) = connect_async(&url).await?;
@@ -237,6 +275,7 @@ pub async fn run(helix: Arc<Helix>, ws_url: String, out: Sender<EsSignal>) {
                 deadline = Instant::now() + interval;
             }
         }
+        crate::dlog!("twitch", "disconnected backoff_s={backoff}");
         resync = true;
         tokio::select! {
             _=out.closed()=>return,

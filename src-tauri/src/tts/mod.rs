@@ -53,3 +53,18 @@ pub struct TtsView {
     pub widget: bool,
     pub warning: Option<String>,
 }
+
+pub fn describe(id: u64, user: &str, src: &str, text: &str) -> String {
+    format!("id={id} src={src} user={user} len={}", text.chars().count())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn describe_has_no_text() {
+        let description = super::describe(1, "bob", "chat", "секрет123");
+        assert!(description.contains("user=bob"));
+        assert!(description.contains("len=9"));
+        assert!(!description.contains("секрет123"));
+    }
+}

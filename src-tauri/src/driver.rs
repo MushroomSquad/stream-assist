@@ -124,6 +124,13 @@ fn warn(c: &DriverCtx, text: Option<String>) {
     publish(c, s);
 }
 fn status(c: &DriverCtx, r: RedemptionRef, ok: bool) {
+    crate::dlog!(
+        "music",
+        "redemption={} reward={} outcome={}",
+        r.redemption_id,
+        r.reward_id,
+        if ok { "FULFILLED" } else { "CANCELED" }
+    );
     if let Some(h) = c.helix.clone() {
         background(async move { h.set_redemption_status(&r, ok).await });
     }
@@ -252,6 +259,9 @@ fn actions(
                 }
             }
             Action::Cancel(i, why) => {
+                if let Some(r) = &i.redemption {
+                    crate::dlog!("music", "redemption={} reason={why:?}", r.redemption_id);
+                }
                 if let Some(r) = i.redemption {
                     status(c, r, false);
                     chat(
@@ -404,9 +414,16 @@ fn redeem(
         });
         return;
     }
+    crate::dlog!(
+        "music",
+        "received redemption={} reward={}",
+        r.r.redemption_id,
+        r.r.reward_id
+    );
     match rules::music_decision(&c.settings.rules, &r.r.reward_id) {
         MusicDecision::Ignore => return,
         MusicDecision::Refund => {
+            crate::dlog!("music", "redemption={} reason=inactive", r.r.redemption_id);
             let db = c.db.lock().unwrap_or_else(|e| e.into_inner());
             if !inflight.contains(&r.r.redemption_id)
                 && db.redemption_state(&r.r.redemption_id).ok() == Some(RedemptionState::Unknown)
@@ -612,6 +629,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             }
 
             Internal::Reconcile(rows) => {
+                crate::dlog!("twitch", "reconcile count={}", rows.len());
                 let states: Result<Vec<_>> = rows
                     .into_iter()
                     .map(|r| {
@@ -679,6 +697,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 };
                 match decision {
                     Decision::Enqueue(t) => {
+                        crate::dlog!("music", "redemption={id} outcome=queued");
                         let inserted = ctx
                             .db
                             .lock()
@@ -712,6 +731,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                         }
                     }
                     Decision::Reject(why) => {
+                        crate::dlog!("music", "redemption={id} reason=rejected");
                         if ctx
                             .db
                             .lock()

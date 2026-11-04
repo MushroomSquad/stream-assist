@@ -322,75 +322,94 @@ pub async fn install(
     progress: &(dyn Fn(&str, u64, u64) + Send + Sync),
     mut cancel: oneshot::Receiver<()>,
 ) -> Result<(), VlError> {
-    let uv = uv_path().ok_or_else(|| err("UV_MISSING"))?;
-    let version = output(command(uv.as_os_str()).arg("--version"), 10)
-        .await
-        .and_then(|s| parse_uv_version(&s))
-        .ok_or_else(|| err("TRAINER_INSTALL_FAILED"))?;
-    if version < MIN_UV {
-        return Err(err("UV_TOO_OLD"));
-    }
-    let dir = trainer_dir(root);
-    let failed = |_| err("TRAINER_INSTALL_FAILED");
-    match std::fs::remove_file(dir.join("installed.ok")) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(err("TRAINER_INSTALL_FAILED")),
-    }
-    write_adapter(root).map_err(failed)?;
-    if disk_free_mb(root).is_some_and(|mb| mb < 9000) {
-        return Err(err("TRAINER_INSTALL_FAILED"));
-    }
-    progress("venv", 0, 1);
-    let mut cmd = command(uv.as_os_str());
-    cmd.args(["sync", "--frozen", "--no-config", "--project"])
-        .arg(dir.join("adapter"))
-        .env("UV_PYTHON_DOWNLOADS", "automatic")
-        .env("UV_PROJECT_ENVIRONMENT", dir.join(".venv"))
-        .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
-        .env("UV_PYTHON_PREFERENCE", "only-managed")
-        .env("UV_CACHE_DIR", dir.join("uv-cache"))
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(dir.join("install.log"))?);
-    let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
-    tokio::select! {
-        result = child.wait() => {
-            if !result.map_err(|_| err("TRAINER_INSTALL_FAILED"))?.success() {
-                return Err(err("TRAINER_INSTALL_FAILED"));
+    crate::dlog!("train", "install start");
+    let result: Result<(), VlError> = async {
+        let uv = uv_path().ok_or_else(|| err("UV_MISSING"))?;
+        let version = output(command(uv.as_os_str()).arg("--version"), 10)
+            .await
+            .and_then(|s| parse_uv_version(&s))
+            .ok_or_else(|| err("TRAINER_INSTALL_FAILED"))?;
+        if version < MIN_UV {
+            return Err(err("UV_TOO_OLD"));
+        }
+        let dir = trainer_dir(root);
+        let failed = |_| err("TRAINER_INSTALL_FAILED");
+        match std::fs::remove_file(dir.join("installed.ok")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(err("TRAINER_INSTALL_FAILED")),
+        }
+        write_adapter(root).map_err(failed)?;
+        if disk_free_mb(root).is_some_and(|mb| mb < 9000) {
+            return Err(err("TRAINER_INSTALL_FAILED"));
+        }
+        crate::dlog!("train", "install stage=venv");
+        progress("venv", 0, 1);
+        let mut cmd = command(uv.as_os_str());
+        cmd.args(["sync", "--frozen", "--no-config", "--project"])
+            .arg(dir.join("adapter"))
+            .env("UV_PYTHON_DOWNLOADS", "automatic")
+            .env("UV_PROJECT_ENVIRONMENT", dir.join(".venv"))
+            .env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
+            .env("UV_PYTHON_PREFERENCE", "only-managed")
+            .env("UV_CACHE_DIR", dir.join("uv-cache"))
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(dir.join("install.log"))?);
+        let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+        tokio::select! {
+            result = child.wait() => {
+                let status = result.map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+                crate::dlog!("train", "uv exit code={:?}", status.code());
+                if !status.success() {
+                    return Err(err("TRAINER_INSTALL_FAILED"));
+                }
+            }
+            _ = &mut cancel => {
+                let _ = child.kill().await;
+                return Err(err("JOB_CANCELLED"));
             }
         }
-        _ = &mut cancel => {
-            let _ = child.kill().await;
-            return Err(err("JOB_CANCELLED"));
-        }
+        progress("venv", 1, 1);
+        let files: Vec<_> = WAVLM_FILES
+            .iter()
+            .map(|file| {
+                (
+                    format!(
+                        "https://huggingface.co/microsoft/wavlm-large/resolve/{WAVLM_REV}/{}",
+                        file.path
+                    ),
+                    dir.join("weights/wavlm-large").join(file.path),
+                    file.sha256,
+                    file.size,
+                )
+            })
+            .collect();
+        let tmp = dir.join("tmp");
+        crate::dlog!("train", "install stage=weights");
+        let weights_progress = |d, t| progress("weights", d, t);
+        let result = tokio::select! {
+            result = install_files(&files, &tmp, &weights_progress) =>
+                result.map_err(|_| err("TRAINER_INSTALL_FAILED")),
+            _ = &mut cancel => Err(err("JOB_CANCELLED")),
+        };
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        result?;
+        std::fs::write(dir.join("installed.ok"), lock_hash())
+            .map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+        Ok(())
     }
-    progress("venv", 1, 1);
-    let files: Vec<_> = WAVLM_FILES
-        .iter()
-        .map(|file| {
-            (
-                format!(
-                    "https://huggingface.co/microsoft/wavlm-large/resolve/{WAVLM_REV}/{}",
-                    file.path
-                ),
-                dir.join("weights/wavlm-large").join(file.path),
-                file.sha256,
-                file.size,
-            )
-        })
-        .collect();
-    let tmp = dir.join("tmp");
-    let weights_progress = |d, t| progress("weights", d, t);
-    let result = tokio::select! {
-        result = install_files(&files, &tmp, &weights_progress) =>
-            result.map_err(|_| err("TRAINER_INSTALL_FAILED")),
-        _ = &mut cancel => Err(err("JOB_CANCELLED")),
-    };
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
-    result?;
-    std::fs::write(dir.join("installed.ok"), lock_hash())
-        .map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
-    Ok(())
+    .await;
+    crate::dlog!(
+        "train",
+        "install status={} code={}",
+        if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+        result.as_ref().err().map(|e| e.code()).unwrap_or_default()
+    );
+    result
 }
 
 pub fn uninstall(root: &Path) -> Result<(), VlError> {

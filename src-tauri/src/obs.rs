@@ -1,10 +1,26 @@
 use anyhow::Result;
 async fn request<T, E: Into<anyhow::Error>>(
+    operation: &str,
     future: impl std::future::Future<Output = std::result::Result<T, E>>,
 ) -> Result<T> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), future)
-        .await?
-        .map_err(Into::into)
+    let result = match tokio::time::timeout(std::time::Duration::from_secs(5), future).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(e) => Err(e.into()),
+    };
+    if let Err(e) = &result {
+        // OBS errors can echo request settings, including URLs and passwords.
+        let safe = anyhow::anyhow!(if e.is::<tokio::time::error::Elapsed>() {
+            "timeout"
+        } else {
+            "request failed"
+        });
+        crate::dlog!(
+            "obs",
+            "operation={operation} error={}",
+            crate::diag::http_err(&safe)
+        );
+    }
+    result
 }
 use obws::{
     Client,
@@ -34,12 +50,12 @@ impl Default for ObsCfg {
 }
 
 pub async fn check(cfg: &ObsCfg) -> Result<String> {
-    let client = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    let client = request(
+        "connect",
         Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
     )
-    .await??;
-    Ok(request(client.general().version())
+    .await?;
+    Ok(request("version", client.general().version())
         .await?
         .obs_version
         .to_string())
@@ -51,12 +67,16 @@ pub async fn add_widget_to_current_scene(
     parts: &crate::server::themes::ThemeParts,
     scale: f64,
 ) -> Result<()> {
-    let client = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    let client = request(
+        "connect",
         Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
     )
-    .await??;
-    let scene = request(client.scenes().current_program_scene()).await?;
+    .await?;
+    let scene = request(
+        "current_program_scene",
+        client.scenes().current_program_scene(),
+    )
+    .await?;
     for (name, part, size, audio) in [
         ("Stream Assist — Сейчас играет", "now", &parts.now, true),
         ("Stream Assist — Очередь", "queue", &parts.queue, false),
@@ -74,41 +94,51 @@ async fn upsert_browser_source(
     settings: &serde_json::Value,
     monitor: bool,
 ) -> Result<()> {
-    let exists = request(client.inputs().list(None))
+    let exists = request("list_inputs", client.inputs().list(None))
         .await?
         .iter()
         .any(|input| input.id.name == name);
     if exists {
-        request(client.inputs().set_settings(SetSettings {
-            input: name.into(),
-            settings,
-            overlay: Some(true),
-        }))
+        request(
+            "set_settings",
+            client.inputs().set_settings(SetSettings {
+                input: name.into(),
+                settings,
+                overlay: Some(true),
+            }),
+        )
         .await?;
-        let in_scene = request(client.scene_items().list(scene))
+        let in_scene = request("list_scene_items", client.scene_items().list(scene))
             .await?
             .iter()
             .any(|item| item.source_name == name);
         if !in_scene {
-            request(client.scene_items().create(CreateSceneItem {
-                scene,
-                source: name.into(),
-                enabled: Some(true),
-            }))
+            request(
+                "create",
+                client.scene_items().create(CreateSceneItem {
+                    scene,
+                    source: name.into(),
+                    enabled: Some(true),
+                }),
+            )
             .await?;
         }
     } else {
-        request(client.inputs().create(Create {
-            scene,
-            input: name,
-            kind: "browser_source",
-            settings: Some(settings),
-            enabled: Some(true),
-        }))
+        request(
+            "create",
+            client.inputs().create(Create {
+                scene,
+                input: name,
+                kind: "browser_source",
+                settings: Some(settings),
+                enabled: Some(true),
+            }),
+        )
         .await?;
     }
     if monitor {
         request(
+            "set_audio_monitor_type",
             client
                 .inputs()
                 .set_audio_monitor_type(name.into(), MonitorType::MonitorAndOutput),
@@ -118,12 +148,16 @@ async fn upsert_browser_source(
     Ok(())
 }
 pub async fn add_tts_source(cfg: &ObsCfg, url: &str) -> Result<()> {
-    let client = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    let client = request(
+        "connect",
         Client::connect(&cfg.host, cfg.port, cfg.password.as_deref()),
     )
-    .await??;
-    let scene = request(client.scenes().current_program_scene()).await?;
+    .await?;
+    let scene = request(
+        "current_program_scene",
+        client.scenes().current_program_scene(),
+    )
+    .await?;
     let settings =
         serde_json::json!({"url": url, "width": 400, "height": 100, "reroute_audio": true});
     upsert_browser_source(

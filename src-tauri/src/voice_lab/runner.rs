@@ -138,6 +138,16 @@ impl Runner {
     }
     fn publish(&self, j: JobState, emit: &Emit) {
         let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+        if jobs.get(&j.id).is_none_or(|old| old.status != j.status) {
+            crate::dlog!(
+                "vl",
+                "job={} kind={} status={} code={}",
+                j.id,
+                j.kind,
+                j.status,
+                j.error.as_deref().unwrap_or("none")
+            );
+        }
         if j.status != "running" {
             jobs.retain(|_, v| v.kind != j.kind || v.status == "running");
         }
@@ -342,6 +352,7 @@ impl Runner {
         if let Some(emit) = emit {
             self.publish(job.clone(), emit);
         }
+        crate::dlog!("vl", "job={id} kind=synth status=running");
         let t = Instant::now();
         let req = WorkerRequest::Synth {
             model_dir: model_dir(root),
@@ -375,6 +386,16 @@ impl Runner {
             )
         }
         .await;
+        crate::dlog!(
+            "vl",
+            "job={id} kind=synth status={} code={}",
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+            result.as_ref().err().map(|e| e.code()).unwrap_or_default()
+        );
         guard.finished = true;
         result
     }
@@ -594,6 +615,7 @@ impl Runner {
             finished: false,
             emit: emit.clone(),
         };
+        crate::dlog!("vl", "job={id} kind=clone status=running");
         emit(&job);
         let runner = Arc::clone(self);
         tokio::spawn(async move {

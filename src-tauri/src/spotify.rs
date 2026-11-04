@@ -97,10 +97,34 @@ impl Spotify {
                 ("code_verifier", verifier),
             ])
             .send()
-            .await?
-            .error_for_status()?
+            .await
+            .map_err(anyhow::Error::from)
+            .inspect_err(|e| {
+                crate::dlog!(
+                    "spotify",
+                    "exchange_code error={}",
+                    crate::diag::http_err(e)
+                );
+            })?
+            .error_for_status()
+            .map_err(anyhow::Error::from)
+            .inspect_err(|e| {
+                crate::dlog!(
+                    "spotify",
+                    "exchange_code error={}",
+                    crate::diag::http_err(e)
+                );
+            })?
             .json()
-            .await?;
+            .await
+            .map_err(anyhow::Error::from)
+            .inspect_err(|e| {
+                crate::dlog!(
+                    "spotify",
+                    "exchange_code error={}",
+                    crate::diag::http_err(e)
+                );
+            })?;
         Ok(Tokens {
             access_token: t.access_token,
             refresh_token: t
@@ -151,7 +175,9 @@ impl Spotify {
         query: &[(&str, &str)],
         body: Option<serde_json::Value>,
     ) -> Result<Response> {
-        let mut token = self.auth(None).await?;
+        let mut token = self.auth(None).await.inspect_err(|e| {
+            crate::dlog!("spotify", "authorize error={}", crate::diag::http_err(e));
+        })?;
         for attempt in 0..2 {
             let mut req = self
                 .client
@@ -161,11 +187,28 @@ impl Spotify {
             if let Some(ref b) = body {
                 req = req.json(b);
             }
-            let response = req.send().await?;
+            let response = req.send().await.map_err(|e| {
+                let e = anyhow::Error::from(e);
+                crate::dlog!(
+                    "spotify",
+                    "request method={method} operation={path} error={}",
+                    crate::diag::http_err(&e)
+                );
+                e
+            })?;
+            if let Err(e) = response.error_for_status_ref() {
+                crate::dlog!(
+                    "spotify",
+                    "request method={method} operation={path} error={}",
+                    crate::diag::http_err(&e.into())
+                );
+            }
             if response.status() != 401 || attempt == 1 {
                 return Ok(response);
             }
-            token = self.auth(Some(&token)).await?;
+            token = self.auth(Some(&token)).await.inspect_err(|e| {
+                crate::dlog!("spotify", "refresh error={}", crate::diag::http_err(e));
+            })?;
         }
         unreachable!()
     }

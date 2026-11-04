@@ -175,11 +175,15 @@ pub async fn run(
                         if voice_broken { continue; }
                         next_id += 1;
                         let user = m.user_login;
-                        if queue.push(Item { id: next_id, origin: Origin::Chat, user: user.clone(), text }).is_ok() && !broadcaster {
+                        let description = super::describe(next_id, &user, "chat", &text);
+                        let accepted = queue.push(Item { id: next_id, origin: Origin::Chat, user: user.clone(), text }).is_ok();
+                        if accepted { crate::dlog!("tts", "queued {description}"); }
+                        if accepted && !broadcaster {
                             gate.mark(&user, Instant::now(), settings.cfg.user_cooldown_s);
                         }
                     }
                     TtsMsg::Reward { r, active } => {
+                        crate::dlog!("tts", "received redemption={} reward={}", r.r.redemption_id, r.r.reward_id);
                         if !remember(&mut seen, &mut order, &r.r.redemption_id) { continue; }
                         let text = filter::clean(&r.user_input, settings.cfg.strip_links, &settings.cfg.stop_words);
                         let rejection = if !active { Some(Outcome::Disabled) }
@@ -191,7 +195,10 @@ pub async fn run(
                         if let Some(outcome) = rejection { report(&deps, Item { id: 0, origin: Origin::Reward(r.r), user: r.user_login, text: r.user_input }, outcome); }
                         else {
                             next_id += 1;
-                            if let Err(item) = queue.push(Item { id: next_id, origin: Origin::Reward(r.r), user: r.user_login, text: text.unwrap() }) { report(&deps, item, Outcome::QueueFull); }
+                            let text = text.unwrap();
+                            let description = super::describe(next_id, &r.user_login, "reward", &text);
+                            if let Err(item) = queue.push(Item { id: next_id, origin: Origin::Reward(r.r), user: r.user_login, text }) { report(&deps, item, Outcome::QueueFull); }
+                            else { crate::dlog!("tts", "queued {description}"); }
                         }
                     }
                     TtsMsg::Test(text) => {
@@ -199,10 +206,12 @@ pub async fn run(
                             if settings.cfg.profile_id.is_none() { warning = Some("tts_no_voice".into()); continue; }
                             if voice_broken { continue; }
                             next_id += 1;
-                            let _ = queue.push(Item { id: next_id, origin: Origin::Test, user: String::new(), text });
+                            let description = super::describe(next_id, "", "test", &text);
+                            if queue.push(Item { id: next_id, origin: Origin::Test, user: String::new(), text }).is_ok() { crate::dlog!("tts", "queued {description}"); }
                         }
                     }
                     TtsMsg::Reconcile(refs) => for r in refs {
+                        crate::dlog!("tts", "reconcile redemption={} reward={} outcome=CANCELED", r.redemption_id, r.reward_id);
                         if remember(&mut seen, &mut order, &r.redemption_id) { let _ = deps.outcome.send((r, fulfilled(&Outcome::Reconciled))); }
                     },
                     TtsMsg::DropReward { reward_id, reply } => {
@@ -226,6 +235,7 @@ pub async fn run(
                     }
                     TtsMsg::Widget(event) => match event {
                         TtsWidgetEvent::Connected => {
+                            crate::dlog!("tts", "widget connected");
                             widget = true;
                             // A reloaded OBS source (scene switch) replays the clip that was playing.
                             if deadline.is_some() && let Some(item) = queue.current() {
@@ -233,9 +243,10 @@ pub async fn run(
                                 deadline = Some(Instant::now() + play_ms);
                             }
                         }
-                        TtsWidgetEvent::Disconnected => widget = false,
+                        TtsWidgetEvent::Disconnected => { crate::dlog!("tts", "widget disconnected"); widget = false; },
                         TtsWidgetEvent::Ended(id) | TtsWidgetEvent::Error(id) => {
                             if deadline.is_some() && queue.current().is_some_and(|item| item.id == id) {
+                                crate::dlog!("tts", "widget id={id} {}", if matches!(event, TtsWidgetEvent::Ended(_)) { "ended" } else { "error" });
                                 let outcome = if matches!(event, TtsWidgetEvent::Ended(_)) { Outcome::Played } else { Outcome::SynthFailed };
                                 deadline = None;
                                 finish(&deps, &mut queue, outcome);
@@ -252,11 +263,13 @@ pub async fn run(
                 }
                 match result {
                     Ok(duration) => {
+                        if let Some(item) = queue.current() { crate::dlog!("tts", "play {}", describe_item(item)); }
                         let _ = deps.ws.send(WsOut::TtsPlay { id });
                         play_ms = Duration::from_millis(duration.max(0) as u64) + Duration::from_secs(10);
                         deadline = Some(Instant::now() + play_ms);
                     }
                     Err(code) => {
+                        crate::dlog!("tts", "synth failed id={id} code={code}");
                         let broken = match code.as_str() {
                             "MODEL_MISSING" => Some("tts_model_missing"),
                             "NOT_FOUND" => Some("tts_voice_missing"),
@@ -269,6 +282,7 @@ pub async fn run(
                 }
             }
             _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {
+                if let Some(item) = queue.current() { crate::dlog!("tts", "timeout {}", describe_item(item)); }
                 deadline = None;
                 finish(&deps, &mut queue, Outcome::Played);
             }
@@ -287,8 +301,28 @@ fn remember(seen: &mut HashSet<String>, order: &mut VecDeque<String>, id: &str) 
     }
     true
 }
+fn describe_item(item: &Item) -> String {
+    let src = match &item.origin {
+        Origin::Reward(_) => "reward",
+        Origin::Chat => "chat",
+        Origin::Test => "test",
+    };
+    super::describe(item.id, &item.user, src, &item.text)
+}
 fn report(deps: &EngineDeps, item: Item, outcome: Outcome) {
+    crate::dlog!("tts", "outcome {} reason={outcome:?}", describe_item(&item));
     if let Origin::Reward(r) = item.origin {
+        crate::dlog!(
+            "tts",
+            "redemption={} reward={} outcome={}",
+            r.redemption_id,
+            r.reward_id,
+            if fulfilled(&outcome) {
+                "FULFILLED"
+            } else {
+                "CANCELED"
+            }
+        );
         let _ = deps.outcome.send((r, fulfilled(&outcome)));
     }
 }
