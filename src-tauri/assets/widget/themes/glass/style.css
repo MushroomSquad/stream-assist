@@ -14,3 +14,21 @@ html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
 html[data-part="queue"] .q{margin-top:0}
 html[data-part="queue"] #widget{display:block}
 html[data-part="queue"] #widget:not(:has(.q:not(:empty))){display:none}
+
+#widget{animation:appear .5s ease-out backwards}
+.prog{position:relative;overflow:hidden}
+.prog i{transition:width 2.5s linear}
+.prog::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff88,transparent);translate:-100% 0;animation:shine 3.5s linear infinite}
+html:not([data-mode="Playing"]) .prog::after{animation-play-state:paused}
+.cov.sa-new{animation:cover-in .45s ease-out backwards}
+.info.sa-new .t,.info.sa-new .a,.info.sa-new .by{animation:text-in .35s ease-out backwards}
+.info.sa-new .t{animation-delay:.06s}.info.sa-new .a{animation-delay:.12s}.info.sa-new .by{animation-delay:.18s}
+.q.sa-enter{animation:queue-in .35s ease-out backwards}
+@keyframes appear{from{opacity:0;filter:blur(10px);scale:.97}to{opacity:1;filter:blur(0);scale:1}}
+@keyframes cover-in{from{opacity:0;scale:1.06}to{opacity:1;scale:1}}
+@keyframes text-in{from{translate:0 6px;opacity:0}to{translate:0 0}}
+@keyframes queue-in{from{translate:0 6px;opacity:0}to{translate:0 0}}
+@keyframes shine{from{translate:-100% 0}to{translate:300% 0}}
+@keyframes leave{to{opacity:0;filter:blur(8px)}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+#widget.sa-leaving{animation:leave .3s ease-in}

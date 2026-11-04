@@ -12,3 +12,28 @@ html[data-part="now"] .qp,html[data-part="queue"] .np{display:none}
 html[data-part="now"] .np{left:6px;top:6px;bottom:auto;max-width:calc(100% - 12px);width:560px}
 html[data-part="now"] .box{min-width:0;flex:1}html[data-part="now"] .box .t{overflow-wrap:anywhere}
 html[data-part="queue"] .qp{left:0;top:0;right:auto}
+
+.np,.qp{animation:appear .5s ease-out backwards}
+.prog i{transition:width 2.5s linear}
+html[data-mode="Playing"] .disc{animation:spin 8s linear infinite}
+.np.sa-new .disc{animation:roll .6s cubic-bezier(.2,.8,.2,1) backwards}
+html[data-mode="Playing"] .np.sa-new .disc{animation:roll .6s cubic-bezier(.2,.8,.2,1) backwards,spin 8s .6s linear infinite}
+.np.sa-new .box{animation:reveal .45s .12s ease-out backwards}
+.np.sa-new .a,.np.sa-new .t,.np.sa-new .by{animation:text-in .35s ease-out backwards}
+.np.sa-new .a{animation-delay:.2s}.np.sa-new .t{animation-delay:.26s}.np.sa-new .by{animation-delay:.32s}
+.r.sa-enter{animation:row-in .4s calc(var(--i) * 60ms) ease-out backwards}
+#count.sa-bump{animation:bump .2s ease-out}
+@keyframes appear{from{opacity:0}to{opacity:1}}
+@keyframes spin{from{rotate:0deg}to{rotate:360deg}}
+@keyframes roll{from{translate:-60px 0;rotate:-180deg}to{translate:0 0;rotate:0deg}}
+@keyframes reveal{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+@keyframes text-in{from{translate:12px 0;opacity:0}to{translate:0 0;opacity:1}}
+@keyframes row-in{from{translate:40px 0;box-shadow:inset 0 0 0 999px #c6f27a55}to{translate:0 0;box-shadow:none}}
+@keyframes bump{0%,100%{scale:1}50%{scale:1.35}}
+@keyframes leave{from{opacity:1}to{opacity:0}}
+@keyframes leave-left{to{translate:-60px 0}}
+@keyframes leave-right{to{translate:60px 0}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+#widget.sa-leaving{animation:leave .35s ease-in}
+#widget.sa-leaving .np{animation:leave-left .35s ease-in}
+#widget.sa-leaving .qp{animation:leave-right .35s ease-in}

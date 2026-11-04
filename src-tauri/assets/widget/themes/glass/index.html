@@ -7,8 +7,9 @@
 <div class="q" id="queue"></div></main><div id="sa-youtube"></div>
 <script src="/widget/sdk.js"></script><script>
 const el = id => document.getElementById(id);
+let trackId, nextId;
 StreamAssist.on('state', state => {
-  el('widget').hidden = !state.visible;
+  StreamAssist.show(el('widget'), state.visible);
   const now = state.now;
   el('title').textContent = now?.track.title || '';
   el('artist').textContent = now?.track.artist || '';
@@ -19,8 +20,15 @@ StreamAssist.on('state', state => {
   if (url && cover.getAttribute('src') !== url) cover.src = url;
   if (!url) cover.removeAttribute('src');
   const duration = now?.track.duration_ms;
-  el('progress').style.width = Math.min(100, Math.max(0, state.progress_ms / (duration || Infinity) * 100)) + '%';
+  StreamAssist.progress(el('progress'), Math.min(100, Math.max(0, state.progress_ms / (duration || Infinity) * 100)), now?.id);
   const next = state.queue[0];
+  if (next?.id !== nextId) StreamAssist.replay(el('queue'), 'sa-enter');
+  nextId = next?.id;
   el('queue').textContent = next ? 'Далее: ' + next.track.artist + ' — ' + next.track.title + (state.queue.length > 1 ? ' · ещё ' + (state.queue.length - 1) : '') : '';
+  if (now?.id != null && now.id !== trackId) {
+    StreamAssist.replay(document.querySelector('.info'), 'sa-new');
+    StreamAssist.replay(document.querySelector('.cov'), 'sa-new');
+  }
+  trackId = now?.id;
 });
 </script></body></html>

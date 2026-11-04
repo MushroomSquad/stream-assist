@@ -9,8 +9,9 @@
 <div class="prog"><i id="progress"></i></div><div class="tab">MUSIC</div></div></section></main>
 <script src="/widget/sdk.js"></script><script>
 const el = id => document.getElementById(id);
+let trackId, count;
 StreamAssist.on('state', state => {
-  el('widget').hidden = !state.visible;
+  StreamAssist.show(el('widget'), state.visible);
   const now = state.now;
   el('artist').textContent = now?.track.artist || '';
   el('title').textContent = now ? '"' + now.track.title + '"' : '';
@@ -20,13 +21,19 @@ StreamAssist.on('state', state => {
   cover.onerror = () => { cover.hidden = true; el('note').hidden = false; };
   if (url && cover.getAttribute('src') !== url) cover.src = url;
   if (!url) cover.removeAttribute('src');
-  el('progress').style.width = Math.min(100, Math.max(0, state.progress_ms / (now?.track.duration_ms || Infinity) * 100)) + '%';
+  StreamAssist.progress(el('progress'), Math.min(100, Math.max(0, state.progress_ms / (now?.track.duration_ms || Infinity) * 100)), now?.id);
   el('count').textContent = state.queue.length;
-  el('queue').replaceChildren(...state.queue.map((item, index) => {
+  if (count !== state.queue.length) StreamAssist.replay(el('count'), 'sa-bump');
+  count = state.queue.length;
+  StreamAssist.list(el('queue'), state.queue, item => item.id, (item, index) => {
     const row = document.createElement('div'); row.className = 'r';
     const number = document.createElement('span'); number.className = 'n'; number.textContent = index + 1;
     const track = document.createElement('span'); track.textContent = item.track.artist + ' — ' + item.track.title;
     const user = document.createElement('small'); user.textContent = item.requester; track.append(user); row.append(number, track); return row;
-  }));
+  });
+  if (now?.id != null && now.id !== trackId) {
+    StreamAssist.replay(document.querySelector('.np'), 'sa-new');
+  }
+  trackId = now?.id;
 });
 </script></body></html>
