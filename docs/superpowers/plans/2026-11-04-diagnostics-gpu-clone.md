@@ -79,7 +79,7 @@
 
 **Interfaces:**
 - Consumes: `dlog!`, `diag::http_err` (T1).
-- Produces: `pub fn describe(item: &ItemView) -> String` в `tts/mod.rs` — `id=… src=reward|chat|test user=… len=N` (без текста). T3 использует её для `/debug`.
+- Produces: `pub fn describe(id, user: &str, src: &str, text: &str) -> String` в `tts/mod.rs` — `id=… src=… user=… len=N` (без текста). Движок зовёт её для `queue::Item` (`src` из `Origin`: `reward|chat|test`), T3 — для `ItemView` (`src` = `reward|chat` по полю `reward`).
 
 | Область | Событие | Поля |
 |---|---|---|
@@ -90,7 +90,7 @@
 | `vl` | задание старт/исход | job id, kind, статус, код ошибки |
 | `train` | этапы установки, исход, exit code `uv` | stage, code |
 
-- [ ] **Step 1: тест** в `tts/mod.rs` `describe_has_no_text`: `ItemView` с `text: "секрет123"`, user `"bob"` → строка содержит `user=bob` и `len=9`, не содержит `секрет123`.
+- [ ] **Step 1: тест** в `tts/mod.rs` `describe_has_no_text`: `describe(1, "bob", "chat", "секрет123")` → строка содержит `user=bob` и `len=9`, не содержит `секрет123`.
 - [ ] **Step 2:** FAIL → **Step 3:** реализовать `describe`, расставить `dlog!` по таблице.
 - [ ] **Step 4:** проверки зелёные. **Step 5: Commit** `feat(diag): log connections, redemptions, tts and voice lab events`
 
@@ -176,7 +176,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
 - Produces (`gpu.rs`):
   - `pub const SUPPORTED: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));`
   - `ARCHIVE_URL = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz"`, `ARCHIVE_SHA256 = "84d28f27589090b280d4312743efd3d450cd4ac7d1e1d75e7d9076d9637bf9de"`, `ARCHIVE_SIZE = 240_874_643`, `ARCHIVE_TOP = "onnxruntime-linux-x64-gpu_cuda13-1.28.0"`.
-  - `FILES: [(&str /*путь в архиве от ARCHIVE_TOP*/, &str /*имя в gpu/*/, &str /*sha256*/); 4]` — `lib/libonnxruntime_providers_cuda.so`, `lib/libonnxruntime_providers_shared.so`, `LICENSE`, `ThirdPartyNotices.txt`; хэши исполнитель вычисляет из архива и фиксирует.
+  - `FILES: [(&str /*путь в архиве от ARCHIVE_TOP*/, &str /*имя в gpu/*/, &str /*sha256*/); 4]` — `lib/libonnxruntime_providers_cuda.so`, `lib/libonnxruntime_providers_shared.so`, `LICENSE`, `ThirdPartyNotices.txt`; хэши исполнитель вычисляет из архива и фиксирует; если какого-то из текстовых файлов в архиве нет — убрать его из `FILES` и записать отклонение.
   - `pub fn dir(root: &Path) -> PathBuf` → `root/gpu`.
   - `#[derive(Serialize, Clone, Copy, PartialEq, Debug)] #[serde(rename_all = "lowercase")] pub enum Pack { None, Ok, Broken }`.
   - `pub fn pack(root: &Path) -> Pack` — без кеша: ни одного файла → `None`; все есть и SHA совпадают → `Ok`; иначе `Broken`. Внутренняя `fn pack_with(root, files: &[(…)]) -> Pack` для тестов. Вызывать только из `blocking`/`spawn_blocking` (хэширует ~280 МБ).
@@ -184,7 +184,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
   - `pub async fn install(root: &Path, progress: &(dyn Fn(u64, u64) + Send + Sync), cancel: oneshot::Receiver<()>) -> Result<(), VlError>`: свободно < 600 МБ (`trainer::disk_free_mb`, сделать `pub(crate)`) → `DISK_FULL`; `models::install_files` для архива в `gpu/tmp` внутри `select!` с `cancel`; затем `tar -xzf <archive> -C <gpu/tmp/x> --strip-components=1 <ARCHIVE_TOP>/<путь>…` через `std::process::Command` (без shell); проверка SHA `FILES`; `rename` каждого в `gpu/`; удаление `gpu/tmp` **в любом исходе** (успех, ошибка, отмена). Коды: `GPU_UNSUPPORTED`, `DISK_FULL`, `MODEL_DOWNLOAD_FAILED`, `MODEL_CHECKSUM_MISMATCH`, `GPU_PACK_INVALID`, `JOB_CANCELLED`. Внутренняя `install_from(root, url, sha, size, top, files, progress, cancel)` для тестов.
   - `pub fn uninstall(root: &Path) -> Result<(), VlError>` — удаляет `gpu/` целиком.
 - `models::install_files`: тип sha `&'static str` → `String` (или `Cow<'static, str>`); существующие вызовы — `.into()`.
-- Produces (`commands.rs`): `vl_gpu_status() -> GpuStatus { supported, pack, installing, gpu: Option<GpuInfo>, missingLibs: Vec<String> }` (через `blocking`; `missing_libs` только при `pack == Ok`), `vl_gpu_install()`, `vl_gpu_install_cancel()`, `vl_gpu_uninstall()`; слот установки — как `train_install`; событие `vl-gpu-install` `{done,total}`.
+- Produces (`commands.rs`): `vl_gpu_status() -> GpuStatus { supported, pack, installing, gpu: Option<GpuInfo>, missingLibs: Vec<String> }` (`gpu_info().await` снаружи, `pack`/`missing_libs` — в `blocking`; `missing_libs` только при `pack == Ok`), `vl_gpu_install()`, `vl_gpu_install_cancel()`, `vl_gpu_uninstall()`; слот установки — как `train_install`; событие `vl-gpu-install` `{done,total}`.
 - Produces (`trainer.rs`): `pub async fn gpu_info() -> Option<GpuInfo>` — вынесено из `status`.
 
 - [ ] **Step 1: сборка.**
@@ -226,12 +226,12 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
   - `WorkerEvent::Error { code: String, #[serde(default, skip_serializing_if = "Option::is_none")] detail: Option<String> }`; `detail` ≤ 2000 символов.
   - Воркер в GPU-режиме: `load_text_to_speech_on(…, Device::Gpu)`, `SpeakerEncoder::on_device(…, Device::Gpu)`, после `clone_options(…)` — `opts.device = Device::Gpu` (`clone_options` не менять). Ошибки **загрузки моделей и самого клона** → `("GPU_FAILED", Some(format!("{e:#}")))`; ошибки чтения wav/style/записи результата сохраняют свои коды. CPU-режим — как сейчас.
   - `runner.rs`: `"GPU_FAILED"` в `WORKER_CODES`; разбор `WorkerEvent::Error { code, .. }`.
-  - `Runner::run_worker_as(&self, arg0: Option<&Path>, stderr: Option<&Path>, req, tmp, cancel, on_event)`: `command.arg0(arg0)` (unix, `std::os::unix::process::CommandExt` через `tokio::process::Command::arg0`), stderr — в файл (truncate) вместо `null`. `run_worker` = `run_worker_as(None, None, …)`.
+  - `Runner::run_worker_as(&self, arg0: Option<&Path>, stderr: Option<&Path>, req, tmp, cancel, on_event)`: `command.arg0(arg0)` под `#[cfg(unix)]` (на других ОС `arg0` игнорируется); тесты и режим `argv0` fake-воркера — тоже `#[cfg(unix)]` (Windows-CI делает `cargo check --all-targets`), stderr — в файл (truncate) вместо `null`. `run_worker` = `run_worker_as(None, None, …)`.
   - `clone_slot: Mutex<Option<(u64, oneshot::Sender<()>, CloneDevice)>>`; `pub fn gpu_clone_running(&self) -> bool` = слот занят с `Gpu`. Отдельного флага нет — слот очищает `JobGuard::drop`.
   - `Runner::start_clone(…, device: CloneDevice, emit)` — новый параметр перед `emit`. Пакет здесь не проверяется. Для `Gpu`: `arg0 = gpu::dir(&root).join("stream-assist")`, `stderr = gpu::dir(&root).join("worker.log")`. В `on_event`: `Error { detail: Some(d), .. }` → `dlog!("vl", "clone {id} gpu failed: {d}")`. Исход `WORKER_CRASHED` при `Gpu` → `GPU_FAILED`, `dlog!` с последними 2 КБ `gpu/worker.log`. В meta профиля — `"device": "cpu"|"gpu"`.
   - `VoiceLab.gpu_gate: std::sync::Mutex<()>` — держится на время «проверить + занять слот» в `vl_clone` (GPU) и в `vl_train_start`/`vl_train_resume`.
   - `commands::clone`/`vl_clone(…, device: Option<CloneDevice>)` (`None` = `Cpu`). Для `Gpu` (под `gpu_gate`): `!gpu::SUPPORTED` → `GPU_UNSUPPORTED`; `gpu::pack(&root) != Ok` → `GPU_PACK_MISSING`; `l.train.active().is_some()` или идёт установка GPU-пакета → `JOB_BUSY`.
-  - `vl_train_start`/`vl_train_resume` (под `gpu_gate`): `l.runner.gpu_clone_running()` → `JOB_BUSY`. `vl_gpu_install`/`vl_gpu_uninstall`: `gpu_clone_running()` → `JOB_BUSY` (удаление во время CPU-клона разрешено — поправить спецификацию).
+  - `vl_train_start`/`vl_train_resume` (под `gpu_gate`): `l.runner.gpu_clone_running()` → `JOB_BUSY`. `vl_gpu_install`/`vl_gpu_uninstall` (под `gpu_gate`): `gpu_clone_running()` → `JOB_BUSY` (удаление во время CPU-клона разрешено — поправить спецификацию).
 
 - [ ] **Step 1: тесты**
 
