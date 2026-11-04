@@ -6,10 +6,21 @@
 <div class="q" id="queue"></div></main><div id="sa-youtube"></div>
 <script src="/widget/sdk.js"></script><script>
 const el = id => document.getElementById(id);
+let trackId, nextId;
+el('requester').addEventListener('animationend', event => {
+  if (event.target !== el('requester')) return;
+  document.querySelector('.info').classList.remove('sa-new');
+  // Rebuild the tilted title's paint layer after scaling to restore its original rasterization.
+  el('title').hidden = true;
+  void el('title').offsetWidth;
+  el('title').hidden = false;
+});
 StreamAssist.on('state', state => {
-  el('widget').hidden = !state.visible;
+  StreamAssist.show(el('widget'), state.visible);
   const now = state.now;
+  const changed = now?.id != null && now.id !== trackId;
   el('title').textContent = now?.track.title || '';
+  trackId = now?.id;
   el('artist').textContent = now?.track.artist || '';
   el('requester').textContent = now ? '@' + now.requester : '';
   const cover = el('cover'), url = now?.track.cover_url;
@@ -18,8 +29,14 @@ StreamAssist.on('state', state => {
   if (url && cover.getAttribute('src') !== url) cover.src = url;
   if (!url) cover.removeAttribute('src');
   const duration = now?.track.duration_ms;
-  el('progress').style.width = Math.min(100, Math.max(0, state.progress_ms / (duration || Infinity) * 100)) + '%';
+  StreamAssist.progress(el('progress'), state.progress_ms / (duration || Infinity) * 100, now?.id);
   const next = state.queue[0];
   el('queue').textContent = next ? 'NEXT ▸ ' + next.track.artist + ' — ' + next.track.title : '';
+  if (next?.id != null && next.id !== nextId) StreamAssist.replay(el('queue'), 'sa-enter');
+  nextId = next?.id;
+  if (changed) {
+    StreamAssist.replay(document.querySelector('.info'), 'sa-new');
+    StreamAssist.replay(document.querySelector('.cov'), 'sa-new');
+  }
 });
 </script></body></html>

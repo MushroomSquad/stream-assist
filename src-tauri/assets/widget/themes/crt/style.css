@@ -13,3 +13,26 @@ html[data-part="now"] .q{display:none}
 html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
 html[data-part="queue"] .q{margin-top:0}
 html[data-part="queue"] #widget:not(:has(.q:not(:empty))){display:none}
+
+.prog i{transition:width 2.5s linear}
+html:not([data-mode="Playing"]) .prog i{transition:none}
+.ghost{color:transparent;text-shadow:none}
+#widget{animation:appear 450ms ease-out backwards,scan .4s linear infinite;animation-play-state:running,paused}
+html[data-mode="Playing"] #widget{animation-play-state:running,running}
+.cur{animation:cursor 1s steps(1) infinite;animation-play-state:paused}
+html[data-mode="Playing"] .cur{animation-play-state:running}
+#time-static{display:none}
+html:not([data-mode="Playing"]) #time>span{display:none}
+html:not([data-mode="Playing"]) #time #time-static{display:inline}
+@media (prefers-reduced-motion:reduce){#time>span{display:none}#time #time-static{display:inline}}
+.info.sa-new{animation:tube 450ms ease-out backwards}
+.q div.sa-enter{animation:print 360ms steps(12) calc(var(--i) * 60ms) backwards}
+@keyframes appear{from{opacity:0;scale:1 .02}to{opacity:1;scale:1 1}}
+@keyframes tube{from{scale:1 .02;filter:brightness(2)}to{scale:1 1;filter:brightness(1)}}
+@keyframes cursor{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes scan{from{background-position:0 0}to{background-position:0 3px}}
+@keyframes print{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+@keyframes shut{0%{scale:1 1;opacity:1}80%{scale:1 .02;opacity:1}100%{scale:1 .02;opacity:0}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+#widget.sa-leaving{animation:shut 350ms ease-in backwards,scan .4s linear infinite;animation-play-state:running,paused}
+html[data-mode="Playing"] #widget.sa-leaving{animation-play-state:running,running}

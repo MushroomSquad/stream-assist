@@ -13,3 +13,20 @@ html[data-part="now"] .q{display:none}
 html[data-part="queue"] .cov,html[data-part="queue"] .info{display:none}
 html[data-part="queue"] .q{margin-top:0}
 html[data-part="now"] .t{transform:none}
+
+.prog i{transition:width 2.5s linear}
+html:not([data-mode="Playing"]) .prog i{transition:none}
+#widget{animation:appear 350ms ease-out backwards}
+.info.sa-new .t{animation:slap 380ms cubic-bezier(.3,1.6,.5,1) backwards}
+.info.sa-new .a{animation:drop 350ms ease-out 120ms backwards}
+.info.sa-new .by{animation:drop 350ms ease-out 200ms backwards}
+.cov.sa-new{animation:pop 420ms ease-out backwards}
+.q.sa-enter{animation:next 300ms steps(4) backwards}
+@keyframes appear{from{opacity:0}to{opacity:1}}
+@keyframes slap{0%{scale:1.6;rotate:-8deg}65%{scale:.92;rotate:0deg}100%{scale:1;rotate:0deg}}
+@keyframes drop{from{translate:0 -14px;opacity:0}to{translate:0 0;opacity:1}}
+@keyframes pop{from{scale:0;rotate:25deg}to{scale:1;rotate:0deg}}
+@keyframes next{from{translate:-110% 0}to{translate:0 0}}
+@keyframes leave{from{translate:0 0;opacity:1}to{translate:0 20px;opacity:0}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+#widget.sa-leaving{animation:leave 300ms ease-in backwards}
