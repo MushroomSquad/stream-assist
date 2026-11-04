@@ -28,7 +28,11 @@ fn host_allowed(headers: &HeaderMap, port: u16) -> bool {
         .any(|s| Some(s.as_str()) == host)
 }
 async fn debug_response(State(a): State<App>, headers: HeaderMap) -> Response {
-    if !host_allowed(&headers, a.port) || headers.get("Sec-Fetch-Site").is_some_and(|v| v != "none")
+    // Pages (themes share this origin) send Referer/Origin or Sec-Fetch-Site; curl sends none.
+    if !host_allowed(&headers, a.port)
+        || headers.get("Sec-Fetch-Site").is_some_and(|v| v != "none")
+        || headers.contains_key(header::REFERER)
+        || headers.contains_key(header::ORIGIN)
     {
         return StatusCode::FORBIDDEN.into_response();
     }

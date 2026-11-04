@@ -784,7 +784,7 @@ pub fn log_dir() -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 #[tauri::command]
-pub fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let dir = log_dir().ok_or("logs_unavailable")?;
     app.opener()

@@ -636,3 +636,25 @@ async fn debug_rejects_cross_site_fetch() {
     }
     c.task.unwrap().abort();
 }
+
+#[tokio::test]
+async fn debug_rejects_page_requests() {
+    let c = debug_server().await;
+    let url = format!("http://127.0.0.1:{}/debug", c.running_port);
+    for (name, value) in [
+        (
+            "Referer",
+            format!("http://127.0.0.1:{}/widget/music", c.running_port),
+        ),
+        ("Origin", format!("http://127.0.0.1:{}", c.running_port)),
+    ] {
+        let r = reqwest::Client::new()
+            .get(&url)
+            .header(name, value)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "{name}");
+    }
+    c.task.unwrap().abort();
+}

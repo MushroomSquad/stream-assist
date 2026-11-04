@@ -7,7 +7,7 @@ let device = $state<api.DeviceStart | null>(null);
 let twitchConnected = $state<boolean | null>(null);
 let spotify = $state<api.SpotifyStatus | null>(null);
 let obs = $state('');
-let logDir = $state<string | null>(null);
+let logDir = $state<string | null | undefined>(undefined);
 const debugUrl = $derived(`http://127.0.0.1:${runningPort}/debug`);
 const redirect = $derived(`http://127.0.0.1:${runningPort}/callback/spotify`);
 let poll: ReturnType<typeof setInterval> | undefined;
@@ -34,7 +34,7 @@ onMount(() => { run(async () => { logDir = await api.log_dir(); }, false); run(a
 <label>{ru.youtubeKey}<input type="password" autocomplete="off" bind:value={settings.youtube_api_key} /></label><p class="muted">{ru.youtubeHelp}</p><button class="primary" onclick={save}>{ru.save}</button><p class="muted">{ru.keyringHelp}</p>
 </div>
 <div class="card debug"><h3>{ru.debugTitle}</h3>
-<p class="mono">{logDir ?? ru.logs_unavailable}</p>
+{#if logDir}<p class="mono">{logDir}</p>{:else if logDir === null}<p>{ru.logs_unavailable}</p>{/if}
 <button onclick={() => run(api.open_logs)}>{ru.debugOpenLogs}</button>
 <div class="redirect"><label>{ru.debugUrl}<input readonly value={debugUrl} /></label><button aria-label={`${ru.copy}: ${ru.debugUrl}`} onclick={() => run(() => navigator.clipboard.writeText(debugUrl))}>{ru.copy}</button></div>
 </div></section>
