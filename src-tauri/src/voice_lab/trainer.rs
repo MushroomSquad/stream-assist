@@ -327,6 +327,24 @@ pub struct UvProgress {
     pub item: Option<String>,
 }
 
+/// Total size of regular files under `dir`; unreadable entries count as 0.
+async fn dir_size(dir: PathBuf) -> u64 {
+    fn walk(dir: &Path) -> u64 {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&e.path()),
+                Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+                _ => 0,
+            })
+            .sum()
+    }
+    tokio::task::spawn_blocking(move || walk(&dir))
+        .await
+        .unwrap_or(0)
+}
 pub fn uv_progress(log: &str) -> UvProgress {
     let mut packages = Vec::<(&str, u64)>::new();
     let mut downloaded = std::collections::HashSet::new();
@@ -426,6 +444,10 @@ pub async fn install(
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(dir.join("install.log"))?);
         let mut child = cmd.spawn().map_err(|_| err("TRAINER_INSTALL_FAILED"))?;
+        let cache = dir.join("uv-cache");
+        let cache_base = dir_size(cache.clone()).await;
+        let mut live = 0;
+        let mut ticks = 0u32;
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         loop {
             tokio::select! {
@@ -445,7 +467,16 @@ pub async fn install(
                     let log = tokio::fs::read(dir.join("install.log")).await.unwrap_or_default();
                     let p = uv_progress(&String::from_utf8_lossy(&log));
                     if p.done < p.total {
-                        progress("packages", p.done, p.total, p.item.as_deref());
+                        // uv downloads all wheels in parallel and reports each only when complete, so
+                        // the log alone sits at 0 for minutes; bytes the process has read cover the gap.
+                        // ponytail: uv unpacks wheels into the cache while downloading; measured cache growth
+                        // is ~1.4x network bytes. Walk the cache every 2 s; estimate, capped below 100%.
+                        ticks += 1;
+                        if ticks % 4 == 1 {
+                            let grown = dir_size(cache.clone()).await.saturating_sub(cache_base);
+                            live = (grown * 5 / 7).min(p.total * 99 / 100);
+                        }
+                        progress("packages", p.done.max(live), p.total, p.item.as_deref());
                     } else {
                         progress("venv", 0, 0, None);
                     }
@@ -510,6 +541,15 @@ mod tests {
     use tempfile::tempdir;
 
     const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
+    #[tokio::test]
+    async fn dir_size_sums_nested_files() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("a/b")).unwrap();
+        std::fs::write(d.path().join("x"), [0u8; 10]).unwrap();
+        std::fs::write(d.path().join("a/b/y"), [0u8; 5]).unwrap();
+        assert_eq!(dir_size(d.path().to_path_buf()).await, 15);
+        assert_eq!(dir_size(d.path().join("missing")).await, 0);
+    }
     #[test]
     fn uv_progress_on_real_log() {
         let p = uv_progress(FIXTURE);
