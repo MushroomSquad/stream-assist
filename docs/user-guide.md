@@ -16,7 +16,7 @@ Stream Assist принимает заказы музыки за баллы ка�
 
 ## Установка
 
-Скачайте пакет со [страницы релизов](https://github.com/DonSudak/stream-assist/releases/latest):
+Скачайте пакет со [страницы релизов](https://github.com/MushroomSquad/stream-assist/releases/latest):
 на Windows — `…-setup.exe` или `.msi`, на Linux — `.deb`, `.rpm` или `.AppImage`.
 Сборки не подписаны: на Windows SmartScreen может предупредить — нажмите
 «Подробнее» → «Выполнить в любом случае». Обновление — установите новую версию поверх,

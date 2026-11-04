@@ -1,7 +1,7 @@
 # Stream Assist
 
-[![CI](https://github.com/DonSudak/stream-assist/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSudak/stream-assist/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/DonSudak/stream-assist)](https://github.com/DonSudak/stream-assist/releases/latest)
+[![CI](https://github.com/MushroomSquad/stream-assist/actions/workflows/ci.yml/badge.svg)](https://github.com/MushroomSquad/stream-assist/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MushroomSquad/stream-assist)](https://github.com/MushroomSquad/stream-assist/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Настольный пульт стримера. Зрители тратят баллы канала Twitch, а Stream Assist
@@ -27,7 +27,7 @@
 
 ## Установка
 
-Скачайте сборку для своей системы со [страницы релизов](https://github.com/DonSudak/stream-assist/releases/latest).
+Скачайте сборку для своей системы со [страницы релизов](https://github.com/MushroomSquad/stream-assist/releases/latest).
 
 | Система | Файл |
 |---|---|

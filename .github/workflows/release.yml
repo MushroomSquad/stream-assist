@@ -17,7 +17,7 @@ jobs:
         platform: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Системные зависимости
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
@@ -26,22 +26,18 @@ jobs:
             patchelf libasound2-dev libdbus-1-dev pkg-config \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - run: npm ci
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TWITCH_CLIENT_ID: ${{ vars.TWITCH_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Stream Assist ${{ github.ref_name }}
-          releaseBody: 'Что нового — в [CHANGELOG](https://github.com/DonSudak/stream-assist/blob/main/CHANGELOG.md).'
+          releaseBody: 'Что нового — в [CHANGELOG](https://github.com/MushroomSquad/stream-assist/blob/main/CHANGELOG.md).'
           releaseDraft: true
           prerelease: false
