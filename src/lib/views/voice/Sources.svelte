@@ -8,6 +8,23 @@ let consent = $state(false), startMs = $state(0), endMs = $state(10000);
 let transcript = $state(''), lang = $state('ru'), name = $state(''), preset = $state<api.ClonePreset>('fast'), seed = $state(42);
 let peaks = $state<number[]>([]), canvas = $state<HTMLCanvasElement>(), url = $state('');
 let job = $state<api.JobState | null>(null), message = $state(''), busy = $state(false), listening = $state(false);
+let gpu = $state<api.GpuStatus | null>(null), device = $state<api.CloneDevice>('cpu');
+let gpuBusy = $state(false), gpuProgress = $state<{ done: number; total: number } | null>(null);
+async function loadGpu() {
+  gpu = await api.vl_gpu_status();
+  let saved: string | null = null;
+  try { saved = localStorage.getItem('vl.cloneDevice'); } catch {}
+  device = gpu.supported && gpu.pack === 'ok' && saved === 'gpu' ? 'gpu' : 'cpu';
+}
+function saveDevice(next: api.CloneDevice) { device = next; try { localStorage.setItem('vl.cloneDevice', device); } catch {} }
+async function installGpu() {
+  gpuBusy = true; gpuProgress = null;
+  try { await api.vl_gpu_install(); } finally { gpuBusy = false; await loadGpu(); }
+}
+async function uninstallGpu() {
+  gpuBusy = true;
+  try { await api.vl_gpu_uninstall(); } finally { gpuBusy = false; await loadGpu(); }
+}
 let anchor = 0, selectionVersion = 0;
 const stages = ['select-preset', 'mix-presets', 'mix-rows', 'refine'];
 let startedAt = $state(0), now = $state(0), stageTotals = $state<Record<string, number>>({});
@@ -43,7 +60,12 @@ async function choose(source: api.Source) {
 }
 async function load() { sources = await api.vl_sources(); }
 onMount(() => {
-  let disposed = false, stop = () => {};
+  let disposed = false, stop = () => {}, stopGpu = () => {};
+  void run(async () => {
+    const fn = await api.onGpuInstall(p => { gpuProgress = p; });
+    if (disposed) { fn(); return; } stopGpu = fn;
+    await loadGpu();
+  });
   const timer = setInterval(() => { if (job?.status === 'running') now = Date.now(); }, 1000);
   void run(async () => {
     const fn = await api.onJob(updateJob);
@@ -51,7 +73,7 @@ onMount(() => {
     const jobs = await api.vl_jobs(); const latest = jobs.filter(j => j.kind === 'clone').at(-1); if (!disposed && latest) updateJob(latest);
     await load();
   });
-  return () => { disposed = true; clearInterval(timer); selectionVersion++; stop(); replaceAudio(''); };
+  return () => { disposed = true; clearInterval(timer); selectionVersion++; stop(); stopGpu(); replaceAudio(''); };
 });
 $effect(() => {
   const c = canvas, p = peaks, start = startMs, end = endMs, duration = selected?.durationMs ?? 1;
@@ -65,13 +87,25 @@ function position(e: PointerEvent) { const rect = e.currentTarget instanceof HTM
 async function importAudio() { const path = await open({ multiple: false, filters: [{ name: ru.vlAudio, extensions: ['wav','mp3','flac','ogg','m4a'] }] }); if (typeof path === 'string') { const s = await api.vl_import_audio(path, consent); await load(); await choose(s); } }
 async function clone() {
   if (!selected || !cloneValid) return;
-  busy = true; try { const id = await api.vl_clone(selected.id, startMs, endMs, transcript, lang, name, preset, seed); const jobs = await api.vl_jobs(); const current = jobs.find(j => j.id === id); if (current) updateJob(current); } finally { busy = false; }
+  busy = true; try { const id = await api.vl_clone(selected.id, startMs, endMs, transcript, lang, name, preset, seed, device); const jobs = await api.vl_jobs(); const current = jobs.find(j => j.id === id); if (current) updateJob(current); } finally { busy = false; }
 }
 </script>
 <div class="voice-screen">
 <div class="import-row"><label class="check"><input type="checkbox" bind:checked={consent} />{ru.vlConsent}</label>
 <button onclick={() => run(importAudio)}>{ru.vlImportAudio}</button></div>
 {#if message}<p class="notice" role="alert">{message}</p>{/if}
+{#if gpu?.supported}<div class="card">
+{#if gpu.gpu}<p>{gpu.gpu.name} · {gpu.gpu.driver}</p>{/if}
+{#if gpu.pack === 'broken'}<p class="notice" role="alert">{errorText('GPU_PACK_INVALID')}</p>{/if}
+{#if gpu.missingLibs.length}<p class="notice" role="alert">{ru.vlGpuMissingLibs.replace('{libs}', gpu.missingLibs.join(', '))}</p>{/if}
+{#if gpuBusy || gpu.installing}
+<progress aria-label={ru.vlGpuInstall} value={gpuProgress?.done} max={gpuProgress?.total || 1}></progress>
+<button onclick={() => run(api.vl_gpu_install_cancel)}>{ru.vlCancel}</button>
+{:else}
+{#if gpu.pack !== 'ok'}<button onclick={() => run(installGpu)}>{ru.vlGpuInstall}</button>{/if}
+{#if gpu.pack !== 'none'}<button onclick={() => run(uninstallGpu)}>{ru.vlGpuUninstall}</button>{/if}
+{/if}
+</div>{/if}
 <div class="source-list">{#each sources as source}<button aria-pressed={selected?.id === source.id} onclick={() => run(() => choose(source))}><span>{source.name}</span><span class="source-duration">{(source.durationMs / 1000).toFixed(1)} с</span></button>{/each}</div>
 {#if selected}<div class="card"><h3>{selected.name}</h3>
 <label class="check"><input type="checkbox" checked={selected.consent} onchange={e => { const s = selected!; const checkbox = e.currentTarget, previous = s.consent, checked = checkbox.checked; void run(async () => { try { await api.vl_set_consent(s.id, checked); } catch (e) { checkbox.checked = previous; throw e; } s.consent = checked; await load(); }); }} />{ru.vlConsent}</label>
@@ -86,7 +120,10 @@ async function clone() {
 <label>{ru.vlLanguage}<input required bind:value={lang} /></label>
 <label>{ru.vlName}<input required bind:value={name} /></label>
 <label>{ru.vlPreset}<select bind:value={preset}><option value="fast">{ru.vlFast}</option><option value="standard">{ru.vlStandard}</option><option value="precise">{ru.vlPrecise}</option></select></label>
-<p class="muted">{ru.vlCloneCpuNote}</p>
+{#if gpu?.supported}<label>{ru.vlCloneDevice}<select bind:value={device} onchange={e => saveDevice(e.currentTarget.value as api.CloneDevice)}>
+<option value="cpu">{ru.vlDeviceCpu}</option><option value="gpu" disabled={gpu.pack !== 'ok'}>{ru.vlDeviceGpu}</option>
+</select></label>{/if}
+<p class="muted">{device === 'gpu' ? ru.vlCloneGpuNote : ru.vlCloneCpuNote}</p>
 <label>{ru.vlSeed}<input type="number" min="0" max={Number.MAX_SAFE_INTEGER} step="1" required bind:value={seed} /></label>
 <button class="primary" disabled={!cloneValid || busy || !listening || job?.status === 'running' || (lang === 'ru' && !transcript.trim())}>{ru.vlClone}</button>
 </form></div>{/if}

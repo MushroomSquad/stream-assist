@@ -4,6 +4,13 @@ import { listen } from '@tauri-apps/api/event';
 export interface ModelStatus { installed: boolean; encoderInstalled: boolean; ffmpeg: boolean }
 export interface Source { id: number; name: string; durationMs: number; consent: boolean; createdAt: number }
 export type DpStrategy = 'dominant' | 'weighted' | 'select';
+export type CloneDevice = 'cpu' | 'gpu';
+export interface GpuStatus { supported: boolean; pack: 'none' | 'ok' | 'broken'; installing: boolean; gpu: { name: string; driver: string; vramTotalMb: number; vramFreeMb: number } | null; missingLibs: string[] }
+export const vl_gpu_status = () => call<GpuStatus>('vl_gpu_status');
+export const vl_gpu_install = () => call<void>('vl_gpu_install');
+export const vl_gpu_install_cancel = () => call<void>('vl_gpu_install_cancel');
+export const vl_gpu_uninstall = () => call<void>('vl_gpu_uninstall');
+export const onGpuInstall = (cb: (p: { done: number; total: number }) => void) => isTauri() ? listen<{ done: number; total: number }>('vl-gpu-install', e => cb(e.payload)) : Promise.resolve(() => {});
 export type ClonePreset = 'fast' | 'standard' | 'precise';
 export interface Recipe { schemaVersion: number; kind: string; engine: { id: string; version: string; assetRevision: string }; inputs: { profileSha256: string; name: string; weight: number }[]; dpStrategy: DpStrategy; selectedDpProfileSha256: string | null; createdAt: string }
 export interface Profile { id: number; name: string; tags: string[]; styleSha256: string; origin: 'builtin' | 'import' | 'clone' | 'mix' | 'train'; recipe: Recipe | null; meta: unknown; createdAt: number }
@@ -18,7 +25,7 @@ export const vl_import_audio = (path: string, consent: boolean) => call<Source>(
 export const vl_set_consent = (id: number, consent: boolean) => call<void>('vl_set_consent', { id, consent });
 export const vl_peaks = (sourceId: number) => call<number[]>('vl_peaks', { sourceId });
 export const vl_source_audio = (sourceId: number, startMs: number, endMs: number) => call<ArrayBuffer>('vl_source_audio', { sourceId, startMs, endMs });
-export const vl_clone = (sourceId: number, startMs: number, endMs: number, transcript: string, lang: string, name: string, preset: ClonePreset, seed: number) => call<number>('vl_clone', { sourceId, startMs, endMs, transcript, lang, name, preset, seed });
+export const vl_clone = (sourceId: number, startMs: number, endMs: number, transcript: string, lang: string, name: string, preset: ClonePreset, seed: number, device: CloneDevice = 'cpu') => call<number>('vl_clone', { sourceId, startMs, endMs, transcript, lang, name, preset, seed, device });
 export const vl_cancel_job = (id: number) => call<void>('vl_cancel_job', { id });
 export const vl_jobs = () => call<JobState[]>('vl_jobs');
 export const vl_profiles = () => call<Profile[]>('vl_profiles');

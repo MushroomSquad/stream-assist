@@ -20,7 +20,7 @@
   отдельным аудиоисточником в OBS.
 - **Виджет для OBS.** Текущий трек и очередь — встроенные темы или свои из zip.
 - **Voice Lab.** Локальное клонирование и микширование голосов на Supertonic 3,
-  дообучение на GPU (Linux + NVIDIA).
+  клонирование и дообучение на GPU (Linux x86_64 + NVIDIA).
 - **Честные баллы.** Если трек не сыграл или заказ отклонён — баллы возвращаются.
 
 ![Раздел «Правила»](docs/images/rules.png)
@@ -74,7 +74,9 @@ sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchel
 
 На Fedora вместо `libasound2-dev` — `alsa-lib-devel`. Для первой сборки нужна сеть:
 зависимость `ort` скачивает ONNX Runtime. CUDA и Python для базовых функций Voice Lab
-не нужны; дообучение ставит отдельный пакет (около 8 ГиБ) через uv из вкладки «Обучение».
+не нужны; GPU-клон требует драйвер NVIDIA 580+, CUDA 13, cuDNN 9
+и отдельный GPU-пакет (≈230 МБ) из «Записей». Подробнее — [Voice Lab](docs/voice-lab.md).
+Дообучение ставит отдельный пакет (около 8 ГиБ) через uv из вкладки «Обучение».
 
 1. Зарегистрируйте приложение в [Twitch Developer Console](https://dev.twitch.tv/console/apps):
    Client Type **Public**, включён **Device Code Flow**, OAuth Redirect URL — любой

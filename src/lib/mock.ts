@@ -4,6 +4,7 @@ import type { TtsView } from './ttsApi';
 import type { Profile, Source, Render } from './voiceApi';
 
 export const mockEnabled = !isTauri() && import.meta.env.DEV;
+let gpuPack: 'none' | 'ok' = 'none';
 let settings: Settings | undefined;
 
 export async function mockCall<T>(name: string, args?: Record<string, unknown>): Promise<T> {
@@ -42,6 +43,10 @@ export async function mockCall<T>(name: string, args?: Record<string, unknown>):
       queue: ['Привет всем в чате', 'Спасибо за музыку'].map((text, i) => ({ id: i + 2, user: ['boris', 'luna'][i], text, reward: i === 0, synthesizing: false })),
       widget: true, warning: null
     } satisfies TtsView; break;
+    case 'vl_gpu_status': result = { supported: true, pack: gpuPack, installing: false, gpu: { name: 'NVIDIA GeForce RTX 5070 Ti', driver: '615.78.08', vramTotalMb: 16303, vramFreeMb: 14000 }, missingLibs: [] }; break;
+    case 'vl_gpu_install': gpuPack = 'ok'; break;
+    case 'vl_gpu_uninstall': gpuPack = 'none'; break;
+    case 'vl_gpu_install_cancel': break;
     case 'vl_status': result = { installed: true, encoderInstalled: true, ffmpeg: true }; break;
     case 'vl_profiles': result = ['Анна', 'Михаил', 'Рассказчик'].map((name, i): Profile => ({ id: i + 1, name, tags: ['ru'], styleSha256: `mock-${i}`, origin: i === 2 ? 'clone' : 'builtin', recipe: null, meta: {}, createdAt: 1793700000000 })); break;
     case 'vl_sources': result = ['Голос у микрофона', 'Чтение рассказа'].map((name, i): Source => ({ id: i + 1, name, durationMs: 18000 + i * 4000, consent: true, createdAt: 1793700000000 })); break;
