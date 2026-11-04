@@ -170,7 +170,7 @@ pub async fn serve(
     );
     ch.task = Some(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("Widget server stopped: {e}");
+            crate::dlog!("server", "Widget server stopped: {e}");
         }
     }));
     Ok(ch)

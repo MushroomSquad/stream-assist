@@ -67,6 +67,12 @@ fn load_blocking(key: &str) -> anyhow::Result<Option<Tokens>> {
 pub fn setup(app: &mut tauri::App) -> anyhow::Result<()> {
     app.manage(DeviceFlow::default());
     let dir = app.path().app_data_dir()?;
+    crate::dlog!(
+        "app",
+        "start v{} data={}",
+        env!("CARGO_PKG_VERSION"),
+        dir.display()
+    );
     let (state_tx, state) = watch::channel(WidgetState {
         visible: false,
         now: None,
@@ -145,15 +151,19 @@ async fn start(
     .await;
     handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
     if let Some(code) = server_warning {
+        crate::dlog!("server", "{code}");
         let mut s = state_tx.borrow().clone();
         s.warning = Some(code.into());
         state_tx.send_replace(s.clone());
         let _ = tauri::Emitter::emit(&handle, "state", s);
     }
+    if server_warning.is_none() {
+        crate::dlog!("server", "listening {}", ws.running_port);
+    }
     use crate::tts::engine::{self, EngineDeps, SynthFn, TtsMsg};
     // TTS must never block music startup; synthesis then fails per item instead.
     if let Err(e) = std::fs::create_dir_all(&tts_dir) {
-        eprintln!("TTS directory unavailable: {e}");
+        crate::dlog!("tts", "TTS directory unavailable: {e}");
     }
     let (tts_tx, tts_rx) = mpsc::unbounded_channel::<TtsMsg>();
     let (outcome, tts_outcomes) = mpsc::unbounded_channel();

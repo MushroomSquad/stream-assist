@@ -53,7 +53,10 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
             let _ = old.send(true);
         }
         if let Err(error) = a.yt.try_send(Input::YtPlayerConnected) {
-            eprintln!("Could not signal YouTube player connection: {error}");
+            crate::dlog!(
+                "server",
+                "Could not signal YouTube player connection: {error}"
+            );
         }
         Some(rx)
     } else if is_tts {
@@ -63,7 +66,7 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
             let _ = old.send(true);
         }
         if let Err(error) = a.tts.try_send(TtsWidgetEvent::Connected) {
-            eprintln!("Could not signal TTS widget connection: {error}");
+            crate::dlog!("server", "Could not signal TTS widget connection: {error}");
         }
         Some(rx)
     } else {
@@ -109,7 +112,7 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
                         if evicted.as_ref().is_some_and(|rx| *rx.borrow()) { continue; }
                         if let Some(event) = parse_tts_event(&text)
                             && let Err(error) = a.tts.try_send(event) {
-                            eprintln!("Could not forward TTS widget event: {error}");
+                            crate::dlog!("server", "Could not forward TTS widget event: {error}");
                         }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
@@ -139,7 +142,10 @@ async fn session(mut socket: WebSocket, a: App, is_player: bool, is_tts: bool) {
         if evicted.as_ref().is_some_and(|rx| !*rx.borrow()) {
             *guard = None;
             if let Err(error) = a.tts.try_send(TtsWidgetEvent::Disconnected) {
-                eprintln!("Could not signal TTS widget disconnection: {error}");
+                crate::dlog!(
+                    "server",
+                    "Could not signal TTS widget disconnection: {error}"
+                );
             }
         }
     }

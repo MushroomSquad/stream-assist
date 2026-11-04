@@ -1,5 +1,8 @@
+use tauri::Manager;
+
 pub mod app;
 pub mod db;
+pub mod diag;
 pub mod driver;
 pub mod http;
 pub mod i18n;
@@ -91,6 +94,7 @@ pub fn run() {
             voice_lab::commands::vl_clone
         ])
         .setup(|app| {
+            crate::diag::init(&app.path().app_data_dir()?.join("logs"));
             crate::voice_lab::init(app);
             crate::app::setup(app).map_err(Into::into)
         })

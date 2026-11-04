@@ -109,7 +109,7 @@ async fn bounded<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T
 fn background(f: impl std::future::Future<Output = Result<()>> + Send + 'static) {
     tokio::spawn(async move {
         if bounded(f).await.is_err() {
-            eprintln!("External service operation failed");
+            crate::dlog!("music", "External service operation failed");
         }
     });
 }
@@ -226,7 +226,7 @@ fn actions(
                 _ => return true,
             };
             if let Err(error) = &result {
-                eprintln!("Failed to save redemption decision: {error}");
+                crate::dlog!("music", "Failed to save redemption decision: {error}");
                 warn(c, Some("Не удалось сохранить решение по заказу".into()));
             }
             result.is_ok()
@@ -943,7 +943,7 @@ fn persist_settings(ctx: &DriverCtx) {
         .unwrap_or_else(|e| e.into_inner())
         .set_setting("settings", &ctx.settings)
     {
-        eprintln!("Failed to save settings: {error}");
+        crate::dlog!("music", "Failed to save settings: {error}");
     }
 }
 fn publish_errors(ctx: &DriverCtx, lifecycle: &Lifecycle, previous: &BTreeMap<String, String>) {
