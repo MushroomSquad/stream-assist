@@ -1,0 +1,36 @@
+# Отладка
+
+Общий лог: `<app_data_dir>/logs/stream-assist.log`.
+На Linux обычно `~/.local/share/app.streamassist/logs/stream-assist.log`.
+Путь и кнопка открытия папки доступны в «Подключения» → «Отладка».
+
+Лог ротируется при 5 МБ; предыдущий файл — `stream-assist.log.1`.
+Время строк — UTC. Наблюдение и поиск по областям:
+
+```sh
+tail -f ~/.local/share/app.streamassist/logs/stream-assist.log
+grep -E ' (tts|vl|train) ' ~/.local/share/app.streamassist/logs/stream-assist.log
+```
+
+Снимок состояния (порт указан в блоке «Отладка», замените `<port>`):
+
+```sh
+curl -s http://127.0.0.1:<port>/debug | jq
+```
+
+Ответ содержит версию, порт, время работы, пути, состояние виджета,
+озвучки, флаги Twitch/Spotify и последние 200 строк лога.
+Недоступная часть становится `null` через 2 секунды.
+Spotify проверяется локально, без сетевого запроса.
+Элементы озвучки содержат только id, источник, логин и длину текста.
+Endpoint проверяет локальный Host; запросы браузера с
+`Sec-Fetch-Site`, отличным от `none`, получают 403. Ответ не кешируется.
+
+Дополнительные логи относительно `<app_data_dir>`:
+
+- `voice-lab/trainer/install.log` — установка тренажёра;
+- `voice-lab/training/<id>/worker.log` — обучение;
+- `voice-lab/gpu/worker.log` — воркер GPU-клона (после добавления GPU-пакета).
+
+Общий лог и `/debug` не содержат секретов, URL с query,
+текстов чата и наград. В них есть локальные пути и логины зрителей.

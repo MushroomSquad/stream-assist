@@ -28,6 +28,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            app::open_logs,
+            app::log_dir,
             app::tts_state,
             app::tts_skip,
             app::tts_clear,

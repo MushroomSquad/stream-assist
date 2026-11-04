@@ -7,6 +7,8 @@ let device = $state<api.DeviceStart | null>(null);
 let twitchConnected = $state<boolean | null>(null);
 let spotify = $state<api.SpotifyStatus | null>(null);
 let obs = $state('');
+let logDir = $state<string | null>(null);
+const debugUrl = $derived(`http://127.0.0.1:${runningPort}/debug`);
 const redirect = $derived(`http://127.0.0.1:${runningPort}/callback/spotify`);
 let poll: ReturnType<typeof setInterval> | undefined;
 function stopPoll() { clearInterval(poll); poll = undefined; }
@@ -18,7 +20,7 @@ async function startTwitch() {
   poll = setInterval(() => run(async () => { try { await checkTwitch(); } catch (e) { stopPoll(); throw e; } }, false), (Math.max(device.interval, 1) + 1) * 1000);
   await api.openExternal(device.verification_uri);
 }
-onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }, false); run(async () => { spotify = await api.spotify_status(); }, false); return stopPoll; });
+onMount(() => { run(async () => { logDir = await api.log_dir(); }, false); run(async () => { twitchConnected = await api.twitch_status(); }, false); run(async () => { spotify = await api.spotify_status(); }, false); return stopPoll; });
 </script>
 <section><h2>{ru.connections}</h2><div class="services">
 <div class="card"><header><div class="service-title"><span class="tally" class:connected={twitchConnected === true}></span><h3>{ru.twitch}</h3><span class="service-state">{twitchConnected === null ? ru.connectionUnchecked : twitchConnected ? ru.connected : ru.disconnected}</span></div>
@@ -30,6 +32,11 @@ onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }
 {#if spotify}{#if spotify.connected && spotify.premium === false}<p class="notice">{ru.premium}</p>{/if}{/if}<p class="muted">{ru.autoplay}</p></div>
 <div class="card"><header><div class="service-title"><span class="tally" class:connected={!!obs}></span><h3>{ru.obs}</h3><span class="service-state">{obs ? `${ru.connected} · ${obs}` : ru.connectionUnchecked}</span></div><div class="actions"><button onclick={save}>{ru.save}</button><button onclick={() => run(async () => { settings = await api.save_settings($state.snapshot(settings)); obs = ''; obs = await api.obs_check(); })}>{ru.check}</button></div></header><div class="obs-fields"><label>{ru.host}<input bind:value={settings.obs.host} /></label><label>{ru.obsPort}<input type="number" min="1" max="65535" bind:value={settings.obs.port} /></label><label>{ru.password}<input type="password" autocomplete="off" bind:value={settings.obs.password} /></label></div></div></div><div class="card youtube">
 <label>{ru.youtubeKey}<input type="password" autocomplete="off" bind:value={settings.youtube_api_key} /></label><p class="muted">{ru.youtubeHelp}</p><button class="primary" onclick={save}>{ru.save}</button><p class="muted">{ru.keyringHelp}</p>
+</div>
+<div class="card debug"><h3>{ru.debugTitle}</h3>
+<p class="mono">{logDir ?? ru.logs_unavailable}</p>
+<button onclick={() => run(api.open_logs)}>{ru.debugOpenLogs}</button>
+<div class="redirect"><label>{ru.debugUrl}<input readonly value={debugUrl} /></label><button aria-label={`${ru.copy}: ${ru.debugUrl}`} onclick={() => run(() => navigator.clipboard.writeText(debugUrl))}>{ru.copy}</button></div>
 </div></section>
 
 <style>
@@ -40,6 +47,7 @@ onMount(() => { run(async () => { twitchConnected = await api.twitch_status(); }
  .service-title { display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap; } .service-state { color:var(--t2); font-size:var(--type-secondary); overflow-wrap:anywhere; }
  .actions { margin:0; } label { max-width:none; } .redirect { display:flex; gap:var(--s2); align-items:flex-end; margin-block:var(--s4); } .redirect label { flex:1; min-width:0; margin:0; } .redirect input { width:100%; font-size:var(--type-meta); }
  .obs-fields { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,2fr); gap:var(--s4); } .obs-fields label { margin:0; }
+ .debug { margin-top:var(--s8); } .debug p { overflow-wrap:anywhere; }
  .youtube { margin-top:var(--s8); } .youtube label { max-width:560px; margin-top:0; } .spotify-step { margin-top:var(--s4); } .youtube button { margin-block:var(--s4); }
  .verification { max-width:100%; height:auto; min-height:var(--control-height); overflow-wrap:anywhere; }
  @media(max-width:700px) { .obs-fields { grid-template-columns:1fr; } .service-title { column-gap:var(--s2); } .service-state { flex-basis:100%; padding-left:var(--s4); } .redirect { align-items:stretch; flex-direction:column; } }

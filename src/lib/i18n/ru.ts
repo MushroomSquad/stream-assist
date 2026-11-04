@@ -1,4 +1,6 @@
 export const ru = {
+  debugTitle: 'Отладка', debugOpenLogs: 'Открыть папку логов', debugUrl: 'Состояние для отладки',
+  logs_unavailable: 'Папка логов недоступна',
   durationUnlimited: 'длительность без лимита', durationUpTo: 'до', repeatSummary: 'повтор', viewerUnlimited: 'без лимита на зрителя', perViewer: 'на зрителя',
   requestedBy: 'Заказал', queueSuspended: 'Очередь приостановлена', newRequestsHere: 'новые заказы появятся здесь', connectionUnchecked: 'Не проверено',
   music: 'Заказ трека', triggerType: 'Вид триггера', addTrigger: '+ Триггер', edit: 'Изменить', cancel: 'Отмена',
@@ -89,6 +91,7 @@ export const ru = {
 };
 
 export const errorMessages: Record<string, string> = {
+  logs_unavailable: ru.logs_unavailable,
   reward_create_failed: ru.rewardCreateFailed,
   BATCH_INVALID: 'Проверьте параметры пачки: текст от 1 до 300 символов, количество точек или смесей и профили',
   ENCODER_MISSING: 'Для сравнения с записью установите энкодер голоса',

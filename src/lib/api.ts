@@ -74,3 +74,6 @@ export function watchRuleErrors(cb: (errors: Record<string, string>) => void): (
   })().catch(() => {});
   return () => { disposed = true; unlisten(); };
 }
+
+export const open_logs = () => call<void>('open_logs');
+export const log_dir = () => call<string | null>('log_dir');

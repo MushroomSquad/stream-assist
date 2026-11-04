@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(RwLock::new(theme)),
         rx,
         PathBuf::from("voice-lab/tmp/tts"),
+        server::noop_debug(),
     )
     .await?;
     println!(

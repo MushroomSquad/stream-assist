@@ -32,6 +32,8 @@ export async function mockCall<T>(name: string, args?: Record<string, unknown>):
       queue: ['Спокойная ночь', 'Звезда по имени Солнце', 'Группа крови'].map((title, i) => ({ id: i + 2, track: { source: { Spotify: { uri: `spotify:track:mock-${i}` } }, title, artist: 'Кино', duration_ms: 240000 }, requester: ['alice', 'boris', 'luna'][i] })),
       progress_ms: 78000, mode: 'Playing', warning: null
     } satisfies WidgetState; break;
+    case 'open_logs': result = undefined; break;
+    case 'log_dir': result = '/home/demo/.local/share/app.streamassist/logs'; break;
     case 'running_port': result = currentSettings().port; break;
     case 'spotify_volume': result = 65; break;
     case 'list_themes': result = ['underground', 'glass', 'crt', 'block'].map(id => ({ id, name: id, author: '', width: 800, height: 200 })); break;

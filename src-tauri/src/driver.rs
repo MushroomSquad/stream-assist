@@ -69,6 +69,7 @@ pub enum DriverMsg {
     RuleErrors(tokio::sync::oneshot::Sender<BTreeMap<String, String>>),
     SpotifyVolume(tokio::sync::oneshot::Sender<Option<u8>>),
     TwitchStatus(tokio::sync::oneshot::Sender<bool>),
+    SpotifyConnected(tokio::sync::oneshot::Sender<bool>),
     SpotifyStatus(tokio::sync::oneshot::Sender<crate::app::SpotifyStatus>),
 }
 pub struct DriverCtx {
@@ -823,6 +824,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
             Internal::Msg(DriverMsg::TwitchStatus(reply)) => {
                 let _ = reply.send(ctx.helix.is_some());
             }
+            Internal::Msg(DriverMsg::SpotifyConnected(reply)) => {
+                let _ = reply.send(ctx.spotify.is_some());
+            }
             Internal::Msg(DriverMsg::SpotifyStatus(reply)) => {
                 let sp = ctx.spotify.clone();
                 tokio::spawn(async move {
@@ -1182,6 +1186,7 @@ mod tests {
             theme.clone(),
             state,
             std::env::temp_dir(),
+            crate::server::noop_debug(),
         )
         .await
         .unwrap();

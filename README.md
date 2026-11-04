@@ -109,3 +109,5 @@ http://127.0.0.1:1420 (`?mock=errors` — с ошибками правил).
 
 [MIT](LICENSE). Шрифты в `static/fonts` и темах виджета — SIL OFL 1.1 (лицензии рядом
 с файлами), код тренера в `src-tauri/resources/trainer/upstream` — MIT.
+
+Инструкция по сбору состояния и логов: [Отладка](docs/debugging.md).

@@ -77,6 +77,7 @@ async fn setup() -> (u16, ServerChannels) {
         Arc::new(RwLock::new("underground".into())),
         rx,
         PathBuf::new(),
+        noop_debug(),
     );
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -360,6 +361,7 @@ async fn widget_survives_poisoned_theme_lock() {
     let (oauth, _) = mpsc::channel(1);
     let (tts, _) = mpsc::channel(1);
     let response = music(State(App {
+        debug: noop_debug(),
         port: 0,
         themes: PathBuf::new(),
         active,
@@ -394,6 +396,7 @@ async fn tts_wav_served_and_name_checked() {
         Arc::new(RwLock::new("underground".into())),
         rx,
         dir.clone(),
+        noop_debug(),
     )
     .await
     .unwrap();
@@ -573,4 +576,63 @@ async fn second_tts_widget_evicts_first() {
         player.next().await.unwrap().unwrap().to_text().unwrap(),
         r#""YtStop""#
     );
+}
+
+async fn debug_server() -> ServerChannels {
+    let (_, rx) = watch::channel(state());
+    serve(
+        0,
+        PathBuf::new(),
+        Arc::new(RwLock::new("underground".into())),
+        rx,
+        PathBuf::new(),
+        Arc::new(|| Box::pin(async { serde_json::json!({"ok": 1}) })),
+    )
+    .await
+    .unwrap()
+}
+#[tokio::test]
+async fn debug_returns_snapshot_json() {
+    let c = debug_server().await;
+    let r = reqwest::get(format!("http://127.0.0.1:{}/debug", c.running_port))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        r.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({"ok": 1})
+    );
+    c.task.unwrap().abort();
+}
+#[tokio::test]
+async fn debug_rejects_foreign_host() {
+    let c = debug_server().await;
+    let r = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{}/debug", c.running_port))
+        .header("host", "evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    c.task.unwrap().abort();
+}
+#[tokio::test]
+async fn debug_rejects_cross_site_fetch() {
+    let c = debug_server().await;
+    for (site, status) in [
+        ("same-origin", 403),
+        ("same-site", 403),
+        ("cross-site", 403),
+        ("none", 200),
+    ] {
+        let r = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/debug", c.running_port))
+            .header("Sec-Fetch-Site", site)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status);
+    }
+    c.task.unwrap().abort();
 }

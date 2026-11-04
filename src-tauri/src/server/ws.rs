@@ -18,9 +18,8 @@ pub(super) async fn upgrade(
         format!("127.0.0.1:{}", a.port),
         format!("localhost:{}", a.port),
     ];
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    if !allowed.iter().any(|s| Some(s.as_str()) == host)
+    if !host_allowed(&headers, a.port)
         || !allowed
             .iter()
             .any(|s| Some(format!("http://{s}").as_str()) == origin)

@@ -87,8 +87,9 @@ pub fn setup(app: &mut tauri::App) -> anyhow::Result<()> {
         state: state.clone(),
     });
     let handle = app.handle().clone();
+    let started = std::time::Instant::now();
     tauri::async_runtime::spawn(async move {
-        if start(handle.clone(), dir, state_tx.clone(), state, rx)
+        if start(handle.clone(), dir, state_tx.clone(), state, rx, started)
             .await
             .is_err()
         {
@@ -106,6 +107,7 @@ async fn start(
     state_tx: watch::Sender<WidgetState>,
     state: watch::Receiver<WidgetState>,
     rx: mpsc::Receiver<DriverMsg>,
+    started: std::time::Instant,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let db = Arc::new(Mutex::new(crate::db::Db::open(
@@ -147,6 +149,7 @@ async fn start(
         active_theme.clone(),
         state,
         tts_dir.clone(),
+        debug_snapshot(handle.clone(), started),
     )
     .await;
     handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
@@ -723,4 +726,108 @@ pub async fn obs_add_tts(app: tauri::AppHandle) -> Result<(), String> {
     crate::obs::add_tts_source(&s.obs, &format!("http://127.0.0.1:{port}/widget/tts"))
         .await
         .map_err(|_| "obs_add_failed".into())
+}
+
+async fn part<T: serde::Serialize>(
+    f: impl std::future::Future<Output = Result<T, String>>,
+) -> serde_json::Value {
+    match tokio::time::timeout(std::time::Duration::from_secs(2), f).await {
+        Ok(Ok(v)) => serde_json::to_value(v).unwrap_or_default(),
+        _ => serde_json::Value::Null,
+    }
+}
+fn redact_tts(v: &crate::tts::TtsView) -> serde_json::Value {
+    let describe = |i: &crate::tts::ItemView| {
+        crate::tts::describe(
+            i.id,
+            &i.user,
+            if i.reward { "reward" } else { "chat" },
+            &i.text,
+        )
+    };
+    serde_json::json!({
+        "current": v.current.as_ref().map(describe),
+        "queue": v.queue.iter().map(describe).collect::<Vec<_>>(),
+        "widget": v.widget, "warning": v.warning,
+    })
+}
+fn debug_snapshot(app: tauri::AppHandle, started: std::time::Instant) -> crate::server::DebugFn {
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move {
+            let (widget, tts, twitch, spotify) = tokio::join!(
+                part(async { Ok(get_state(app.try_state::<AppState>().ok_or("starting")?)) }),
+                part(async { tts_state(app.clone()).await.map(|v| redact_tts(&v)) }),
+                part(async { twitch_status(app.try_state::<AppState>().ok_or("starting")?).await }),
+                part(async {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let state = app.try_state::<AppState>().ok_or("starting")?;
+                    send(&state, DriverMsg::SpotifyConnected(tx)).await?;
+                    rx.await.map_err(|_| "driver_closed".into())
+                }),
+            );
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"), "port": running_port(app.clone()),
+                "uptimeS": started.elapsed().as_secs(),
+                "dataDir": app.path().app_data_dir().ok(),
+                "logFile": crate::diag::log_path(),
+                "widget": widget, "tts": tts, "twitch": twitch, "spotify": spotify,
+                "logTail": crate::diag::tail(200),
+            })
+        })
+    })
+}
+#[tauri::command]
+pub fn log_dir() -> Option<String> {
+    crate::diag::log_path()?
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+#[tauri::command]
+pub fn open_logs(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = log_dir().ok_or("logs_unavailable")?;
+    app.opener()
+        .open_path(dir, None::<&str>)
+        .map_err(|_| "logs_unavailable".into())
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+    #[tokio::test]
+    async fn debug_parts_time_out_to_null() {
+        tokio::time::pause();
+        let task = tokio::spawn(part(std::future::pending::<Result<u8, String>>()));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        assert_eq!(task.await.unwrap(), serde_json::Value::Null);
+        assert_eq!(part(async { Ok(5) }).await, serde_json::json!(5));
+        assert_eq!(
+            part::<u8>(async { Err("closed".into()) }).await,
+            serde_json::Value::Null
+        );
+    }
+    #[test]
+    fn debug_snapshot_has_no_chat_text() {
+        let item = crate::tts::ItemView {
+            id: 1,
+            user: "bob".into(),
+            text: "секрет123".into(),
+            reward: true,
+            synthesizing: false,
+        };
+        let v = crate::tts::TtsView {
+            current: Some(item.clone()),
+            queue: vec![item],
+            widget: true,
+            warning: None,
+        };
+        let value = redact_tts(&v);
+        let text = serde_json::to_string(&value).unwrap();
+        assert!(!text.contains("секрет123"));
+        assert!(text.contains("len=9"));
+        assert_eq!(value["widget"], true);
+        assert_eq!(value["queue"].as_array().unwrap().len(), 1);
+    }
 }

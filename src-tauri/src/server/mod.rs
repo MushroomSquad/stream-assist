@@ -5,7 +5,7 @@ use anyhow::Result;
 use axum::{
     Router,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -16,6 +16,28 @@ use std::{
 };
 pub use themes::{ThemeMeta, import_theme_zip, list_themes};
 use tokio::sync::{broadcast, mpsc, watch};
+pub type DebugFn =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, serde_json::Value> + Send + Sync>;
+pub fn noop_debug() -> DebugFn {
+    Arc::new(|| Box::pin(async { serde_json::json!({}) }))
+}
+fn host_allowed(headers: &HeaderMap, port: u16) -> bool {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    [format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+        .iter()
+        .any(|s| Some(s.as_str()) == host)
+}
+async fn debug_response(State(a): State<App>, headers: HeaderMap) -> Response {
+    if !host_allowed(&headers, a.port) || headers.get("Sec-Fetch-Site").is_some_and(|v| v != "none")
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json((a.debug)().await),
+    )
+        .into_response()
+}
 #[derive(Clone, Debug, Serialize)]
 pub enum WsOut {
     State(WidgetState),
@@ -51,6 +73,7 @@ pub struct ServerChannels {
 }
 #[derive(Clone)]
 struct App {
+    debug: DebugFn,
     port: u16,
     themes: PathBuf,
     tts_dir: PathBuf,
@@ -69,6 +92,7 @@ fn build(
     active: Arc<RwLock<String>>,
     last: watch::Receiver<WidgetState>,
     tts_dir: PathBuf,
+    debug: DebugFn,
 ) -> (Router, ServerChannels) {
     let (out, out_rx) = broadcast::channel(64);
     drop(out_rx);
@@ -76,6 +100,7 @@ fn build(
     let (tts, tts_rx) = mpsc::channel(64);
     let (oauth, oauth_rx) = mpsc::channel(16);
     let app = App {
+        debug,
         port,
         themes,
         tts_dir,
@@ -109,6 +134,7 @@ fn build(
             )
             .route("/widget/theme/{id}/{*file}", get(asset))
             .route("/ws", get(ws::upgrade))
+            .route("/debug", get(debug_response))
             .route("/callback/spotify", get(callback))
             .with_state(app),
         ServerChannels {
@@ -128,6 +154,7 @@ pub async fn start_or_disabled(
     active: Arc<RwLock<String>>,
     last: watch::Receiver<WidgetState>,
     tts_dir: PathBuf,
+    debug: DebugFn,
 ) -> (ServerChannels, Option<&'static str>) {
     match serve(
         port,
@@ -135,6 +162,7 @@ pub async fn start_or_disabled(
         active.clone(),
         last.clone(),
         tts_dir.clone(),
+        debug.clone(),
     )
     .await
     {
@@ -148,7 +176,7 @@ pub async fn start_or_disabled(
             } else {
                 "server_start_failed"
             };
-            let (_, channels) = build(port, themes, active, last, tts_dir);
+            let (_, channels) = build(port, themes, active, last, tts_dir, debug);
             (channels, Some(code))
         }
     }
@@ -159,6 +187,7 @@ pub async fn serve(
     active_theme: Arc<RwLock<String>>,
     last_state: watch::Receiver<WidgetState>,
     tts_dir: PathBuf,
+    debug: DebugFn,
 ) -> Result<ServerChannels> {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let (app, mut ch) = build(
@@ -167,6 +196,7 @@ pub async fn serve(
         active_theme,
         last_state,
         tts_dir,
+        debug,
     );
     ch.task = Some(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
@@ -274,6 +304,7 @@ mod startup_tests {
             Arc::new(RwLock::new("underground".into())),
             rx,
             PathBuf::new(),
+            noop_debug(),
         )
         .await;
         assert_eq!(warning, Some("server_port_busy"));
