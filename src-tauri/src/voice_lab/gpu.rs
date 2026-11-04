@@ -95,7 +95,10 @@ pub fn missing_libs(root: &Path) -> Vec<String> {
             }
         }
     }
-    if let Ok(out) = Command::new("ldconfig").arg("-p").output()
+    // Debian users often lack /sbin in PATH.
+    if let Some(out) = ["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"]
+        .iter()
+        .find_map(|p| Command::new(p).arg("-p").output().ok())
         && out.status.success()
         && !String::from_utf8_lossy(&out.stdout)
             .split_whitespace()
@@ -155,6 +158,7 @@ async fn install_from(
             .iter()
             .map(|(p, n, s)| (p.to_string(), n.to_string(), s.to_string()))
             .collect();
+        let files_for_cancel = files.clone();
         let gpu = dir(root);
         let top = top.to_string();
         // Await the blocking operation before cleanup, so no tar process can recreate tmp afterwards.
@@ -180,7 +184,15 @@ async fn install_from(
             Ok(())
         })
         .await
-        .map_err(|_| err("GPU_PACK_INVALID"))?
+        .map_err(|_| err("GPU_PACK_INVALID"))??;
+        // A cancel pressed during extraction must not report success.
+        if cancel.try_recv().is_ok() {
+            for (_, n, _) in files_for_cancel {
+                let _ = fs::remove_file(dir(root).join(n));
+            }
+            return Err(err("JOB_CANCELLED"));
+        }
+        Ok(())
     }
     .await;
     let _ = tokio::fs::remove_dir_all(&tmp).await;

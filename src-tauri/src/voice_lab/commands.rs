@@ -1877,11 +1877,18 @@ pub async fn vl_gpu_install(
         }
         *slot = Some(tx);
     }
+    let last = std::sync::Mutex::new(None::<Instant>);
     let progress = |done, total| {
-        let _ = app.emit(
-            "vl-gpu-install",
-            serde_json::json!({"done": done, "total": total}),
-        );
+        let mut last = last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if done == total || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(200)) {
+            let _ = app.emit(
+                "vl-gpu-install",
+                serde_json::json!({"done": done, "total": total}),
+            );
+            *last = Some(Instant::now());
+        }
     };
     let result = super::gpu::install(&l.root, &progress, rx).await;
     *l.gpu_install.lock().await = None;
