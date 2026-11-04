@@ -180,7 +180,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
   - `pub fn dir(root: &Path) -> PathBuf` → `root/gpu`.
   - `#[derive(Serialize, Clone, Copy, PartialEq, Debug)] #[serde(rename_all = "lowercase")] pub enum Pack { None, Ok, Broken }`.
   - `pub fn pack(root: &Path) -> Pack` — без кеша: ни одного файла → `None`; все есть и SHA совпадают → `Ok`; иначе `Broken`. Внутренняя `fn pack_with(root, files: &[(…)]) -> Pack` для тестов. Вызывать только из `blocking`/`spawn_blocking` (хэширует ~280 МБ).
-  - `pub fn missing_libs(root: &Path) -> Vec<String>` — `ldd gpu/libonnxruntime_providers_cuda.so` (без shell), имена из строк `… => not found`; ошибка `ldd` → пусто.
+  - `pub fn missing_libs(root: &Path) -> Vec<String>` — `ldd gpu/libonnxruntime_providers_cuda.so` (без shell), имена из строк `… => not found`; плюс `libcudnn.so.9`, если его нет в `ldconfig -p` (cuDNN грузится через `dlopen`, `ldd` его не видит); ошибка `ldd`/`ldconfig` → без этой части.
   - `pub async fn install(root: &Path, progress: &(dyn Fn(u64, u64) + Send + Sync), cancel: oneshot::Receiver<()>) -> Result<(), VlError>`: свободно < 600 МБ (`trainer::disk_free_mb`, сделать `pub(crate)`) → `DISK_FULL`; `models::install_files` для архива в `gpu/tmp` внутри `select!` с `cancel`; затем `tar -xzf <archive> -C <gpu/tmp/x> --strip-components=1 <ARCHIVE_TOP>/<путь>…` через `std::process::Command` (без shell); проверка SHA `FILES`; `rename` каждого в `gpu/`; удаление `gpu/tmp` **в любом исходе** (успех, ошибка, отмена). Коды: `GPU_UNSUPPORTED`, `DISK_FULL`, `MODEL_DOWNLOAD_FAILED`, `MODEL_CHECKSUM_MISMATCH`, `GPU_PACK_INVALID`, `JOB_CANCELLED`. Внутренняя `install_from(root, url, sha, size, top, files, progress, cancel)` для тестов.
   - `pub fn uninstall(root: &Path) -> Result<(), VlError>` — удаляет `gpu/` целиком.
 - `models::install_files`: тип sha `&'static str` → `String` (или `Cow<'static, str>`); существующие вызовы — `.into()`.
@@ -227,10 +227,10 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
   - Воркер в GPU-режиме: `load_text_to_speech_on(…, Device::Gpu)`, `SpeakerEncoder::on_device(…, Device::Gpu)`, после `clone_options(…)` — `opts.device = Device::Gpu` (`clone_options` не менять). Ошибки **загрузки моделей и самого клона** → `("GPU_FAILED", Some(format!("{e:#}")))`; ошибки чтения wav/style/записи результата сохраняют свои коды. CPU-режим — как сейчас.
   - `runner.rs`: `"GPU_FAILED"` в `WORKER_CODES`; разбор `WorkerEvent::Error { code, .. }`.
   - `Runner::run_worker_as(&self, arg0: Option<&Path>, stderr: Option<&Path>, req, tmp, cancel, on_event)`: `command.arg0(arg0)` под `#[cfg(unix)]` (на других ОС `arg0` игнорируется); тесты и режим `argv0` fake-воркера — тоже `#[cfg(unix)]` (Windows-CI делает `cargo check --all-targets`), stderr — в файл (truncate) вместо `null`. `run_worker` = `run_worker_as(None, None, …)`.
-  - `clone_slot: Mutex<Option<(u64, oneshot::Sender<()>, CloneDevice)>>`; `pub fn gpu_clone_running(&self) -> bool` = слот занят с `Gpu`. Отдельного флага нет — слот очищает `JobGuard::drop`.
+  - `clone_slot: Mutex<Option<(u64, oneshot::Sender<()>, CloneDevice)>>`; `pub fn gpu_clone_running(&self) -> bool` = слот занят с `Gpu`. Отдельного флага нет — слот очищает `JobGuard::drop`, то есть после того, как процесс воркера завершён/убит (не освобождать слот раньше `kill().await`, иначе обучение стартует при занятой VRAM).
   - `Runner::start_clone(…, device: CloneDevice, emit)` — новый параметр перед `emit`. Пакет здесь не проверяется. Для `Gpu`: `arg0 = gpu::dir(&root).join("stream-assist")`, `stderr = gpu::dir(&root).join("worker.log")`. В `on_event`: `Error { detail: Some(d), .. }` → `dlog!("vl", "clone {id} gpu failed: {d}")`. Исход `WORKER_CRASHED` при `Gpu` → `GPU_FAILED`, `dlog!` с последними 2 КБ `gpu/worker.log`. В meta профиля — `"device": "cpu"|"gpu"`.
   - `VoiceLab.gpu_gate: std::sync::Mutex<()>` — держится на время «проверить + занять слот» в `vl_clone` (GPU) и в `vl_train_start`/`vl_train_resume`.
-  - `commands::clone`/`vl_clone(…, device: Option<CloneDevice>)` (`None` = `Cpu`). Для `Gpu` (под `gpu_gate`): `!gpu::SUPPORTED` → `GPU_UNSUPPORTED`; `gpu::pack(&root) != Ok` → `GPU_PACK_MISSING`; `l.train.active().is_some()` или идёт установка GPU-пакета → `JOB_BUSY`.
+  - `commands::clone`/`vl_clone(…, device: Option<CloneDevice>)` (`None` = `Cpu`). Для `Gpu`: `!gpu::SUPPORTED` → `GPU_UNSUPPORTED`; `gpu::pack(&root) != Ok` → `GPU_PACK_MISSING` (хэширование — **до** взятия `gpu_gate`); под `gpu_gate`: `l.train.active().is_some()` или идёт установка GPU-пакета → `JOB_BUSY`.
   - `vl_train_start`/`vl_train_resume` (под `gpu_gate`): `l.runner.gpu_clone_running()` → `JOB_BUSY`. `vl_gpu_install`/`vl_gpu_uninstall` (под `gpu_gate`): `gpu_clone_running()` → `JOB_BUSY` (удаление во время CPU-клона разрешено — поправить спецификацию).
 
 - [ ] **Step 1: тесты**
@@ -249,7 +249,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
 #[test] fn train_start_blocked_during_gpu_clone()
 ```
 - [ ] **Step 2:** FAIL → **Step 3:** реализация. CPU-запрос отличается только полем `device` (serde default).
-- [ ] **Step 4:** `#[ignore = "needs NVIDIA GPU, CUDA 13, cuDNN 9 and GPU pack"]` тест `real_gpu_clone_fast` в `acceptance_p2.rs`: клон «быстро» на GPU из фикстуры → профиль создан; синтез одной фразы этим стилем на GPU и на CPU → косинус эмбеддингов speaker encoder ≥ 0.9 (проверка совместимости ядра pyke и провайдера MS). Не обязателен для зелёного `cargo test`; оркестратор запускает вручную.
+- [ ] **Step 4:** `#[ignore = "needs NVIDIA GPU, CUDA 13, cuDNN 9 and GPU pack"]` тест `real_gpu_clone_fast` в `acceptance_p2.rs`: клон «быстро» на GPU из фикстуры → профиль создан; синтез одной фразы этим стилем на GPU и на CPU → косинус эмбеддингов speaker encoder ≥ 0.97 и длина WAV в пределах ±5% (проверка совместимости ядра pyke и провайдера MS). Не обязателен для зелёного `cargo test`; оркестратор запускает вручную.
 - [ ] **Step 5:** проверки зелёные. **Step 6: Commit** `feat(vl): clone on NVIDIA GPU via provider pack`
 
 ---
