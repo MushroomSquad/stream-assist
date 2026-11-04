@@ -44,7 +44,7 @@
   - `pub fn line(area: &str, msg: impl std::fmt::Display)` — пишет `<ts> <area> <msg>\n` в файл и stderr. До `init` — только stderr.
   - `pub fn log_path() -> Option<PathBuf>`
   - `pub fn tail(n: usize) -> Vec<String>` — последние `n` строк, читает ≤ 256 КБ с конца, под тем же lock, что запись; нет файла → пусто.
-  - `pub fn http_err(e: &anyhow::Error) -> String` — для `reqwest::Error` (через `downcast_ref`, также `e.chain()`) возвращает `without_url()`-текст + статус; иначе `format!("{e:#}")` с вырезанием `?…` до пробела у подстрок, похожих на URL.
+  - `pub fn http_err(e: &anyhow::Error) -> String` — для `reqwest::Error` в `e.chain()` (`downcast_ref`) собирает текст из `status()`, `is_timeout()`, `is_connect()`, `is_request()` (`without_url()` потребляет значение — не использовать); иначе `format!("{e:#}")` с вырезанием `?…` до пробела у подстрок, похожих на URL.
   - макрос `crate::dlog!(area, "fmt", args…)` → `diag::line(area, format_args!(…))`.
 - Константы: `MAX_BYTES = 5 * 1024 * 1024`, файл `stream-assist.log`, ротация в `stream-assist.log.1`.
 
@@ -90,7 +90,7 @@
 | `vl` | задание старт/исход | job id, kind, статус, код ошибки |
 | `train` | этапы установки, исход, exit code `uv` | stage, code |
 
-- [ ] **Step 1: тест** в `tts/mod.rs` `describe_has_no_text`: `describe(1, "bob", "chat", "секрет123")` → строка содержит `user=bob` и `len=9`, не содержит `секрет123`.
+- [ ] **Step 1: тест** в `tts/mod.rs` `describe_has_no_text`: `describe(1, "bob", "chat", "секрет123")` → строка содержит `user=bob` и `len=9` (символы, не байты), не содержит `секрет123`.
 - [ ] **Step 2:** FAIL → **Step 3:** реализовать `describe`, расставить `dlog!` по таблице.
 - [ ] **Step 4:** проверки зелёные. **Step 5: Commit** `feat(diag): log connections, redemptions, tts and voice lab events`
 
@@ -217,18 +217,19 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
 ### Task 6: Клонирование на GPU
 
 **Files:**
-- Modify: `src-tauri/src/voice_lab/worker.rs`, `src-tauri/src/voice_lab/runner.rs`, `src-tauri/src/voice_lab/commands.rs`, `src-tauri/src/voice_lab/mod.rs`, `src-tauri/examples/vl_fake_worker.rs`, все вызовы `start_clone` (`commands.rs`, `runner.rs` тесты, `tests/voice_lab_runner.rs`, `tests/voice_lab_model.rs`, `tests/voice_lab_train.rs`), `src/lib/voiceApi.ts` (тип `detail?` в событии ошибки)
+- Modify: `src-tauri/src/voice_lab/worker.rs`, `src-tauri/src/voice_lab/runner.rs`, `src-tauri/src/voice_lab/commands.rs`, `src-tauri/src/voice_lab/mod.rs`, `src-tauri/examples/vl_fake_worker.rs` (добавить режимы `argv0` (unix) и `gpu-fail`), литерал `WorkerRequest::Clone` в `tests/voice_lab_model.rs:166`, `acceptance_p2.rs`, все вызовы `start_clone` (`commands.rs`, `runner.rs` тесты, `tests/voice_lab_runner.rs`, `tests/voice_lab_model.rs`, `tests/voice_lab_train.rs`), `src/lib/voiceApi.ts` (тип `detail?` в событии ошибки)
 
 **Interfaces:**
 - Consumes: `gpu::{dir, pack, Pack}` (T5), `dlog!` (T1).
 - Produces:
   - `worker.rs`: `#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)] #[serde(rename_all = "lowercase")] pub enum CloneDevice { #[default] Cpu, Gpu }`; `WorkerRequest::Clone { …, #[serde(default)] device: CloneDevice }`.
   - `WorkerEvent::Error { code: String, #[serde(default, skip_serializing_if = "Option::is_none")] detail: Option<String> }`; `detail` ≤ 2000 символов.
+  - Деталь ошибки: `execute` возвращает `Result<WorkerEvent, (VlError, Option<String>)>` (CPU-ветки отдают `None`); `main` шлёт `Error { code: e.code(), detail }`.
   - Воркер в GPU-режиме: `load_text_to_speech_on(…, Device::Gpu)`, `SpeakerEncoder::on_device(…, Device::Gpu)`, после `clone_options(…)` — `opts.device = Device::Gpu` (`clone_options` не менять). Ошибки **загрузки моделей и самого клона** → `("GPU_FAILED", Some(format!("{e:#}")))`; ошибки чтения wav/style/записи результата сохраняют свои коды. CPU-режим — как сейчас.
   - `runner.rs`: `"GPU_FAILED"` в `WORKER_CODES`; разбор `WorkerEvent::Error { code, .. }`.
   - `Runner::run_worker_as(&self, arg0: Option<&Path>, stderr: Option<&Path>, req, tmp, cancel, on_event)`: `command.arg0(arg0)` под `#[cfg(unix)]` (на других ОС `arg0` игнорируется); тесты и режим `argv0` fake-воркера — тоже `#[cfg(unix)]` (Windows-CI делает `cargo check --all-targets`), stderr — в файл (truncate) вместо `null`. `run_worker` = `run_worker_as(None, None, …)`.
-  - `clone_slot: Mutex<Option<(u64, oneshot::Sender<()>, CloneDevice)>>`; `pub fn gpu_clone_running(&self) -> bool` = слот занят с `Gpu`. Отдельного флага нет — слот очищает `JobGuard::drop`, то есть после того, как процесс воркера завершён/убит (не освобождать слот раньше `kill().await`, иначе обучение стартует при занятой VRAM).
-  - `Runner::start_clone(…, device: CloneDevice, emit)` — новый параметр перед `emit`. Пакет здесь не проверяется. Для `Gpu`: `arg0 = gpu::dir(&root).join("stream-assist")`, `stderr = gpu::dir(&root).join("worker.log")`. В `on_event`: `Error { detail: Some(d), .. }` → `dlog!("vl", "clone {id} gpu failed: {d}")`. Исход `WORKER_CRASHED` при `Gpu` → `GPU_FAILED`, `dlog!` с последними 2 КБ `gpu/worker.log`. В meta профиля — `"device": "cpu"|"gpu"`.
+  - `gpu_job: Mutex<Option<u64>>` в `Runner`: ставится в `start_clone` для `Gpu` вместе с занятием `clone_slot`, снимается **только** в `JobGuard::drop` (то есть после завершения/убийства процесса). `Runner::cancel` по-прежнему делает `clone_slot.take()` сразу — `gpu_job` он не трогает. `pub fn gpu_clone_running(&self) -> bool` = `gpu_job.is_some()`. Тест: `gpu_clone_running_survives_cancel_until_worker_exits` (fake `sleep` + cancel → сразу после cancel `true`, после завершения задания `false`).
+  - `Runner::start_clone(…, device: CloneDevice, emit)` — новый параметр перед `emit`. Пакет здесь не проверяется. Для `Gpu`: `arg0 = gpu::dir(&root).join("stream-assist")`, `stderr = gpu::dir(&root).join("worker.log")` (перед этим `create_dir_all(gpu::dir(&root))`). В `on_event`: `Error { detail: Some(d), .. }` → `dlog!("vl", "clone {id} gpu failed: {d}")`. Исход `WORKER_CRASHED` при `Gpu` → `GPU_FAILED`, `dlog!` с последними 2 КБ `gpu/worker.log`. В meta профиля — `"device": "cpu"|"gpu"`.
   - `VoiceLab.gpu_gate: std::sync::Mutex<()>` — держится на время «проверить + занять слот» в `vl_clone` (GPU) и в `vl_train_start`/`vl_train_resume`.
   - `commands::clone`/`vl_clone(…, device: Option<CloneDevice>)` (`None` = `Cpu`). Для `Gpu`: `!gpu::SUPPORTED` → `GPU_UNSUPPORTED`; `gpu::pack(&root) != Ok` → `GPU_PACK_MISSING` (хэширование — **до** взятия `gpu_gate`); под `gpu_gate`: `l.train.active().is_some()` или идёт установка GPU-пакета → `JOB_BUSY`.
   - `vl_train_start`/`vl_train_resume` (под `gpu_gate`): `l.runner.gpu_clone_running()` → `JOB_BUSY`. `vl_gpu_install`/`vl_gpu_uninstall` (под `gpu_gate`): `gpu_clone_running()` → `JOB_BUSY` (удаление во время CPU-клона разрешено — поправить спецификацию).
@@ -242,6 +243,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
 // runner.rs / tests/voice_lab_runner.rs (fake worker)
 #[tokio::test] async fn gpu_clone_sets_arg0()        // fake worker режим "argv0" пишет argv[0] в файл рядом с out_style → == root/gpu/stream-assist
 #[tokio::test] async fn gpu_clone_running_tracks_slot() // во время клона true, после — false; при CPU-клоне false
+#[tokio::test] async fn gpu_clone_running_survives_cancel_until_worker_exits()
 #[tokio::test] async fn gpu_failed_code_kept()       // fake режим "gpu-fail" шлёт Error{GPU_FAILED, detail} → job.error == "GPU_FAILED"
 #[tokio::test] async fn gpu_worker_crash_maps_to_gpu_failed() // fake режим "crash" + device Gpu → "GPU_FAILED"; с Cpu → "WORKER_CRASHED"
 // commands.rs
@@ -265,7 +267,7 @@ const FIXTURE: &str = include_str!("fixtures/uv_install_partial.log");
 
 - [ ] **Step 1: UI.** В форме клона — `<select>` «Устройство»: `Процессор` / `Видеокарта (NVIDIA)`; второй `disabled`, пока `pack !== 'ok'`; `!supported` — селекта нет. Рядом: «Установить GPU-пакет (≈230 МБ)» / «Отменить» / «Удалить GPU-пакет», `<progress>`, имя GPU и драйвер, при непустом `missingLibs` — предупреждение `vlGpuMissingLibs: 'Не найдены библиотеки CUDA: {libs}. Установите CUDA 13 и cuDNN 9'`. Выбор в `localStorage` (`vl.cloneDevice`, `try/catch`). Подсказка `vlCloneCpuNote` / `vlCloneGpuNote`. Ошибки: `GPU_FAILED: 'Не удалось запустить на видеокарте. Нужны драйвер NVIDIA 580+, CUDA 13 и cuDNN 9. Подробности — в логе'`, `GPU_PACK_MISSING: 'GPU-пакет не установлен'`, `GPU_PACK_INVALID: 'GPU-пакет повреждён — переустановите'`, `GPU_UNSUPPORTED: 'GPU поддерживается только на Linux x86_64'`, `DISK_FULL` (если ключа нет). `pack === 'broken'` → текст `GPU_PACK_INVALID`.
 - [ ] **Step 2:** `npm run check`, `npm test`.
-- [ ] **Step 3: приёмка (оркестратор):** `npm run tauri build`; размер AppImage до/после; из AppImage: установить пакет, клон «быстро» и «точно» на GPU, время в `docs/voice-lab.md` и в `vlCloneGpuNote`; `real_gpu_clone_fast` зелёный.
+- [ ] **Step 3: приёмка (оркестратор):** лог появляется (ротация — тестом T1); `curl /debug` без секретов и текстов; установка тренажёра показывает рост МБ и имя пакета; без пакета — `GPU_PACK_MISSING`, без CUDA — `GPU_FAILED`; `npm run tauri build`; размер AppImage до/после; из AppImage: установить пакет, клон «быстро» и «точно» на GPU, время в `docs/voice-lab.md` и в `vlCloneGpuNote`; `real_gpu_clone_fast` зелёный.
 - [ ] **Step 4: docs.** `voice-lab.md`: GPU-клон, требования, пакет, время, `noexec` на `/home` ломает загрузку провайдера. `user-guide.md`: «Клонирование на видеокарте», строки в «Если что-то не так» про `GPU_FAILED` и ссылку на `debugging.md`. `architecture.md`: GPU-пакет, запуск с `arg0` и почему (ORT ищет провайдеры в `dirname(argv[0])`; провайдер pyke без sm_120; ABI ядра pyke и провайдера MS связаны версией 1.28.0).
 - [ ] **Step 5: Commit** `feat(vl): GPU clone controls and docs`
 
