@@ -422,7 +422,10 @@ fn redeem(
         r.r.reward_id
     );
     match rules::music_decision(&c.settings.rules, &r.r.reward_id) {
-        MusicDecision::Ignore => return,
+        MusicDecision::Ignore => {
+            crate::dlog!("music", "redemption={} outcome=ignored", r.r.redemption_id);
+            return;
+        }
         MusicDecision::Refund => {
             crate::dlog!("music", "redemption={} reason=inactive", r.r.redemption_id);
             let db = c.db.lock().unwrap_or_else(|e| e.into_inner());

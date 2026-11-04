@@ -402,10 +402,10 @@ pub async fn install(
     crate::dlog!(
         "train",
         "install status={} code={}",
-        if result.is_ok() {
-            "completed"
-        } else {
-            "failed"
+        match &result {
+            Ok(()) => "completed",
+            Err(e) if e.code() == "JOB_CANCELLED" => "cancelled",
+            Err(_) => "failed",
         },
         result.as_ref().err().map(|e| e.code()).unwrap_or_default()
     );

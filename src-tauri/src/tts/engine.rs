@@ -211,8 +211,10 @@ pub async fn run(
                         }
                     }
                     TtsMsg::Reconcile(refs) => for r in refs {
-                        crate::dlog!("tts", "reconcile redemption={} reward={} outcome=CANCELED", r.redemption_id, r.reward_id);
-                        if remember(&mut seen, &mut order, &r.redemption_id) { let _ = deps.outcome.send((r, fulfilled(&Outcome::Reconciled))); }
+                        if remember(&mut seen, &mut order, &r.redemption_id) {
+                            crate::dlog!("tts", "reconcile redemption={} reward={} outcome=CANCELED", r.redemption_id, r.reward_id);
+                            let _ = deps.outcome.send((r, fulfilled(&Outcome::Reconciled)));
+                        }
                     },
                     TtsMsg::DropReward { reward_id, reply } => {
                         for item in queue.remove_pending(|item| matches!(&item.origin, Origin::Reward(r) if r.reward_id == reward_id)) {
