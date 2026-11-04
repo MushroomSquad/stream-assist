@@ -65,9 +65,11 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("PART").unwrap_or_else(|_| "all".into()),
         std::env::var("SCALE").unwrap_or_else(|_| "1".into())
     );
+    // PROGRESS=<ms> freezes the bar for deterministic screenshots.
+    let frozen: Option<u64> = std::env::var("PROGRESS").ok().and_then(|v| v.parse().ok());
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
-        tokio::select! {_=tokio::signal::ctrl_c()=>break,_=channels.yt_rx.recv()=>{},_=channels.oauth_rx.recv()=>{},_=interval.tick()=>{state.progress_ms=(state.progress_ms+1000)%180_000;tx.send_replace(state.clone());let _=channels.out_tx.send(WsOut::State(state.clone()));}}
+        tokio::select! {_=tokio::signal::ctrl_c()=>break,_=channels.yt_rx.recv()=>{},_=channels.oauth_rx.recv()=>{},_=interval.tick()=>{state.progress_ms=frozen.unwrap_or((state.progress_ms+1000)%180_000);tx.send_replace(state.clone());let _=channels.out_tx.send(WsOut::State(state.clone()));}}
     }
     Ok(())
 }
