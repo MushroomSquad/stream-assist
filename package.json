@@ -1,6 +1,6 @@
 {
   "name": "stream-assist",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Заказ музыки и озвучка за баллы канала Twitch: Spotify, YouTube, OBS, Voice Lab",
   "type": "module",
   "scripts": {

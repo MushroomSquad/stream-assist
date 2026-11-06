@@ -13,13 +13,14 @@ export type TriggerKind = { kind: 'reward'; title: string; cost: number; cooldow
 export type Trigger = { id: string; enabled: boolean } & TriggerKind;
 export interface Action<C> { enabled: boolean; cfg: C; triggers: Trigger[] }
 export interface Rules { music: Action<{ limits: Limits }>; tts: Action<TtsCfg>; retiring: { action: 'music' | 'tts'; reward_id: string }[]; next_id: number }
-export interface Settings { rules: Rules; port: number; active_theme: string; youtube_api_key: string | null; obs: { host: string; port: number; password: string | null }; spotify_client_id: string | null }
+export interface Settings { spotify_local: boolean; rules: Rules; port: number; active_theme: string; youtube_api_key: string | null; obs: { host: string; port: number; password: string | null }; spotify_client_id: string | null }
 export const allowedTriggers = { music: ['reward'], tts: ['reward', 'chat_marker'] } as const;
 export interface ThemeMeta { id: string; name: string; author: string; width: number; height: number; parts?: { now: { width: number; height: number }; queue: { width: number; height: number } } }
 export interface DeviceStart { user_code: string; verification_uri: string; interval: number; expires_in: number }
 export interface SpotifyStatus { connected: boolean; premium: boolean | null }
 export const emptyState: WidgetState = { visible: false, now: null, queue: [], progress_ms: 0, mode: 'Idle', warning: null };
 export const defaultSettings: Settings = {
+  spotify_local: false,
   rules: {
     music: { enabled: true, cfg: { limits: { max_duration_ms: 420000, no_repeat_last_n: 10, max_per_user_in_queue: 2, block_explicit: false, blocklist: [] } }, triggers: [{ id: 'music-reward', enabled: true, kind: 'reward', title: ru.rewardDefault, cost: 500, cooldown_s: 0, reward_id: null }] },
     tts: { enabled: true, cfg: { profile_id: null, lang: 'ru', speed: 1, roles: { everyone: true, subscribers: true, vips: true, moderators: true }, global_cooldown_s: 10, user_cooldown_s: 60, strip_links: true, stop_words: [] }, triggers: [

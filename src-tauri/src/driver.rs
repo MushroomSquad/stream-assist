@@ -29,6 +29,8 @@ use tokio::sync::{mpsc, watch};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    #[serde(default = "default_spotify_local")]
+    pub spotify_local: bool,
     #[serde(default)]
     pub rules: Rules,
     pub port: u16,
@@ -37,9 +39,13 @@ pub struct Settings {
     pub obs: ObsCfg,
     pub spotify_client_id: Option<String>,
 }
+fn default_spotify_local() -> bool {
+    cfg!(target_os = "linux")
+}
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            spotify_local: default_spotify_local(),
             rules: Rules::default(),
             port: 47821,
             active_theme: "underground".into(),
@@ -114,7 +120,15 @@ fn background(f: impl std::future::Future<Output = Result<()>> + Send + 'static)
         }
     });
 }
-fn publish(c: &DriverCtx, s: WidgetState) {
+fn publish(c: &DriverCtx, mut s: WidgetState) {
+    if c.ws.task.is_some() && !*c.ws.ready.borrow() {
+        s.warning = Some("server_port_busy".into());
+    } else if matches!(
+        s.warning.as_deref(),
+        Some("server_port_busy" | "server_start_failed")
+    ) {
+        s.warning = None;
+    }
     let previous_mode = c.state_tx.borrow().mode.clone();
     if previous_mode != s.mode {
         crate::dlog!(
@@ -525,6 +539,14 @@ fn connect_twitch(
     Some(task)
 }
 pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
+    if let Some(spotify) = &ctx.spotify {
+        spotify.set_local_playback(ctx.settings.spotify_local);
+    }
+    crate::dlog!(
+        "spotify",
+        "local_playback={}",
+        cfg!(target_os = "linux") && ctx.settings.spotify_local
+    );
     let running_port = ctx.ws.running_port;
     let (tx, mut internal) = mpsc::unbounded_channel();
     let mut player = Player::new(ctx.settings.rules.music.cfg.limits.max_duration_ms);
@@ -548,6 +570,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
     loop {
         let event = tokio::select! {
             _ = tick.tick() => {
+                let state = ctx.state_tx.borrow().clone();
+                let server_warning = matches!(state.warning.as_deref(), Some("server_port_busy" | "server_start_failed"));
+                if ctx.ws.task.is_some() && server_warning == *ctx.ws.ready.borrow() { publish(&ctx, state); }
                 if let Some(issued) = polls.start() {
                 let sp = ctx.spotify.clone();
                 let tx = tx.clone();
@@ -799,7 +824,9 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                 Ok(t) => {
                     crate::app::save_tokens("spotify", &t, ctx.app.clone());
                     if let Some(id) = ctx.settings.spotify_client_id.clone() {
-                        ctx.spotify = Some(crate::app::spotify_client(id, t, ctx.app.clone()));
+                        let client = crate::app::spotify_client(id, t, ctx.app.clone());
+                        client.set_local_playback(ctx.settings.spotify_local);
+                        ctx.spotify = Some(client);
                     }
                 }
                 Err(_) => warn(&ctx, Some("Не удалось войти в Spotify".into())),

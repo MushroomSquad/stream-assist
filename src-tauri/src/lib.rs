@@ -17,6 +17,8 @@ pub mod rules;
 pub mod secrets;
 pub mod server;
 pub mod spotify;
+#[cfg(target_os = "linux")]
+pub mod spotify_local;
 pub mod tts;
 pub mod twitch;
 pub mod voice_lab;

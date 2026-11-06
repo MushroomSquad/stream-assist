@@ -152,7 +152,7 @@ async fn start(
         debug_snapshot(handle.clone(), started),
     )
     .await;
-    handle.manage(RunningPort(ws.task.as_ref().map(|_| ws.running_port)));
+    handle.manage(RunningPort(ws.ready.clone(), ws.running_port));
     if let Some(code) = server_warning {
         crate::dlog!("server", "{code}");
         let mut s = state_tx.borrow().clone();
@@ -717,10 +717,11 @@ pub async fn rule_errors(
     rx.await.map_err(|_| "driver_closed".to_string())
 }
 
-pub struct RunningPort(pub Option<u16>);
+pub struct RunningPort(pub watch::Receiver<bool>, pub u16);
 #[tauri::command]
 pub fn running_port(app: tauri::AppHandle) -> Option<u16> {
-    app.try_state::<RunningPort>().and_then(|p| p.0)
+    app.try_state::<RunningPort>()
+        .and_then(|p| (*p.0.borrow()).then_some(p.1))
 }
 #[tauri::command]
 pub async fn twitch_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {

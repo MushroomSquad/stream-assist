@@ -1,6 +1,6 @@
 [package]
 name = "stream-assist"
-version = "0.4.1"
+version = "0.4.2"
 description = "Stream Assist — заказ музыки и озвучка за баллы канала Twitch"
 authors = ["MushroomSquad"]
 license = "MIT"
@@ -55,6 +55,9 @@ supertonic3-tts = { version = "=1.3.0", features = ["cuda"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

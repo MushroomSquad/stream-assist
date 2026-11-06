@@ -68,6 +68,7 @@ pub enum TtsWidgetEvent {
     Disconnected,
 }
 pub struct ServerChannels {
+    pub ready: watch::Receiver<bool>,
     pub running_port: u16,
     pub task: Option<tokio::task::JoinHandle<()>>,
     pub out_tx: broadcast::Sender<WsOut>,
@@ -142,6 +143,7 @@ fn build(
             .route("/callback/spotify", get(callback))
             .with_state(app),
         ServerChannels {
+            ready: watch::channel(false).1,
             running_port: port,
             task: None,
             out_tx: out,
@@ -160,31 +162,43 @@ pub async fn start_or_disabled(
     tts_dir: PathBuf,
     debug: DebugFn,
 ) -> (ServerChannels, Option<&'static str>) {
-    match serve(
-        port,
-        themes.clone(),
-        active.clone(),
-        last.clone(),
-        tts_dir.clone(),
-        debug.clone(),
-    )
-    .await
-    {
-        Ok(channels) => (channels, None),
-        Err(error) => {
-            let code = if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse)
-            {
-                "server_port_busy"
-            } else {
-                "server_start_failed"
-            };
-            let (_, channels) = build(port, themes, active, last, tts_dir, debug);
-            (channels, Some(code))
+    let first = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await;
+    let port = first
+        .as_ref()
+        .ok()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|address| address.port())
+        .unwrap_or(port);
+    let (router, mut channels) = build(port, themes, active, last, tts_dir, debug);
+    let warning = first.as_ref().err().map(|error| {
+        if error.kind() == std::io::ErrorKind::AddrInUse {
+            "server_port_busy"
+        } else {
+            "server_start_failed"
         }
-    }
+    });
+    let (ready_tx, ready) = watch::channel(first.is_ok());
+    channels.ready = ready;
+    channels.task = Some(tokio::spawn(async move {
+        let mut listener = first.ok();
+        loop {
+            if let Some(bound) = listener.take() {
+                ready_tx.send_replace(true);
+                crate::dlog!("server", "listening {port}");
+                if let Err(error) = axum::serve(bound, router.clone()).await {
+                    crate::dlog!("server", "listener stopped: {error}");
+                }
+                ready_tx.send_replace(false);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                .await
+                .ok();
+        }
+    }));
+    (channels, warning)
 }
+
 pub async fn serve(
     port: u16,
     themes_dir: PathBuf,
@@ -202,6 +216,7 @@ pub async fn serve(
         tts_dir,
         debug,
     );
+    ch.ready = watch::channel(true).1;
     ch.task = Some(tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             crate::dlog!("server", "Widget server stopped: {e}");
@@ -288,7 +303,7 @@ mod startup_tests {
     use super::*;
 
     #[tokio::test]
-    async fn startup_busy_port_returns_warning_and_disabled_server() {
+    async fn busy_port_recovers_on_same_port_with_existing_channels() {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
@@ -302,7 +317,7 @@ mod startup_tests {
             warning: None,
         };
         let (_tx, rx) = watch::channel(state);
-        let (server, warning) = start_or_disabled(
+        let (mut server, warning) = start_or_disabled(
             port,
             PathBuf::new(),
             Arc::new(RwLock::new("underground".into())),
@@ -312,8 +327,27 @@ mod startup_tests {
         )
         .await;
         assert_eq!(warning, Some("server_port_busy"));
-        assert!(server.task.is_none());
+        assert!(server.task.is_some());
+        assert!(!*server.ready.borrow());
         assert_eq!(server.running_port, port);
         assert_eq!(listener.local_addr().unwrap().port(), port);
+        drop(listener);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            server.ready.wait_for(|ready| *ready),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let response = reqwest::get(format!("http://127.0.0.1:{port}/debug"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let url = format!("http://127.0.0.1:{port}/callback/spotify?code=restored&state=state");
+        assert!(reqwest::get(url).await.unwrap().status().is_success());
+        let (code, state) = server.oauth_rx.recv().await.unwrap();
+        assert_eq!(code.unwrap(), "restored");
+        assert_eq!(state, "state");
+        server.task.take().unwrap().abort();
     }
 }

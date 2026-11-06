@@ -63,6 +63,7 @@ pub struct Spotify {
     tokens: Arc<Mutex<Tokens>>,
     on_rotate: Arc<dyn Fn(&Tokens) + Send + Sync>,
     player_poll: Mutex<()>,
+    local_playback: std::sync::atomic::AtomicBool,
 }
 impl Spotify {
     pub fn new(
@@ -80,7 +81,18 @@ impl Spotify {
             tokens: Arc::new(Mutex::new(tokens)),
             on_rotate: Arc::new(on_rotate),
             player_poll: Mutex::new(()),
+            local_playback: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+    pub fn set_local_playback(&self, enabled: bool) {
+        self.local_playback.store(
+            cfg!(target_os = "linux") && enabled,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    fn uses_local(&self) -> bool {
+        self.local_playback
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
     pub async fn exchange_code(
         client_id: &str,
@@ -280,6 +292,13 @@ impl Spotify {
             .into())
     }
     pub async fn player(&self) -> Result<Option<PlaybackSnapshot>> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            return match crate::spotify_local::call(crate::spotify_local::Command::State).await? {
+                crate::spotify_local::Reply::State(state) => Ok(Some(state)),
+                _ => unreachable!(),
+            };
+        }
         let _poll = self.player_poll.lock().await;
         let r = self
             .request(Method::GET, "/v1/me/player", &[], None)
@@ -314,6 +333,15 @@ impl Spotify {
         }))
     }
     pub async fn devices(&self) -> Result<Vec<Device>> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            self.player().await?;
+            return Ok(vec![Device {
+                id: Some(crate::spotify_local::DEVICE.into()),
+                is_active: true,
+                kind: "Computer".into(),
+            }]);
+        }
         #[derive(Deserialize)]
         struct Devices {
             devices: Vec<Device>,
@@ -332,6 +360,16 @@ impl Spotify {
         device_id: Option<&str>,
         position_ms: u64,
     ) -> Result<(), PlayError> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            crate::spotify_local::call(crate::spotify_local::Command::Play(
+                uri.into(),
+                position_ms,
+            ))
+            .await
+            .map_err(|_| PlayError::NoDevice)?;
+            return Ok(());
+        }
         let query = device_id
             .map(|d| vec![("device_id", d)])
             .unwrap_or_default();
@@ -402,18 +440,35 @@ impl Spotify {
     }
 
     pub async fn pause(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            crate::spotify_local::call(crate::spotify_local::Command::Pause).await?;
+            return Ok(());
+        }
         self.request(Method::PUT, "/v1/me/player/pause", &[], None)
             .await?
             .error_for_status()?;
         Ok(())
     }
     pub async fn resume(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            crate::spotify_local::call(crate::spotify_local::Command::Resume).await?;
+            return Ok(());
+        }
         self.request(Method::PUT, "/v1/me/player/play", &[], None)
             .await?
             .error_for_status()?;
         Ok(())
     }
     pub async fn volume(&self) -> Result<Option<u8>> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            return match crate::spotify_local::call(crate::spotify_local::Command::Volume).await? {
+                crate::spotify_local::Reply::Volume(volume) => Ok(Some(volume)),
+                _ => unreachable!(),
+            };
+        }
         let response = self
             .request(Method::GET, "/v1/me/player", &[], None)
             .await?
@@ -428,6 +483,11 @@ impl Spotify {
             .map(|v| v as u8))
     }
     pub async fn set_volume(&self, pct: u8) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if self.uses_local() {
+            crate::spotify_local::call(crate::spotify_local::Command::SetVolume(pct)).await?;
+            return Ok(());
+        }
         self.request(
             Method::PUT,
             "/v1/me/player/volume",

@@ -1,4 +1,6 @@
 export const ru = {
+  spotifyLocal: 'Управлять локальным Spotify на Linux',
+  spotifyLocalHelp: 'Использует Spotify на этом компьютере. Для управления другим устройством выключите этот режим. Изменение применяется после перезапуска приложения. На Windows используется Web API.',
   musicStarting: 'Запуск трека…',
   updateTitle: 'Доступна версия', updateInstall: 'Обновить', updateSkip: 'Пропустить',
   updateDescription: 'После установки Stream Assist перезапустится. Текущая музыка и озвучка будут прерваны.',
