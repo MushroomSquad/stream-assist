@@ -2,6 +2,12 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 
+## [0.4.1] — 2026-11-06
+
+### Исправлено
+- Заказ «исполнитель — название» ищется по обоим полям и проверяется на совпадение.
+- При отказе из-за повтора или другого лимита заказ больше не заменяется следующей песней из результатов поиска.
+
 ## [0.4.0] — 2026-11-06
 
 ### Исправлено
@@ -76,3 +82,4 @@
 [0.1.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.1.0
 
 [0.4.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.4.0
+[0.4.1]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.4.1

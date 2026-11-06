@@ -44,12 +44,20 @@ fn decide_not_found_rejects() {
     ));
 }
 #[test]
-fn decide_picks_first_passing_candidate() {
+fn decide_rejects_requested_track_instead_of_substituting_next_candidate() {
     let mut t = track();
     t.duration_ms = Some(999999);
-    assert!(
-        matches!(decide(Resolution::Candidates(vec![t,track()]),&Limits::default(),"u",&[],None,&[]),Decision::Enqueue(t) if t==track())
-    );
+    assert!(matches!(
+        decide(
+            Resolution::Candidates(vec![t, track()]),
+            &Limits::default(),
+            "u",
+            &[],
+            None,
+            &[]
+        ),
+        Decision::Reject(_)
+    ));
 }
 #[test]
 fn normalize_title_strips_noise() {
