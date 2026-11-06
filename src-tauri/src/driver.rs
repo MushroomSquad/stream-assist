@@ -115,6 +115,16 @@ fn background(f: impl std::future::Future<Output = Result<()>> + Send + 'static)
     });
 }
 fn publish(c: &DriverCtx, s: WidgetState) {
+    let previous_mode = c.state_tx.borrow().mode.clone();
+    if previous_mode != s.mode {
+        crate::dlog!(
+            "music",
+            "mode={previous_mode}->{} item={:?} queue={}",
+            s.mode,
+            s.now.as_ref().map(|item| item.id),
+            s.queue.len()
+        );
+    }
     c.state_tx.send_replace(s.clone());
     let _ = c.ws.out_tx.send(WsOut::State(s.clone()));
     let _ = c.app.emit("state", s);
@@ -292,7 +302,8 @@ fn actions(
                         if device.is_none() {
                             return Err(PlayError::NoDevice);
                         }
-                        sp.play(&uri, device.as_deref(), position_ms).await
+                        sp.play_confirmed(&uri, device.as_deref(), position_ms)
+                            .await
                     })
                     .await
                     .unwrap_or(Err(PlayError::Net));
@@ -735,7 +746,7 @@ pub async fn run(mut ctx: DriverCtx, mut rx: mpsc::Receiver<DriverMsg>) {
                         }
                     }
                     Decision::Reject(why) => {
-                        crate::dlog!("music", "redemption={id} reason=rejected");
+                        crate::dlog!("music", "redemption={id} reason=rejected detail={why}");
                         if ctx
                             .db
                             .lock()

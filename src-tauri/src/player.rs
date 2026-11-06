@@ -237,6 +237,9 @@ impl Player {
         self.confirmed_at = now;
         self.retry_at = None;
         self.retry_index = 0;
+        if self.warning.is_some() {
+            self.warn(None, a);
+        }
     }
     pub fn step(&mut self, input: Input, now_ms: i64) -> Vec<Action> {
         let now = now_ms;
@@ -284,7 +287,20 @@ impl Player {
             }
             Input::ResumeQueue => {
                 if self.mode == Mode::Suspended {
-                    self.next(now, &mut a);
+                    if self.current.is_some() {
+                        self.mode = Mode::Starting;
+                        self.anchor = now;
+                        self.start_sent = now;
+                        self.confirmed_at = now;
+                        self.retry_at = None;
+                        self.retry_index = 0;
+                        self.resolving = false;
+                        // Re-select the active device after the streamer took over.
+                        self.last_device = None;
+                        self.play_spotify(&mut a);
+                    } else {
+                        self.next(now, &mut a);
+                    }
                 }
             }
             Input::TogglePause => {
@@ -322,7 +338,11 @@ impl Player {
                                 self.last_device = None;
                             }
                             self.warn(
-                                Some("Spotify: нет активного устройства / ошибка".into()),
+                                Some(if e == PlayError::NotStarted {
+                                    "Spotify принял команду, но не подтвердил запуск трека. Проверьте устройство воспроизведения; повторяем попытку.".into()
+                                } else {
+                                    "Spotify: нет активного устройства / ошибка".into()
+                                }),
                                 &mut a,
                             );
                             self.schedule(now);
@@ -758,14 +778,48 @@ mod tests {
         assert_eq!(p.mode(), Mode::Playing);
     }
     #[test]
-    fn resume_queue_plays_next() {
+    fn resume_queue_keeps_current_and_pending_items() {
         let mut p = playing(false);
         p.step(Input::Enqueue(item(2, false)), 0);
+        p.step(snap("s1", true, 1000), 1000);
         p.step(snap("x", true, 0), 5000);
-        assert!(has(&p.step(Input::ResumeQueue, 6000), |a| matches!(
+        let actions = p.step(Input::ResumeQueue, 6000);
+        assert!(has(&actions, |a| matches!(
             a,
-            Action::SpotifyPlay { item_id: 2, .. }
+            Action::SpotifyPlay {
+                item_id: 1,
+                position_ms: 1000,
+                device_id: None,
+                ..
+            }
         )));
+        let (current, queue) = p.snapshot();
+        assert_eq!(current.unwrap().id, 1);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, 2);
+        let actions = p.step(
+            Input::PlayResult {
+                item_id: 1,
+                result: Ok(()),
+            },
+            6100,
+        );
+        assert!(!has(&actions, |a| matches!(
+            a,
+            Action::Started(_) | Action::Cancel(..)
+        )));
+    }
+    #[test]
+    fn resume_queue_with_no_pending_items_replays_current() {
+        let mut p = playing(false);
+        p.step(snap("other", true, 0), 5000);
+        let actions = p.step(Input::ResumeQueue, 6000);
+        assert!(has(&actions, |a| matches!(
+            a,
+            Action::SpotifyPlay { item_id: 1, .. }
+        )));
+        assert_eq!(p.snapshot().0.unwrap().id, 1);
+        assert_eq!(p.mode(), Mode::Starting);
     }
     #[test]
     fn device_lost_replays_with_backoff() {

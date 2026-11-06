@@ -17,3 +17,7 @@ vite.config.ts.timestamp-*
 src-tauri/target/
 src-tauri/gen/
 __pycache__/
+
+# Local release signing keys (never commit).
+/.local/
+*.key

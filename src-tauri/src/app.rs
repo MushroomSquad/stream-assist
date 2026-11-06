@@ -238,27 +238,80 @@ async fn start(
 pub fn exit(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let operation = async {
-            let dir = app.path().app_data_dir()?;
-            let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
-            let (settings, _) = crate::driver::load_settings(&db)?;
-            drop(db);
-            if let Some(t) = load("twitch").await? {
-                let helix = twitch_client(t, app.clone());
-                let ids = settings.rules.reward_ids();
-                let pause = serde_json::json!({"is_paused":true});
-                futures_util::future::join_all(
-                    ids.iter().map(|id| helix.update_reward(id, &pause)),
-                )
+        pause_rewards_for_exit(&app).await;
+        app.exit(0);
+    });
+}
+
+async fn pause_rewards_for_exit(app: &tauri::AppHandle) {
+    let operation = async {
+        let dir = app.path().app_data_dir()?;
+        let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
+        let (settings, _) = crate::driver::load_settings(&db)?;
+        drop(db);
+        if let Some(t) = load("twitch").await? {
+            let helix = twitch_client(t, app.clone());
+            let ids = settings.rules.reward_ids();
+            let pause = serde_json::json!({"is_paused":true});
+            futures_util::future::join_all(ids.iter().map(|id| helix.update_reward(id, &pause)))
                 .await
                 .into_iter()
                 .collect::<anyhow::Result<Vec<()>>>()?;
-            }
-            Ok::<_, anyhow::Error>(())
-        };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), operation).await;
-        app.exit(0);
-    });
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), operation).await;
+}
+
+#[tauri::command]
+pub fn update_install_supported() -> bool {
+    cfg!(target_os = "windows")
+        || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+}
+
+// Windows installers terminate the process themselves: pause rewards before install.
+#[tauri::command]
+pub async fn prepare_update(app: tauri::AppHandle) {
+    pause_rewards_for_exit(&app).await;
+}
+
+#[tauri::command]
+pub async fn update_install_failed(app: tauri::AppHandle) {
+    let operation = async {
+        let dir = app.path().app_data_dir()?;
+        let db = crate::db::Db::open(&dir.join("stream-assist.db"))?;
+        let (settings, _) = crate::driver::load_settings(&db)?;
+        drop(db);
+        if let Some(t) = load("twitch").await? {
+            let helix = twitch_client(t, app.clone());
+            // Retiring rewards stay paused. Disabled triggers stay disabled on Twitch.
+            let ids: Vec<_> = settings
+                .rules
+                .music
+                .triggers
+                .iter()
+                .chain(settings.rules.tts.triggers.iter())
+                .filter_map(|trigger| match &trigger.kind {
+                    crate::rules::TriggerKind::Reward {
+                        reward_id: Some(id),
+                        ..
+                    } => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let patch = serde_json::json!({"is_paused":false});
+            futures_util::future::join_all(ids.iter().map(|id| helix.update_reward(id, &patch)))
+                .await;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), operation).await;
+}
+
+#[tauri::command]
+pub async fn restart_after_update(app: tauri::AppHandle) {
+    pause_rewards_for_exit(&app).await;
+    app.restart();
 }
 
 #[cfg(test)]

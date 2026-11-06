@@ -27,7 +27,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            app::update_install_supported,
+            app::prepare_update,
+            app::update_install_failed,
+            app::restart_after_update,
             app::open_logs,
             app::log_dir,
             app::tts_state,

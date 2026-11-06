@@ -153,6 +153,7 @@ async fn youtube_case(matched: bool) {
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"tracks":{"items":items}})),
         )
+        .expect(0)
         .mount(&s)
         .await;
     let sp = Spotify::new(
@@ -175,10 +176,10 @@ async fn youtube_case(matched: bool) {
     .unwrap() else {
         panic!()
     };
-    assert_eq!(matches!(ts[0].source, Source::Spotify { .. }), matched);
+    assert!(matches!(&ts[0].source, Source::YouTube { video_id } if video_id == "vid"));
 }
 #[tokio::test]
-async fn resolve_youtube_matches_spotify() {
+async fn resolve_youtube_preserves_video_even_when_spotify_has_a_match() {
     youtube_case(true).await;
 }
 #[tokio::test]
@@ -192,7 +193,7 @@ async fn youtube_outage_case(connected: bool) {
     Mock::given(path("/oembed")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"title":"Artist - Song","author_name":"Artist","thumbnail_url":"cover"}))).mount(&s).await;
     Mock::given(path("/v1/search"))
         .respond_with(ResponseTemplate::new(500))
-        .expect(if connected { 1 } else { 0 })
+        .expect(0)
         .mount(&s)
         .await;
     let sp = Spotify::new(

@@ -61,6 +61,7 @@ pub enum PlayError {
     Unauthorized,
     Api(u16),
     Net,
+    NotStarted,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

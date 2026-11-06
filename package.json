@@ -1,6 +1,6 @@
 {
   "name": "stream-assist",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Заказ музыки и озвучка за баллы канала Twitch: Spotify, YouTube, OBS, Voice Lab",
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2.14.1"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

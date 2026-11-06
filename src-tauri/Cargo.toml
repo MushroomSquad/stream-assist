@@ -1,6 +1,6 @@
 [package]
 name = "stream-assist"
-version = "0.3.0"
+version = "0.4.0"
 description = "Stream Assist — заказ музыки и озвучка за баллы канала Twitch"
 authors = ["MushroomSquad"]
 license = "MIT"
@@ -25,6 +25,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

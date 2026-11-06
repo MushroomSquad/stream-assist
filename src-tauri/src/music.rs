@@ -97,18 +97,9 @@ pub async fn resolve(
             let Some(t) = youtube::oembed(&id, yt_base).await? else {
                 return Ok(Resolution::NotFound);
             };
-            let matches = if let Some(sp) = sp {
-                sp.search_track(&format!("{} {}", t.artist, normalize_title(&t.title)))
-                    .await
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-            let found = matches.into_iter().find(|m| {
-                normalize_title(&m.title) == normalize_title(&t.title)
-                    && normalize_title(&m.artist) == normalize_title(&t.artist)
-            });
-            vec![found.unwrap_or(t)]
+            // A direct link selects the source, including the particular video
+            // version. Do not replace it with a Spotify search result.
+            vec![t]
         }
     };
     Ok(if tracks.is_empty() {

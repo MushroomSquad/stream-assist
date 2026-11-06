@@ -2,6 +2,20 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 
+## [0.4.0] — 2026-11-06
+
+### Исправлено
+- Spotify-заказ считается начатым только после подтверждения воспроизведения нужного трека на выбранном устройстве; принятой команды API больше недостаточно для списания баллов.
+- Прямые ссылки YouTube сохраняют выбранное видео и воспроизводятся в OBS без подмены на Spotify.
+- «Вернуть очередь» повторно запускает текущий заказ, сохраняя его и ожидающие треки.
+- Пустые команды Spotify (пауза, продолжение, громкость) передают `Content-Length: 0`, предотвращая HTTP 411.
+- Логи музыки содержат причины отклонения и переходы состояния очереди.
+
+### Добавлено
+- Проверка новых версий из GitHub Releases при запуске: окно «Пропустить / Обновить»,
+  прогресс загрузки, проверка подписи и перезапуск. Для `.deb`/`.rpm` — переход к релизу.
+- Подпись пакетов обновления и публикация `latest.json` в release workflow.
+
 ## [0.3.0] — 2026-11-05
 
 ### Добавлено
@@ -60,3 +74,5 @@
 [0.3.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.3.0
 [0.2.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.1.0
+
+[0.4.0]: https://github.com/MushroomSquad/stream-assist/releases/tag/v0.4.0

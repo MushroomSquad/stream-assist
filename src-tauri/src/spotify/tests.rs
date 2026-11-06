@@ -66,6 +66,34 @@ async fn player_204_is_none() {
         .await;
     assert_eq!(client(&s, false).player().await.unwrap(), None);
 }
+
+#[tokio::test]
+async fn bodyless_playback_commands_send_content_length_zero() {
+    let s = MockServer::start().await;
+    // A stricter gateway returns 411 when Content-Length is missing.
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(411))
+        .with_priority(10)
+        .mount(&s)
+        .await;
+    for endpoint in [
+        "/v1/me/player/pause",
+        "/v1/me/player/play",
+        "/v1/me/player/volume",
+    ] {
+        Mock::given(method("PUT"))
+            .and(path(endpoint))
+            .and(header("content-length", "0"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&s)
+            .await;
+    }
+    let sp = client(&s, false);
+    sp.pause().await.unwrap();
+    sp.resume().await.unwrap();
+    sp.set_volume(50).await.unwrap();
+}
 #[tokio::test]
 async fn player_parses_snapshot() {
     let s = MockServer::start().await;
@@ -80,6 +108,70 @@ async fn player_parses_snapshot() {
             duration_ms: 1234
         })
     );
+}
+
+#[tokio::test]
+async fn accepted_play_waits_for_actual_track_on_requested_device() {
+    let s = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/me/player/play"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&s)
+        .await;
+    let polls = Arc::new(AtomicUsize::new(0));
+    let count = polls.clone();
+    Mock::given(method("GET"))
+        .and(path("/v1/me/player"))
+        .respond_with(move |_: &wiremock::Request| {
+            let attempt = count.fetch_add(1, Ordering::SeqCst);
+            let uri = if attempt == 0 {
+                "spotify:track:other"
+            } else {
+                "spotify:track:1"
+            };
+            let mut track = track_json();
+            track["uri"] = uri.into();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "device":{"id":"dev"},"is_playing":true,"progress_ms":100,"item":track
+            }))
+        })
+        .mount(&s)
+        .await;
+    client(&s, false)
+        .play_confirmed("spotify:track:1", Some("dev"), 0)
+        .await
+        .unwrap();
+    assert!(polls.load(Ordering::SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn other_track_paused_track_and_wrong_device_do_not_confirm_start() {
+    for (uri, playing, device) in [
+        ("spotify:track:other", true, "dev"),
+        ("spotify:track:1", false, "dev"),
+        ("spotify:track:1", true, "other-device"),
+    ] {
+        let s = MockServer::start().await;
+        let mut track = track_json();
+        track["uri"] = uri.into();
+        Mock::given(path("/v1/me/player"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "device":{"id":device},"is_playing":playing,"progress_ms":0,"item":track
+            })))
+            .mount(&s)
+            .await;
+        assert_eq!(
+            client(&s, false)
+                .wait_for_playback(
+                    "spotify:track:1",
+                    Some("dev"),
+                    std::time::Duration::from_millis(30)
+                )
+                .await,
+            Err(PlayError::NotStarted)
+        );
+    }
 }
 #[tokio::test]
 async fn refresh_when_expiring_and_rotates() {

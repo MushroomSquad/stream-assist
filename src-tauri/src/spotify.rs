@@ -62,6 +62,7 @@ pub struct Spotify {
     client_id: String,
     tokens: Arc<Mutex<Tokens>>,
     on_rotate: Arc<dyn Fn(&Tokens) + Send + Sync>,
+    player_poll: Mutex<()>,
 }
 impl Spotify {
     pub fn new(
@@ -78,6 +79,7 @@ impl Spotify {
             client_id,
             tokens: Arc::new(Mutex::new(tokens)),
             on_rotate: Arc::new(on_rotate),
+            player_poll: Mutex::new(()),
         }
     }
     pub async fn exchange_code(
@@ -186,6 +188,10 @@ impl Spotify {
                 .query(query);
             if let Some(ref b) = body {
                 req = req.json(b);
+            } else if matches!(method, Method::PUT | Method::POST) {
+                // Spotify's gateway rejects bodyless playback commands without
+                // an explicit length (411), including pause, resume and volume.
+                req = req.header(reqwest::header::CONTENT_LENGTH, "0");
             }
             let response = req.send().await.map_err(|e| {
                 let e = anyhow::Error::from(e);
@@ -274,6 +280,7 @@ impl Spotify {
             .into())
     }
     pub async fn player(&self) -> Result<Option<PlaybackSnapshot>> {
+        let _poll = self.player_poll.lock().await;
         let r = self
             .request(Method::GET, "/v1/me/player", &[], None)
             .await?
@@ -352,6 +359,48 @@ impl Spotify {
         }
         Err(PlayError::Api(status.as_u16()))
     }
+    pub async fn play_confirmed(
+        &self,
+        uri: &str,
+        device_id: Option<&str>,
+        position_ms: u64,
+    ) -> Result<(), PlayError> {
+        self.play(uri, device_id, position_ms).await?;
+        self.wait_for_playback(uri, device_id, std::time::Duration::from_secs(8))
+            .await
+    }
+
+    async fn wait_for_playback(
+        &self,
+        uri: &str,
+        device_id: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<(), PlayError> {
+        let mut observed = None;
+        let confirmation = async {
+            loop {
+                if let Ok(Some(snapshot)) = self.player().await {
+                    if snapshot.is_playing
+                        && snapshot.track_uri.as_deref() == Some(uri)
+                        && device_id.is_none_or(|id| snapshot.device_id.as_deref() == Some(id))
+                    {
+                        return;
+                    }
+                    observed = Some(snapshot);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        };
+        if tokio::time::timeout(timeout, confirmation).await.is_err() {
+            crate::dlog!(
+                "spotify",
+                "operation=confirm_playback outcome=not_started requested_uri={uri} requested_device={device_id:?} observed={observed:?}"
+            );
+            return Err(PlayError::NotStarted);
+        }
+        Ok(())
+    }
+
     pub async fn pause(&self) -> Result<()> {
         self.request(Method::PUT, "/v1/me/player/pause", &[], None)
             .await?

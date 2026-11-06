@@ -1,4 +1,11 @@
 export const ru = {
+  musicStarting: 'Запуск трека…',
+  updateTitle: 'Доступна версия', updateInstall: 'Обновить', updateSkip: 'Пропустить',
+  updateDescription: 'После установки Stream Assist перезапустится. Текущая музыка и озвучка будут прерваны.',
+  updateManualDescription: 'Откроется релиз на GitHub. Скачайте и установите новый пакет .deb или .rpm.',
+  updateDownloading: 'Загрузка обновления…', updateInstalling: 'Установка обновления…',
+  updateReady: 'Обновление установлено. Перезапустите приложение.', updateRestart: 'Перезапустить',
+  updateFailed: 'Не удалось завершить обновление. Попробуйте ещё раз или пропустите его.', updateRetry: 'Повторить',
   debugTitle: 'Отладка', debugOpenLogs: 'Открыть папку логов', debugUrl: 'Состояние для отладки',
   logs_unavailable: 'Папка логов недоступна',
   durationUnlimited: 'длительность без лимита', durationUpTo: 'до', repeatSummary: 'повтор', viewerUnlimited: 'без лимита на зрителя', perViewer: 'на зрителя',
