@@ -3,6 +3,9 @@
 При запуске release-сборки Stream Assist проверяет
 `https://github.com/MushroomSquad/stream-assist/releases/latest/download/latest.json`.
 Манифест создаёт `tauri-action` и прикладывает к релизу вместе с пакетами и `.sig`.
+После завершения сборок AppImage и его подпись публикуются под постоянными именами
+`Stream.Assist_amd64.AppImage` и `Stream.Assist_amd64.AppImage.sig`, без номера версии.
+Завершающий шаг обновляет URL в `latest.json`; версия внутри пакета и манифеста сохраняется.
 Черновики и prerelease не предлагаются пользователям. В dev-режиме проверки нет.
 Если манифест ещё не опубликован или сеть недоступна, приложение запускается обычно.
 
